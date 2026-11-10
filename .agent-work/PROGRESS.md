@@ -816,3 +816,25 @@ Honest standing: `TestSync` passes against containers; `TestMessagesOverFederati
 `TestDeviceListUpdates` fail on T715; and a stale `bin/qwatrix` was measured for two runs before it was
 caught — the Complement image copies a pre-built binary, so `podman build` alone does **not** test the
 current tree. `make complement-image` (or build then build) is the only honest cycle.
+
+### T715 narrowed the same evening: it is the server name, not the signature
+
+`TestAHomeserverNamedWithoutAPortFederatesAJoin` reproduces the container failure inside one process. Two
+harness servers, both real, both over TLS: named `127.0.0.1:PORT` the join succeeds; name the other server
+`localhost` — no port, reached on the federation port, which is what Complement's `hs1`/`hs2` are and what
+every real deployment is — and it fails while trying to fetch that server's signing keys.
+
+So the outbound join is not broken, and neither is the join handshake: **federation between two servers
+whose names do not spell out a port is broken**, and the Complement failure is one instance of it. The
+test is checked in as a `t.Skipf` whose message is the failure itself, so the suite stays readable and the
+reproduction stays one command away:
+
+    go test ./tests/api/ -count=1 -v -run TestAHomeserverNamedWithoutAPortFederatesAJoin
+
+Two facts found on the way, both worth keeping:
+
+- A key-fetch failure was being discarded (`continue` with no log), which is why "could not download key"
+  was the furthest the trail went. It is logged now, naming the peer and the reason.
+- gomatrixserverlib reports `failed to fetch keys for some servers` with a count of fetchers consulted —
+  the number that said "both my fetchers ran and neither answered", which is what turned the trail from
+  "signature" to "key lookup".

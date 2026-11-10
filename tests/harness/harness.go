@@ -69,6 +69,10 @@ func WithRegistrationSecret(secret string) Option {
 }
 
 // WithServerName sets the homeserver identity.
+// FederationPort is the port a federation server name without one refers to, and the reason a test can
+// name a server "localhost" and still be reachable: it is the same default the outbound client applies.
+const FederationPort = "8448"
+
 func WithServerName(name string) Option {
 	return func(o *Options) { o.ServerName = name }
 }
@@ -830,10 +834,17 @@ func (s *Server) FederationServer(t *testing.T) *httptest.Server {
 	// the same request. Complement's containers have this property for free — Docker resolves hs1 and
 	// hs2 to the ports they listen on — and a test that wants to stand in for two homeservers has to
 	// arrange it too, or it tests a link no deployment uses.
-	if hostPort, _, err := net.SplitHostPort(s.ServerName); err == nil && hostPort != "" {
-		if listener, listenErr := net.Listen("tcp", s.ServerName); listenErr == nil {
-			tls.Listener = listener
-		}
+	// A name with no port is reached on the federation port, which is the rule this server's own
+	// outbound client applies — so a test that means to name a server "localhost" gets a listener on
+	// localhost:8448 rather than on a port only the test knows about.
+	address := s.ServerName
+	if hostPort, _, err := net.SplitHostPort(s.ServerName); err != nil && hostPort == "" {
+		address = s.ServerName + ":" + FederationPort
+	}
+	if listener, listenErr := net.Listen("tcp", address); listenErr == nil {
+		tls.Listener = listener
+	} else {
+		t.Logf("harness: could not bind the federation address %s: %v", address, listenErr)
 	}
 	tls.StartTLS()
 	s.federationSrv = tls

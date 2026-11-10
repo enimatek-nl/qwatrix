@@ -3,6 +3,7 @@ package fedapi
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -118,6 +119,14 @@ func (f *notaryFetch) FetchKeys(ctx context.Context, requests map[gomatrixserver
 		if err != nil {
 			// One unreachable peer must not withhold the keys of the others: a caller
 			// verifying events from three servers should still be able to believe two.
+			//
+			// The reason is logged because it is otherwise destroyed here, and the caller's
+			// message — "could not download key" — names the server and nothing else. Whether the
+			// peer was unreachable, answered without the key, or published a document that would not
+			// verify are three different faults belonging to three different machines, and a federation
+			// link that does not work is diagnosed by which of the three it was.
+			slog.Warn("fedapi: could not fetch a peer's signing keys",
+				"server", server, "error", err)
 			continue
 		}
 		for request, result := range fetched {
