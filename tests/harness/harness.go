@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -821,7 +822,20 @@ func (s *Server) FederationServer(t *testing.T) *httptest.Server {
 	if s.federationSrv != nil {
 		return s.federationSrv
 	}
-	tls := httptest.NewTLSServer(s.instance.FederationHandler())
+	tls := httptest.NewUnstartedServer(s.instance.FederationHandler())
+	// A server name that is a literal host:port is a place to reach a server, so the federation
+	// listener binds it. Without that, "who is this server name" and "where do I connect" disagree and
+	// two harness servers cannot federate with each other: every signature covers the server name that
+	// made it, so a request signed as 127.0.0.1:1 and delivered to a listener on a random port is not
+	// the same request. Complement's containers have this property for free — Docker resolves hs1 and
+	// hs2 to the ports they listen on — and a test that wants to stand in for two homeservers has to
+	// arrange it too, or it tests a link no deployment uses.
+	if hostPort, _, err := net.SplitHostPort(s.ServerName); err == nil && hostPort != "" {
+		if listener, listenErr := net.Listen("tcp", s.ServerName); listenErr == nil {
+			tls.Listener = listener
+		}
+	}
+	tls.StartTLS()
 	s.federationSrv = tls
 	s.federationClient = &http.Client{
 		Timeout:   30 * time.Second,

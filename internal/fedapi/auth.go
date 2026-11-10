@@ -1,8 +1,10 @@
 package fedapi
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
@@ -40,20 +42,88 @@ func (h *Handler) authenticatePeer(w http.ResponseWriter, r *http.Request) *fcli
 	// The verifier answers with its own response type. The body is forwarded when it already looks
 	// like a Matrix error and wrapped when it does not, so a peer always gets the shape it expects
 	// from this server.
+	//
+	// The reason is kept rather than replaced. "the request could not be authenticated" tells a peer
+	// nothing it can act on — its key may be unreachable, its signature stale, its server name
+	// misconfigured, its certificate untrusted — and every one of those is the peer's problem to fix
+	// and this server's only clue when two operators are comparing logs about a federation link that
+	// does not work. It is the peer's own signature under discussion, so nothing of this server's is
+	// given away by saying what went wrong.
+	reason := verificationReason(response.JSON)
+	message := "the request could not be authenticated"
+	if reason != "" {
+		message = message + ": " + reason
+	}
 	body, ok := response.JSON.(map[string]any)
 	if !ok || body["errcode"] == nil {
-		message := "the request could not be authenticated"
-		if raw, isString := response.JSON.(string); isString && raw != "" {
-			message = raw
-		}
 		body = map[string]any{"errcode": matrix.ErrForbidden, "error": message}
 	}
 	status := response.Code
 	if status == 0 {
 		status = http.StatusForbidden
 	}
-	slog.Debug("fedapi: refused an unauthenticated federation request",
-		"method", r.Method, "path", r.URL.Path, "status", status)
+	// The URI is logged as this server understood it, not as the peer wrote it, because that is the
+	// only way to see the pair disagree: the signature covers the method and the URI, so a peer that
+	// signed "/rooms/%21a%3Ahs1" and sent "/rooms/!a:hs1" (or the reverse) produces exactly this
+	// refusal, and nothing else in the log distinguishes it from a bad key.
+	slog.Warn("fedapi: refused a federation request that could not be authenticated",
+		"method", r.Method, "uri", r.URL.RequestURI(), "status", status,
+		"origin", authorizationOrigin(r.Header.Get("Authorization")),
+		"authorization", r.Header.Get("Authorization"), "reason", reason)
 	httpx.RespondJSON(w, status, body)
 	return nil
+}
+
+// authorizationOrigin pulls the claimed origin server name out of an Authorization header
+//
+//	Origin origin="hs1:8448", ...
+//
+// on a request whose signature never verified, which is the only time the claim is worth recording:
+// after that the request is anonymous, and "somebody who claimed to be hs1" is the most that can be
+// said about it. It is reported as a claim and never believed.
+// verificationReason extracts the sentence a signature check gave up with.
+//
+// The library answers failures with a handful of shapes rather than one: a bare string, a struct with a
+// "message" field (which is what util.MessageResponse builds, an anonymous struct, so a type assertion
+// for a map or a string misses it), or an object already in Matrix error form. Marshalling and reading
+// it back covers all three without guessing which one a given code path returns, and the sentence is
+// worth the round trip: without it this server knows only that a peer is not who it says, not whether
+// the peer's key was unreachable, its certificate untrusted or its server name misconfigured — and it is
+// the peer that has to fix whichever of those it was.
+func verificationReason(body any) string {
+	if body == nil {
+		return ""
+	}
+	if text, ok := body.(string); ok {
+		return text
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return ""
+	}
+	var detail struct {
+		Message string `json:"message"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		return ""
+	}
+	if detail.Message != "" {
+		return detail.Message
+	}
+	return detail.Error
+}
+
+func authorizationOrigin(header string) string {
+	const key = `origin="`
+	start := strings.Index(header, key)
+	if start < 0 {
+		return "(unnamed)"
+	}
+	rest := header[start+len(key):]
+	end := strings.IndexByte(rest, '"')
+	if end < 0 {
+		return "(unnamed)"
+	}
+	return rest[:end]
 }

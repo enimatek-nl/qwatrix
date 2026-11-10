@@ -776,3 +776,43 @@ The verification method changed too. Each guard now has a test that is confirmed
 removed** (`.agent-work/guard-probe.py`); three of them were passing without their guard when checked that
 way, and one "test" had never run at all because a `t.Fatalf` sat before the assertion that would have
 shown it. A passing test is not evidence until something proves it can fail.
+
+## M7 stage 2g: two containers, and a signature neither of them will admit to (2026-11-11k)
+
+The outbound join was measured against Complement, where it does **not** work, and the reason it took a
+container run to find is worth writing down: every federation test this project had was one real server
+against a fake peer that answers whatever it is asked. A client that mis-signs and a server that
+mis-verifies are invisible to each other in that arrangement.
+
+Measured against containers: `send_join` from hs2 to hs1 is refused by hs1 with
+`M_FORBIDDEN: Invalid request signature`. The same handshake between two qwatrix servers inside one
+process — `tests/api/federation_twoservers_test.go`, both real, over TLS — **passes**. So the join logic,
+key distribution and persistence work, and something about the container link does not. The candidate
+differences are named in T715: container server names carry no port (`hs1`, not `hs1:8448`) and the
+container listener serves HTTP/1.1 while `httptest` negotiates h2. The URI hs1 saw was
+
+    /_matrix/federation/v2/send_join/%21B6c4lb_87heAfYIQnjVrpg:hs1/$d_88big-…
+
+with a raw `:` where a spec-escaped room ID should read `%3A`, which is the kind of thing a signature
+covers and a client and a server can disagree about without either noticing until a second implementation
+checks.
+
+What was fixed on the way, independently of that bug:
+
+- **A peer now learns why its request was refused.** The verifier's explanation arrived in
+  `util.MessageResponse`'s anonymous `struct{ Message string }`, which matched neither of the two shapes
+  this server knew how to read, so every authentication failure was reported to the peer — and to the
+  log, at Debug — as the useless "the request could not be authenticated". It is logged at Warn now with
+  the URI, origin and `Authorization` header, and the reason is passed back to the peer. This is also how
+  T715 became visible at all.
+- **`tests/harness` binds a server's federation listener to the address its own server name names.**
+  A federation signature covers the server name that made it, so a test whose server name and listener
+  disagree is not two homeservers; it is one server and a lie. That is what made a real two-qwatrix
+  federation test possible, and the moment it existed it disagreed with the containers.
+- **`TestTwoHomeserversFederateAJoin`** drives hs1 → hs2 end to end with neither side stubbed, and is the
+  first test here that would notice this server signing something it cannot itself verify.
+
+Honest standing: `TestSync` passes against containers; `TestMessagesOverFederation` and
+`TestDeviceListUpdates` fail on T715; and a stale `bin/qwatrix` was measured for two runs before it was
+caught — the Complement image copies a pre-built binary, so `podman build` alone does **not** test the
+current tree. `make complement-image` (or build then build) is the only honest cycle.
