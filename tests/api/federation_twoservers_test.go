@@ -3,7 +3,6 @@ package api_test
 import (
 	"encoding/json"
 	"net"
-	"net/http"
 	"net/url"
 	"strconv"
 	"testing"
@@ -149,17 +148,8 @@ func TestAHomeserverNamedWithoutAPortFederatesAJoin(t *testing.T) {
 	hs1.FederationServer(t)
 	alice := hs1.Register(t, "alice", "pw-alice", false)
 
-	joined := hs1.PostJSON(t, "/_matrix/client/v3/join/"+url.PathEscape(roomID)+
-		"?server_name=localhost", alice.AccessToken, map[string]any{})
-	if joined.StatusCode != http.StatusOK {
-		// Skipped, not dropped: this is T715, it is the shape every real deployment uses, and the
-		// message below is what makes it findable. A red suite that stays red teaches nobody to read
-		// it, so the failure is recorded where it can be run on purpose (go test -run
-		// TestAHomeserverNamedWithoutAPortFederatesAJoin) instead of scrolling past.
-		t.Skipf("T715: a federated join through a server named without a port fails (%d): %s\n"+
-			"Run this test on purpose to see it: go test ./tests/api/ -count=1 -v -run %s",
-			joined.StatusCode, joined.Body, t.Name())
-	}
+	joined := alice.MustPostJSON(t, hs1, "/_matrix/client/v3/join/"+url.PathEscape(roomID)+
+		"?server_name=localhost", map[string]any{})
 	if got := roomIDFromJoinAnswer(t, joined.Body); got != roomID {
 		t.Fatalf("hs1 joined room %q, wanted %q", got, roomID)
 	}

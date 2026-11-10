@@ -838,3 +838,26 @@ Two facts found on the way, both worth keeping:
 - gomatrixserverlib reports `failed to fetch keys for some servers` with a count of fetchers consulted —
   the number that said "both my fetchers ran and neither answered", which is what turned the trail from
   "signature" to "key lookup".
+
+### T715 was a wrong port, and it was not only Complement's
+
+`dial tcp [::1]:443: connect: connection refused` — that is what "could not download key for
+`localhost`" turned out to be. The outbound library rewrites a federation URI's scheme from `matrix` to
+`https` itself, and this server's transport — whose job is the name-as-written policy — only added the
+federation port to URLs that still said `matrix`. By the time it looked, the scheme had already been
+changed and the port was gone, so a server name without one was dialed on **443**, where no homeserver
+listens.
+
+Which means the fault was never about Complement's naming, and never about signatures: **this server
+could only ever federate with a server whose name spells out a port.** `matrix.org`, `hs1`,
+`chat.example` — the ordinary case — were all unreachable, and every failure on the way looked like a
+key problem or a signature problem, because that is where the refused connection finally surfaced.
+
+Fix: no port in the host means the federation port, for a URL already marked `https` as much as for one
+still marked `matrix`. `TestAHomeserverNamedWithoutAPortFederatesAJoin` went from a checked-in reproduction
+to a passing test, and now asserts rather than skips.
+
+The chain that hid it is worth one line: a swallowed key-fetch error, a generic
+"could not download key", and a signature refusal that quoted the key rather than the connection. Each
+layer was technically accurate and the whole was unreadable; the fix that made this findable was logging
+the reason at each one.

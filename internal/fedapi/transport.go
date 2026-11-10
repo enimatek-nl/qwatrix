@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"time"
 
@@ -191,17 +192,37 @@ type matrixSchemeRoundTripper struct {
 }
 
 func (t *matrixSchemeRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.URL != nil && request.URL.Scheme == "matrix" {
-		// Cloned because a RoundTripper must not modify the request it was handed, and a URL with a
-		// scheme the transport layer does not know is still the caller's object.
-		rewritten := *request
-		target := *request.URL
-		target.Scheme = "https"
-		if target.Port() == "" {
-			target.Host = target.Hostname() + ":" + DefaultFederationPort
+	if request.URL != nil {
+		var target *url.URL
+		rewrite := false
+		if request.URL.Scheme == "matrix" {
+			clone := *request.URL
+			clone.Scheme = "https"
+			target, rewrite = &clone, true
+		} else {
+			target = request.URL
 		}
-		rewritten.URL = &target
-		request = &rewritten
+		// A server name with no port means the federation port, and this has to be applied to a URL
+		// that already says "https" as well as to one that says "matrix": the outbound library converts
+		// the scheme itself and does not fill the port in, so a peer called "matrix.org" or "hs1" —
+		// which is every name that does not spell one out, so nearly all of them — would otherwise be
+		// dialed on 443, where no homeserver is listening. A name that *does* carry a port is taken
+		// exactly as written, which is the whole documented policy: no SRV, no .well-known, no
+		// guessing.
+		//
+		// This transport only ever carries federation traffic, so "no port means the federation port"
+		// cannot catch anything else; a deployment running its federation listener somewhere else has
+		// to say so in the server name, and does.
+		if target.Scheme == "https" && target.Port() == "" && target.Hostname() != "" {
+			target.Host = target.Hostname() + ":" + DefaultFederationPort
+			rewrite = true
+		}
+		if rewrite {
+			// Cloned because a RoundTripper must not modify the request it was handed.
+			rewritten := *request
+			rewritten.URL = target
+			request = &rewritten
+		}
 	}
 	return t.next.RoundTrip(request)
 }
