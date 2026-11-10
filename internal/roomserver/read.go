@@ -1,0 +1,1507 @@
+package roomserver
+
+// Read paths: state, timeline pagination, members, room lists, aliases, directory.
+//
+// Reads are deliberately read-only and lock-free: they open no transaction and take no
+// write lock, because a homeserver's read volume is dominated by /sync and /messages, and
+// making those wait behind a room mutation would turn one slow write into a stall for every
+// polling client.
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"log/slog"
+	"net/http"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/spec"
+
+	"github.com/enimatek-nl/qwatrix/internal/events"
+	"github.com/enimatek-nl/qwatrix/internal/matrix"
+	"github.com/enimatek-nl/qwatrix/internal/store"
+)
+
+// RenderOptions are the caller-specific parts of rendering a stored event for one client.
+type RenderOptions struct {
+	// DeviceID selects whose transaction ID is echoed: only the device that sent an event
+	// sees its own unsigned.transaction_id.
+	DeviceID string
+	// Localpart and Membership are the reader's relationship to the room, which decides
+	// whether history is visible at all.
+	Localpart  string
+	Membership string
+	// MembershipStreamPos is the stream position of the reader's own member event, used by
+	// the history-visibility rules to decide what "before you joined" means.
+	MembershipStreamPos int64
+	// Forgotten is the reader's forgotten flag: they have left and then asked the server to
+	// forget the room.
+	Forgotten bool
+	// SkipTransactionID suppresses the transaction echo entirely (used over federation,
+	// where a client's transaction ID is nobody else's business).
+	SkipTransactionID bool
+	// Cache shares per-room reads between the events of one response. It is optional:
+	// without it every event pays for its own lookup, which is correct and slower.
+	Cache *RenderCache
+}
+
+// RenderCache holds the per-room reads that are the same for every event in one response.
+//
+// Its whole reason for existing is [Service.membershipTrail]: a `/sync` response can render a
+// couple of hundred events, and asking the database who the reader was before each of them
+// would turn one response into two hundred queries. The cached value is a membership *trail* —
+// a list of positions that never changes once written, because events are immutable and are
+// never deleted — so a per-request lifetime is more conservative than the data requires.
+type RenderCache struct {
+	service *Service
+	mu      sync.Mutex
+	trails  map[string][]store.MembershipChange
+}
+
+// NewRenderCache starts a cache for one response.
+func (s *Service) NewRenderCache() *RenderCache {
+	return &RenderCache{service: s, trails: map[string][]store.MembershipChange{}}
+}
+
+// membershipTrail returns the reader's membership changes in a room, oldest first.
+func (c *RenderCache) membershipTrail(ctx context.Context, roomID, stateKey string) ([]store.MembershipChange, error) {
+	if c == nil {
+		return c.service.store.Events.MembershipTrail(ctx, roomID, stateKey)
+	}
+	key := roomID + "\x00" + stateKey
+	c.mu.Lock()
+	trail, ok := c.trails[key]
+	c.mu.Unlock()
+	if ok {
+		return trail, nil
+	}
+	trail, err := c.service.store.Events.MembershipTrail(ctx, roomID, stateKey)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.trails == nil {
+		c.trails = map[string][]store.MembershipChange{}
+	}
+	c.trails[key] = trail
+	c.mu.Unlock()
+	return trail, nil
+}
+
+// MembershipAt returns the reader's room membership at the point of a given stream position,
+// which is MSC4115's `unsigned.membership`.
+//
+// The default is "leave", and the specification is explicit about why: a user who had no
+// `m.room.member` state at that moment was not in the room, and "leave" is what the membership
+// of a non-member is called. Note whose membership this is — the *reader's*, not the sender's.
+// The question a client is asking is "could I have seen this at the time", and that is a fact
+// about the reader's presence in the room, not about who was talking.
+func (s *Service) MembershipAt(ctx context.Context, roomID, localpart string, at int64, cache *RenderCache) (string, error) {
+	stateKey := matrix.UserID(localpart, s.cfg.ServerName)
+	trail, err := cache.membershipTrail(ctx, roomID, stateKey)
+	if err != nil {
+		return "", err
+	}
+	membership := matrix.MembershipLeave
+	for _, change := range trail {
+		if change.Position > at {
+			break
+		}
+		membership = change.Membership
+	}
+	return membership, nil
+}
+
+// Render turns a stored event into the JSON a client sees.
+//
+// The bytes of the stored event are the signed ones and are not rewritten; what happens
+// here is additive and lives under `unsigned`, which is the specification's designated
+// place for facts about an event that the sender cannot vouch for.
+func (s *Service) Render(ctx context.Context, row *store.EventRow, opts RenderOptions) (json.RawMessage, error) {
+	decorate := events.UnsignedOptions{EventID: row.EventID}
+	// A transaction ID belongs to the device that sent it, and to that device only.
+	if row.TransactionID != "" && !opts.SkipTransactionID &&
+		opts.DeviceID != "" && row.DeviceID == opts.DeviceID {
+		decorate.TransactionID = row.TransactionID
+	}
+	if row.ReceivedMS > 0 {
+		decorate.Now = time.Now()
+	}
+	// `unsigned.membership` is the reader's own standing in the room when this event was
+	// written. It is best-effort by the spec's own wording ("wherever practical"), so a
+	// lookup failure is not a reason to fail the read: the event itself is already answerable.
+	if opts.Localpart != "" {
+		if membership, err := s.MembershipAt(ctx, row.RoomID, opts.Localpart, row.ID, opts.Cache); err == nil {
+			decorate.Membership = membership
+		}
+	}
+	// The state this event replaced, for the `prev_content` a client needs to show that a
+	// room name or topic was edited rather than set.
+	if row.StateKey != nil {
+		entry, err := s.store.State.Get(ctx, row.RoomID, row.Type, *row.StateKey)
+		if err == nil && entry.ReplacesEventID != "" && entry.EventID == row.EventID {
+			if replaced, err := s.store.Events.ByEventID(ctx, entry.ReplacesEventID); err == nil {
+				decorate.ReplacesState = row.EventID
+				decorate.PrevContent = contentOf(replaced.JSON)
+			}
+		}
+	}
+	return s.events.Decorate(json.RawMessage(row.JSON), decorate)
+}
+
+// contentOf extracts an event's content block, for prev_content.
+func contentOf(eventJSON string) json.RawMessage {
+	var document struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(eventJSON), &document); err != nil {
+		return nil
+	}
+	return document.Content
+}
+
+// EventRow renders a single event for one reader.
+func (s *Service) EventRow(ctx context.Context, eventID string, opts RenderOptions) (json.RawMessage, error) {
+	row, err := s.store.Events.ByEventID(ctx, eventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Event %q does not exist", eventID)
+		}
+		return nil, err
+	}
+	return s.Render(ctx, row, opts)
+}
+
+// EventInRoom returns one event, checked against the reader's right to see the room.
+func (s *Service) EventInRoom(ctx context.Context, roomID, eventID string, opts RenderOptions) (json.RawMessage, error) {
+	// /event answers 404 for everything the caller may not see, including a room it may not
+	// read. This is the one read endpoint where 403 would be the wrong kindness: an event ID is
+	// a capability nobody handed the caller, so "no such event" is both the truth from their
+	// point of view and the answer that stops the endpoint from being used to ask whether a
+	// room or an event exists somewhere they have no standing.
+	notFound := func(reason string, args ...any) error {
+		return matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound, reason, args...)
+	}
+	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+		return nil, notFound("Event %q does not exist", eventID)
+	}
+	row, err := s.store.Events.ByEventID(ctx, eventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Event %q does not exist", eventID)
+		}
+		return nil, err
+	}
+	if row.RoomID != roomID {
+		// An event that exists but not in the room named: the spec's answer is "not found",
+		// because confirming which room an event lives in would leak the existence of a
+		// private room.
+		return nil, notFound("Event %q does not exist in this room", eventID)
+	}
+	if !s.visibleTo(ctx, roomID, row, opts) {
+		return nil, notFound("Event %q does not exist", eventID)
+	}
+	return s.Render(ctx, row, opts)
+}
+
+// visibleTo applies the part of the history rules that is about one event rather than the room:
+// under a visibility of "joined" or "invited", a member may read what happened while they were a
+// member, and not what happened before they arrived. Without this bound, joining a long-lived
+// room would hand a newcomer every message sent before their invite — which is precisely what
+// the room's creator chose to withhold, and the reason the bound is enforced at read time
+// instead of at write time, since the same event must become readable to somebody who joins and
+// stays.
+//
+// "shared" and "world_readable" deliberately have no such bound: those two exist to say that a
+// member may read the room's past.
+func (s *Service) visibleTo(ctx context.Context, roomID string, row *store.EventRow, opts RenderOptions) bool {
+	if cutoff := s.readCutoff(opts); cutoff > 0 && row.ID > cutoff {
+		// Written after this reader left. Their own leave event sits at the cutoff and is
+		// included — a member who could not see the event that ended their membership would
+		// have no way to explain the room's history stopping where it does.
+		return false
+	}
+	if opts.MembershipStreamPos == 0 || row.ID >= opts.MembershipStreamPos {
+		// Nothing before the reader's own membership to bound, or this event is not before it.
+		// A former member has already been bounded above by the cutoff.
+		return true
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		// A room this server cannot read is not a room whose events it will hand out.
+		return false
+	}
+	switch room.HistoryVisibility {
+	case matrix.HistoryInvited:
+		// The bound is the invite, not the join: an invitee who could not read what was sent
+		// between being invited and joining would lose messages their own client cannot
+		// recover, and "you may read from the moment you were told about this room" is the
+		// whole difference between invited and joined visibility.
+		//
+		// The invite's position is not on the membership row, which only holds the *current*
+		// membership, so it is read from the event stream: events are never deleted, so the
+		// user's earliest member event is the invitation itself.
+		invitePos, err := s.store.Events.FirstPositionOfState(ctx, roomID,
+			matrix.EventTypeMember, matrix.UserID(opts.Localpart, s.cfg.ServerName))
+		if err != nil || invitePos == 0 {
+			return false
+		}
+		return row.ID >= invitePos
+	case matrix.HistoryJoined, "":
+		return false
+	default:
+		return true
+	}
+}
+
+// readCutoff returns the stream position past which this reader may no longer read, or 0 when
+// nothing bounds them.
+//
+// A former member is entitled to the history they were part of, and to nothing after it: they
+// left, and the room's next events are not theirs. The membership row's position is the leave
+// event itself, so it serves as both the lower bound (what came before is theirs under a
+// "shared" rule) and the upper one.
+func (s *Service) readCutoff(opts RenderOptions) int64 {
+	if opts.Membership == matrix.MembershipLeave {
+		return opts.MembershipStreamPos
+	}
+	return 0
+}
+
+// checkReadable applies the room's history visibility to a read request.
+//
+// This is the single place history visibility is enforced for reads, so that /messages,
+// /event, /context and /relations cannot disagree about what a client may see.
+func (s *Service) checkReadable(ctx context.Context, roomID string, opts RenderOptions) error {
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return err
+	}
+	// Forgetting is the caller's own declaration that the room is no longer their business, so
+	// it ends read access even where the room's history rule would still allow it. A "forget"
+	// that only hid the room from one device's list, leaving the history one HTTP call away,
+	// would be a UI change sold as a data one — and the caller may have forgotten precisely
+	// because a colleague's machine should not still be able to read it.
+	if opts.Forgotten {
+		return matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+			"You have forgotten this room")
+	}
+
+	switch room.HistoryVisibility {
+	case matrix.HistoryWorldReadable:
+		return nil
+	case matrix.HistoryJoined, "":
+		switch opts.Membership {
+		case matrix.MembershipJoin, matrix.MembershipLeave:
+			// Leaving does not unsee what a member saw. "joined" is the room saying "anybody
+			// who was in here may read that stretch of history", and a former member is
+			// still one of those people — which is why a client can still render a room the
+			// user left, and why deleting their access at the door would lose messages their
+			// own device already holds. The bound is temporal, not a refusal: see
+			// [Service.readCutoff].
+			return nil
+		}
+		return matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+			"This room's history is only readable by its members")
+	case matrix.HistoryInvited:
+		switch opts.Membership {
+		case matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipLeave:
+			return nil
+		}
+		return matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+			"This room's history is only readable by members")
+	case matrix.HistoryShared:
+		switch opts.Membership {
+		case matrix.MembershipJoin, matrix.MembershipLeave:
+			// "shared" means members keep reading what they were part of; a ban ends that,
+			// and an invite has not begun it.
+			return nil
+		}
+		return matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+			"This room's history is only readable by members")
+	default:
+		// An unknown visibility value can only come from a room this server did not create.
+		// Refusing is the safe answer; a homeserver that guesses readable is the one that
+		// ends up in a security report.
+		if opts.Membership == matrix.MembershipJoin {
+			return nil
+		}
+		return matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+			"This room's history visibility is not understood by this homeserver")
+	}
+}
+
+// StateEventRows returns a room's current state as rows.
+func (s *Service) StateEventRows(ctx context.Context, roomID string, opts RenderOptions) ([]json.RawMessage, error) {
+	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+		return nil, err
+	}
+	// A former member is answered from the state as it stood when they left, because "the
+	// room's current state" is a fact they no longer have a right to. Rebuilding it is cheap
+	// enough to do here rather than to store: the events are the history.
+	rows, err := s.stateRowsFor(ctx, roomID, opts)
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) == 0 {
+		return []json.RawMessage{}, nil
+	}
+	out := make([]json.RawMessage, 0, len(rows))
+	for i := range rows {
+		event, renderErr := s.Render(ctx, &rows[i], opts)
+		if renderErr != nil {
+			return nil, renderErr
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// stateRowsFor returns the room's state for one reader: the live state for a member, and the
+// snapshot at their leave for a former member. Both come back ordered by (type, state_key), so
+// two identical rooms produce byte-identical responses and a client comparing two syncs does not
+// see a state "change" that is only reordering.
+func (s *Service) stateRowsFor(ctx context.Context, roomID string, opts RenderOptions) ([]store.EventRow, error) {
+	if cutoff := s.readCutoff(opts); cutoff > 0 {
+		return s.store.Events.StateSnapshot(ctx, roomID, cutoff)
+	}
+	state, err := s.store.State.All(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	if len(state) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(state))
+	for _, entry := range state {
+		ids = append(ids, entry.EventID)
+	}
+	rows, err := s.store.Events.ByEventIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]store.EventRow, len(rows))
+	for _, row := range rows {
+		byID[row.EventID] = row
+	}
+	ordered := make([]store.EventRow, 0, len(state))
+	for _, entry := range state {
+		if row, ok := byID[entry.EventID]; ok {
+			ordered = append(ordered, row)
+		}
+	}
+	return ordered, nil
+}
+
+// StateEventRow returns one state tuple, or [store.ErrNotFound]-shaped Matrix error.
+func (s *Service) StateEventRow(ctx context.Context, roomID, eventType, stateKey string, opts RenderOptions) (json.RawMessage, error) {
+	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+		return nil, err
+	}
+	// A former member is shown what the room said at the time, not what it says now: the
+	// current value of a state key can be written entirely after they left, and handing it to
+	// them would sell back the one thing leaving is supposed to stop.
+	if cutoff := s.readCutoff(opts); cutoff > 0 {
+		row, err := s.store.Events.StateAt(ctx, roomID, eventType, stateKey, cutoff)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+					"This room has no %q event", eventType)
+			}
+			return nil, err
+		}
+		return s.Render(ctx, row, opts)
+	}
+	entry, err := s.store.State.Get(ctx, roomID, eventType, stateKey)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"This room has no %q event", eventType)
+		}
+		return nil, err
+	}
+	row, err := s.store.Events.ByEventID(ctx, entry.EventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"This room has no %q event", eventType)
+		}
+		return nil, err
+	}
+	return s.Render(ctx, row, opts)
+}
+
+// RoomPDUs returns a room's current state as parsed events, for services that reason about
+// state rather than serve it.
+func (s *Service) RoomPDUs(ctx context.Context, roomID string) ([]gomatrixserverlib.PDU, error) {
+	return s.stateAt(ctx, roomID)
+}
+
+// Pagination directions.
+const (
+	DirectionForward  = "f"
+	DirectionBackward = "b"
+)
+
+// errBadStreamToken is the sentinel for an unparsable pagination token.
+var errBadStreamToken = errors.New("roomserver: unparsable stream token")
+
+// Filter values of /messages.
+const (
+	FilterRecent = "recent"
+	FilterFuzzy  = "fuzzy"
+	FilterAll    = ""
+)
+
+// MessagesRequest is a GET /messages request.
+type MessagesRequest struct {
+	RoomID    string
+	From      string
+	To        string
+	Direction string
+	Limit     int
+	Filter    string
+	// LazyLoadMembers asks for the state section to be trimmed to the member events needed to
+	// render the chunk, which is MSC1337 and what clients send.
+	LazyLoadMembers bool
+	// ContainsURL keeps only the events whose content carries a URL (or, when false, only those
+	// that do not). Nil is a third state meaning "the caller did not ask", which is every event.
+	ContainsURL *bool
+	Reader      RenderOptions
+}
+
+// MessagesResponse is the response body.
+type MessagesResponse struct {
+	Start string            `json:"start"`
+	Chunk []json.RawMessage `json:"chunk"`
+	// End is the token to continue paging with, omitted when the end of the readable
+	// timeline has been reached — which is how a client knows to stop.
+	End string `json:"end,omitempty"`
+	// State is the room state at the start of the chunk, which is what lets a client
+	// render the events it is about to show without a second round trip.
+	State []json.RawMessage `json:"state,omitempty"`
+}
+
+// Messages paginates a room's timeline.
+//
+// Tokens are the literal stream positions, which is an implementation detail the
+// specification leaves open ("opaque strings") and which pays for itself: a token can be
+// compared, stored and validated without a lookup table that can drift from the events it
+// refers to.
+func (s *Service) Messages(ctx context.Context, req MessagesRequest) (*MessagesResponse, error) {
+	if err := s.checkReadable(ctx, req.RoomID, req.Reader); err != nil {
+		// A room this server has never heard of is answered as "you may not read this", not
+		// as "no such room". /messages is served to a caller who is presumed to be a member,
+		// and the spec's own wording for this endpoint is M_FORBIDDEN; more importantly, a
+		// 404 is an existence oracle — it lets anybody walk a list of candidate room IDs and
+		// keep the ones that answer differently, which is exactly the enumeration a private
+		// room's ID is supposed to prevent.
+		if apiErr, ok := matrix.AsAPIError(err); ok && apiErr.Status == http.StatusNotFound {
+			return nil, matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+				"You are not permitted to read the history of this room")
+		}
+		return nil, err
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	current, err := s.store.Events.MaxPositionInRoom(ctx, req.RoomID)
+	if err != nil {
+		return nil, err
+	}
+
+	from, err := parseStreamToken(req.From)
+	if err != nil {
+		return nil, err
+	}
+	// `from` is optional, and the specification says a request without one starts from the
+	// current state of the room. Reading an absent token as position zero would be a silently
+	// different question — "what happened before anything" — and a client that simply asks for
+	// the latest page gets an empty answer and a reason to think the room is empty.
+	if req.From == "" || from < 0 {
+		from = current
+	}
+	to, err := parseStreamToken(req.To)
+	if err != nil {
+		return nil, err
+	}
+
+	// A former member reads the room as it was when they left, so the range they can ask for
+	// ends there too. Without this, a departed member could page forward from before their
+	// leave into events written after it — the per-event check in [Service.visibleTo] hides
+	// them from the chunk, but the response's `end` token and the paging loop would still walk
+	// through private history, and a room's `from`/`end` pair is a capability the client is
+	// expected to be able to hand to a friend.
+	if cutoff := s.readCutoff(req.Reader); cutoff > 0 {
+		if from > cutoff || from <= 0 {
+			from = cutoff
+		}
+		if to > cutoff || to == 0 {
+			to = cutoff
+		}
+	}
+
+	// `dir` defaults to backward, which is what "give me the end of the room" means: a client
+	// with no token wants the newest events, and the oldest-first ordering of the chunk is how a
+	// timeline is displayed.
+	direction := req.Direction
+	if direction == "" {
+		direction = DirectionBackward
+	}
+	query := store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: limit}
+	switch direction {
+	case DirectionBackward:
+		// A backward read includes the event named by `from`. The token a client has is a
+		// sync token, and a sync token names the newest event the client already holds — so a
+		// client asking to page backward from where it stands is asking for a page that starts
+		// with that event. Excluding it loses one event per page, and the client has no way to
+		// notice: the history simply has a hole where its own last message was.
+		query.Before = from + 1
+		query.OrderDesc = true
+	case DirectionForward:
+		query.After = from
+		if to > 0 {
+			query.Before = to + 1
+		}
+	default:
+		return nil, matrix.NewInvalidParam("dir must be %q or %q", DirectionForward, DirectionBackward)
+	}
+
+	if req.Filter == FilterRecent && req.Reader.MembershipStreamPos > 0 {
+		// "recent" is defined relative to when the reader joined, which the membership row
+		// records as a stream position.
+		if query.After < req.Reader.MembershipStreamPos {
+			query.After = req.Reader.MembershipStreamPos
+		}
+		query.Before = 0
+		query.OrderDesc = false
+	}
+
+	rows, err := s.store.Events.Range(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	// The `contains_url` filter runs on the way out, before the page is cut, for the same reason
+	// the sync filters do: a client that asked for the five newest files wants five files, not
+	// whichever five events happened to be newest. Reading a wider window is the cost, bounded so
+	// that a filter cannot turn one page request into a scan of a year of history.
+	if req.ContainsURL != nil {
+		query.Limit = 0
+		rows, err = s.store.Events.Range(ctx, boundedEventQuery(query))
+		if err != nil {
+			return nil, err
+		}
+		matching := rows[:0]
+		for _, row := range rows {
+			if eventHasURL(row) == *req.ContainsURL {
+				matching = append(matching, row)
+			}
+		}
+		rows = matching
+		if len(rows) > limit {
+			// Still in query order, so this keeps the near end: newest for a backward read,
+			// oldest for a forward one.
+			rows = rows[:limit]
+		}
+	}
+
+	// A backward read comes back newest-first and is answered oldest-first, matching the
+	// direction the client is walking.
+	if query.OrderDesc {
+		for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+			rows[left], rows[right] = rows[right], rows[left]
+		}
+	}
+
+	// The pair of tokens a client uses to continue paging. A read that found nothing still
+	// has to answer with a usable pair, because a client paging through an empty range
+	// relies on `end` being where it left off — otherwise it loops forever.
+	// `end` is the token to pass as `from` to continue, and it is omitted once there is
+	// nowhere left to go — the specification makes the omission the signal that pagination is
+	// finished, and a client that is always given a token keeps asking for a page it has
+	// already seen. A backward page therefore ends one *below* its oldest event, so the next
+	// page starts below it and no event is served twice.
+	response := &MessagesResponse{
+		Start: formatStreamToken(from),
+		Chunk: []json.RawMessage{},
+	}
+	switch direction {
+	case DirectionBackward:
+		earliest, err := s.store.Events.MinPositionInRoom(ctx, req.RoomID)
+		if err != nil {
+			return nil, err
+		}
+		if len(rows) > 0 {
+			if rows[0].ID > earliest {
+				response.End = formatStreamToken(rows[0].ID - 1)
+			}
+		}
+	case DirectionForward:
+		if len(rows) > 0 {
+			if rows[len(rows)-1].ID < current {
+				response.End = formatStreamToken(rows[len(rows)-1].ID)
+			}
+		}
+	}
+	for i := range rows {
+		event, err := s.Render(ctx, &rows[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		response.Chunk = append(response.Chunk, event)
+	}
+	// The state of the room as it stood at the far end of the chunk. For a backward read
+	// that is the oldest event returned, which is the state the earliest returned event was
+	// created against.
+	stateRows, err := s.stateRowsFor(ctx, req.RoomID, req.Reader)
+	if err != nil {
+		return nil, err
+	}
+	if req.LazyLoadMembers {
+		// A client that asked to load members lazily is saying it already has the member
+		// events it needs and only wants the ones it cannot render the chunk without. For a
+		// room with a thousand members that is the difference between a page of messages and
+		// a page of state: every event in the chunk was sent by somebody, and those few
+		// member events are all the response has to carry.
+		stateRows = membersOfSenders(stateRows, rows)
+	}
+	for i := range stateRows {
+		event, err := s.Render(ctx, &stateRows[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		response.State = append(response.State, event)
+	}
+	return response, nil
+}
+
+// membersOfSenders trims a state list to the `m.room.member` events of the devices and users that
+// wrote the given events, which is everything a client needs to attribute the chunk.
+func membersOfSenders(stateRows []store.EventRow, events []store.EventRow) []store.EventRow {
+	senders := make(map[string]bool, len(events))
+	for _, row := range events {
+		senders[row.Sender] = true
+	}
+	out := make([]store.EventRow, 0, len(senders))
+	for _, row := range stateRows {
+		if row.Type != matrix.EventTypeMember || row.StateKey == nil {
+			continue
+		}
+		if senders[*row.StateKey] {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+// parseStreamToken reads a pagination or sync token.
+//
+// Both "s123" and "123" are accepted, and an unparsable token is [matrix.ErrUnknownToken]
+// for /sync (the spec's answer for a bad `since`) — callers map it.
+func parseStreamToken(token string) (int64, error) {
+	trimmed := strings.TrimSpace(strings.TrimPrefix(token, "s"))
+	if trimmed == "" {
+		return 0, nil
+	}
+	value, err := strconv.ParseInt(trimmed, 10, 64)
+	if err != nil {
+		// The error value is a sentinel: /messages wants M_INVALID_PARAM for a bad token
+		// while /sync must answer the spec's 401 M_UNKNOWN_TOKEN, so the caller maps it.
+		return 0, errBadStreamToken
+	}
+	return value, nil
+}
+
+// formatStreamToken writes a pagination token.
+func formatStreamToken(position int64) string {
+	return "s" + strconv.FormatInt(position, 10)
+}
+
+// JoinedRooms lists the rooms a user is in, for /joined_rooms and /sync's room list.
+func (s *Service) JoinedRooms(ctx context.Context, localpart string) ([]string, error) {
+	rooms, err := s.store.Memberships.RoomsForUser(ctx, localpart,
+		matrix.MembershipJoin, matrix.MembershipInvite, matrix.MembershipLeave,
+		matrix.MembershipBan, matrix.MembershipKnock)
+	if err != nil {
+		return nil, err
+	}
+	return rooms, nil
+}
+
+// MembersRequest is a GET /rooms/{roomID}/members or /joined_members request.
+type MembersRequest struct {
+	RoomID string
+	// NotMembership excludes memberships (comma-separated in the query string).
+	NotMembership []string
+	// Membership restricts to a single membership value.
+	Membership string
+	// FuzzyMemberDataFields keeps fields the client did not ask to filter on; it changes
+	// only which fields are returned, not which members.
+	FuzzyMemberDataFields bool
+	EventFormat           string
+	// Terse asks for trimmed member events (content reduced to the membership). It is off
+	// unless a client names the extension, because a client that did not ask for trimmed
+	// events is a client that wants the display name and anything else the member put in
+	// its own event content.
+	Terse  bool
+	Reader RenderOptions
+}
+
+// MemberEntry is one member of a room, in the shape /members returns.
+type MemberEntry struct {
+	Type           string          `json:"type"`
+	StateKey       string          `json:"state_key"`
+	Content        json.RawMessage `json:"content"`
+	Sender         string          `json:"sender"`
+	EventID        string          `json:"event_id,omitempty"`
+	OriginServerTS int64           `json:"origin_server_ts,omitempty"`
+	Unsigned       json.RawMessage `json:"unsigned,omitempty"`
+}
+
+// Members lists a room's members as m.room.member events, honouring the membership filters.
+func (s *Service) Members(ctx context.Context, req MembersRequest) ([]json.RawMessage, error) {
+	if err := s.checkReadable(ctx, req.RoomID, req.Reader); err != nil {
+		return nil, err
+	}
+	// A former member is shown the room's membership as of the moment they left. The live
+	// membership table is a current-state cache, and every change since their departure is
+	// information they gave up the right to — including who joined afterwards, which is the
+	// case a sytest here pins by name.
+	if cutoff := s.readCutoff(req.Reader); cutoff > 0 {
+		return s.membersAt(ctx, req, cutoff)
+	}
+	memberships := []string{}
+	if req.Membership != "" {
+		memberships = append(memberships, req.Membership)
+	}
+	rows, err := s.store.Memberships.List(ctx, req.RoomID, memberships, req.NotMembership)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]json.RawMessage, 0, len(rows))
+	for _, membership := range rows {
+		entry, err := s.store.State.Get(ctx, req.RoomID, matrix.EventTypeMember,
+			memberStateKey(membership.Localpart, s.cfg.ServerName))
+		if err != nil {
+			// A membership row without a member event is a cache entry whose event has been
+			// forgotten; skipping it is correct because the event is the truth.
+			continue
+		}
+		eventRow, err := s.store.Events.ByEventID(ctx, entry.EventID)
+		if err != nil {
+			continue
+		}
+		event, err := s.Render(ctx, eventRow, req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		if req.Terse {
+			event = terseEvent(event)
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// terseEvent is the trimmed member event an opt-in /members request asks for.
+//
+// Trimming is a bandwidth optimisation the specification permits and no client asks for, so
+// [MembersRequest.Terse] defaults to false and a client has to name the extension. The
+// trimmed form keeps type and sender as well as the membership: those three are what make the
+// row identifiable as a member event, and a "trimmed" event a client cannot attribute is
+// simply a broken event. Every other content key — a display name, and anything a client put
+// there itself — is dropped, which is the whole point and the whole cost of trimming.
+func terseEvent(event json.RawMessage) json.RawMessage {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(event, &document); err != nil {
+		return event
+	}
+	terse := map[string]json.RawMessage{}
+	for _, key := range []string{"type", "sender", "room_id"} {
+		if value, ok := document[key]; ok {
+			terse[key] = value
+		}
+	}
+	if content, ok := document["content"]; ok {
+		var contentFields map[string]json.RawMessage
+		if err := json.Unmarshal(content, &contentFields); err == nil {
+			trimmed := map[string]json.RawMessage{}
+			if membership, ok := contentFields["membership"]; ok {
+				trimmed["membership"] = membership
+			}
+			if encoded, err := json.Marshal(trimmed); err == nil {
+				terse["content"] = encoded
+			}
+		}
+	}
+	if stateKey, ok := document["state_key"]; ok {
+		terse["state_key"] = stateKey
+	}
+	var out bytes.Buffer
+	encoder := json.NewEncoder(&out)
+	// Escaping off: this document embeds the event's own content bytes, and re-escaping
+	// them would change the strings the client is comparing against.
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(terse); err != nil {
+		return event
+	}
+	return bytes.TrimRight(out.Bytes(), "\n")
+}
+
+// AliasesOfRoom returns the room's aliases.
+func (s *Service) AliasesOfRoom(ctx context.Context, roomID string) ([]string, error) {
+	aliases, err := s.store.Aliases.ListByRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(aliases))
+	for _, alias := range aliases {
+		out = append(out, alias.Alias)
+	}
+	return out, nil
+}
+
+// ResolveAlias resolves a local alias to a room ID.
+func (s *Service) ResolveAlias(ctx context.Context, alias string) (string, error) {
+	entry, err := s.store.Aliases.Get(ctx, alias)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return "", matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Alias %q does not exist on this homeserver", alias)
+		}
+		return "", err
+	}
+	return entry.RoomID, nil
+}
+
+// CreateAlias points a new alias at a room.
+func (s *Service) CreateAlias(ctx context.Context, alias, roomID, creatorLocalpart string) error {
+	if _, err := s.store.Rooms.Get(ctx, roomID); err != nil {
+		if store.IsNotFound(err) {
+			return matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return err
+	}
+	err := s.store.Aliases.Create(ctx, &store.RoomAlias{
+		Alias:            alias,
+		RoomID:           roomID,
+		CreatorLocalpart: creatorLocalpart,
+	})
+	if store.IsAlreadyExists(err) {
+		return matrix.NewAPIError(http.StatusConflict, matrix.ErrRoomInUse,
+			"Alias %q is already in use", alias)
+	}
+	if err != nil {
+		return err
+	}
+	s.notifier.Publish()
+	return nil
+}
+
+// DeleteAlias removes an alias. Only the room's creator or an admin of the room may do so,
+// which is what the room's power levels say rather than what this server guesses.
+func (s *Service) DeleteAlias(ctx context.Context, alias, localpart string) error {
+	entry, err := s.store.Aliases.Get(ctx, alias)
+	if err != nil {
+		if store.IsNotFound(err) {
+			// The specification answers 404 M_NOT_FOUND: a caller deleting an alias it
+			// believed existed is wrong about the room's addresses, and silence would hide
+			// that from it.
+			return matrix.NewNotFound("Alias %q was not found", alias)
+		}
+		return err
+	}
+	if entry.CreatorLocalpart != localpart {
+		allowed, err := s.hasPower(ctx, entry.RoomID, localpart, 50)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return matrix.NewForbidden("Only the creator or a room admin can delete this alias")
+		}
+	}
+	if err := s.store.Aliases.Delete(ctx, alias); err != nil {
+		return err
+	}
+	if err := s.clearCanonicalAlias(ctx, entry.RoomID, localpart, alias); err != nil {
+		// The alias is gone either way; failing the whole call here would leave the caller
+		// believing nothing happened and re-adding an alias that is already deleted.
+		slog.Warn("roomserver: could not clear the canonical alias after deleting it",
+			"room_id", entry.RoomID, "alias", alias, "error", err)
+	}
+	s.notifier.Publish()
+	return nil
+}
+
+// clearCanonicalAlias removes a deleted alias from the room's own claim about what it is
+// called.
+//
+// The alias is already gone from the directory, so a room whose m.room.canonical_alias still
+// names it points at nothing: clients keep showing a link that resolves to a 404, and the only
+// thing that can fix the claim is an event, because that is what the claim is. When the deleted
+// alias was the whole claim the content becomes an empty object — the room saying it has no
+// preferred name — which is also what clients watch for to drop a name they are showing.
+func (s *Service) clearCanonicalAlias(ctx context.Context, roomID, localpart, alias string) error {
+	entry, err := s.store.State.Get(ctx, roomID, matrix.EventTypeCanonicalAlias, "")
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil // the room never claimed a name
+		}
+		return err
+	}
+	row, err := s.store.Events.ByEventID(ctx, entry.EventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil
+		}
+		return err
+	}
+	var document struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(row.JSON), &document); err != nil {
+		return nil
+	}
+	var claim struct {
+		Alias      string   `json:"alias"`
+		AltAliases []string `json:"alt_aliases"`
+	}
+	if err := json.Unmarshal(document.Content, &claim); err != nil {
+		return nil
+	}
+	if claim.Alias != alias && !containsString(claim.AltAliases, alias) {
+		return nil // this alias was not part of the claim
+	}
+
+	remaining := map[string]any{}
+	if claim.Alias != "" && claim.Alias != alias {
+		remaining["alias"] = claim.Alias
+	}
+	var kept []string
+	for _, candidate := range claim.AltAliases {
+		if candidate != alias {
+			kept = append(kept, candidate)
+		}
+	}
+	if len(kept) > 0 {
+		remaining["alt_aliases"] = kept
+	}
+
+	content, err := json.Marshal(remaining)
+	if err != nil {
+		return err
+	}
+	_, err = s.SendStateEvent(ctx, Sender{
+		Localpart: localpart,
+		UserID:    matrix.UserID(localpart, s.cfg.ServerName),
+	}, roomID, matrix.EventTypeCanonicalAlias, "", content)
+	return err
+}
+
+// containsString reports whether a slice holds a value.
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPower reports whether a local part meets a power level threshold in a room.
+func (s *Service) hasPower(ctx context.Context, roomID, localpart string, required int64) (bool, error) {
+	state, err := s.stateAt(ctx, roomID)
+	if err != nil {
+		return false, err
+	}
+	levels, err := s.events.PowerLevels(state)
+	if err != nil {
+		return false, err
+	}
+	return levels.UserLevel(spec.SenderID(matrix.UserID(localpart, s.cfg.ServerName))) >= required, nil
+}
+
+// PublicRoomsRequest is a GET /publicRooms or GET /directory/list/room request.
+type PublicRoomsRequest struct {
+	Limit       int
+	Since       string
+	Filter      string
+	GuestAccess string
+}
+
+// PublicRoomsPage is the response.
+type PublicRoomsPage struct {
+	Chunk      []PublicRoom `json:"chunk"`
+	NextBatch  string       `json:"next_batch,omitempty"`
+	PrevBatch  string       `json:"prev_batch,omitempty"`
+	TotalRooms int64        `json:"total_rooms,omitempty"`
+}
+
+// PublicRoom is one entry of the room directory.
+type PublicRoom struct {
+	RoomID         string   `json:"room_id"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Name           string   `json:"name,omitempty"`
+	Topic          string   `json:"topic,omitempty"`
+	AvatarURL      string   `json:"avatar_url,omitempty"`
+	CanonicalAlias string   `json:"canonical_alias,omitempty"`
+	NumJoined      int64    `json:"num_joined_members"`
+	// WorldReadable has no omitempty: the key is part of the room-directory contract, and a
+	// client that has to handle its absence cannot tell "not world readable" apart from a
+	// server that did not answer.
+	WorldReadable bool   `json:"world_readable"`
+	GuestCanJoin  bool   `json:"guest_can_join"`
+	JoinRule      string `json:"join_rule,omitempty"`
+	RoomVersion   string `json:"room_version,omitempty"`
+	Space         bool   `json:"space,omitempty"`
+}
+
+// PublicRooms lists rooms this server publishes in the room directory.
+func (s *Service) PublicRooms(ctx context.Context, req PublicRoomsRequest) (*PublicRoomsPage, error) {
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	rooms, err := s.store.Rooms.ListWithJoinRule(ctx,
+		[]string{matrix.JoinRulePublic, matrix.JoinRuleKnock, matrix.JoinRuleKnockRestricted}, limit+1, req.Since)
+	if err != nil {
+		return nil, err
+	}
+
+	page := &PublicRoomsPage{Chunk: []PublicRoom{}, PrevBatch: req.Since}
+	for i, room := range rooms {
+		if i == limit {
+			page.NextBatch = formatRoomCursor(rooms[i-1].ID)
+			break
+		}
+		if req.Filter != "" && !strings.Contains(strings.ToLower(room.Name+" "+room.Topic+" "+room.CanonicalAlias),
+			strings.ToLower(req.Filter)) {
+			continue
+		}
+		if req.GuestAccess == "can_join" && room.GuestAccess != matrix.GuestCanJoin {
+			continue
+		}
+		if !room.Publishable {
+			// A room this server has unpublished is not listed even though its join rule
+			// still lets anybody in — the two are separate decisions in the specification.
+			continue
+		}
+		aliases, err := s.AliasesOfRoom(ctx, room.ID)
+		if err != nil {
+			return nil, err
+		}
+		entry := PublicRoom{
+			RoomID:         room.ID,
+			Aliases:        aliases,
+			Name:           room.Name,
+			Topic:          room.Topic,
+			AvatarURL:      room.AvatarURL,
+			CanonicalAlias: room.CanonicalAlias,
+			NumJoined:      room.JoinedCount,
+			GuestCanJoin:   room.GuestAccess == matrix.GuestCanJoin,
+			WorldReadable:  room.HistoryVisibility == matrix.HistoryWorldReadable,
+			JoinRule:       room.JoinRule,
+			RoomVersion:    room.Version,
+			Space:          room.RoomType == matrix.RoomTypeSpace,
+		}
+		page.Chunk = append(page.Chunk, entry)
+	}
+	return page, nil
+}
+
+// SetRoomDirectoryVisibility publishes or unpublishes a room.
+func (s *Service) SetRoomDirectoryVisibility(ctx context.Context, roomID, visibility, localpart string) error {
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return err
+	}
+	switch visibility {
+	case matrix.DirectoryVisibilityPrivate, matrix.DirectoryVisibilityPublic, matrix.DirectoryVisibilityUnlisted:
+	default:
+		return matrix.NewInvalidParam("visibility must be one of %q, %q or %q",
+			matrix.DirectoryVisibilityPrivate, matrix.DirectoryVisibilityPublic, matrix.DirectoryVisibilityUnlisted)
+	}
+	if err := s.checkRoomAdmin(ctx, room, localpart); err != nil {
+		return err
+	}
+	listed := visibility == matrix.DirectoryVisibilityPublic
+	if err := s.store.Rooms.Update(ctx, roomID, map[string]any{"publishable": listed}); err != nil {
+		return err
+	}
+	// The alias keeps the same flag, so that resolving a room through its directory entry
+	// and through the room itself agree.
+	if err := s.store.Aliases.SetListedInDirectory(ctx, roomID, listed); err != nil {
+		return err
+	}
+	s.notifier.Publish()
+	return nil
+}
+
+// RoomDirectoryVisibility reads a room's directory visibility.
+func (s *Service) RoomDirectoryVisibility(ctx context.Context, roomID string) (string, error) {
+	aliases, err := s.store.Aliases.ListByRoom(ctx, roomID)
+	if err != nil {
+		return "", err
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return "", matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return "", err
+	}
+	if room.Publishable {
+		return matrix.DirectoryVisibilityPublic, nil
+	}
+	switch room.JoinRule {
+	case matrix.JoinRulePublic, matrix.JoinRuleKnock, matrix.JoinRuleKnockRestricted:
+		// Joinable but not advertised: the specification's third value, and the one a
+		// client cannot infer from the join rule alone.
+		return matrix.DirectoryVisibilityUnlisted, nil
+	}
+	_ = aliases
+	return matrix.DirectoryVisibilityPrivate, nil
+}
+
+// checkRoomAdmin requires the caller to be the room creator or hold the admin level.
+func (s *Service) checkRoomAdmin(ctx context.Context, room *store.Room, localpart string) error {
+	if room.CreatorLocalpart == localpart {
+		return nil
+	}
+	allowed, err := s.hasPower(ctx, room.ID, localpart, 50)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return matrix.NewForbidden("This action requires room admin rights")
+	}
+	return nil
+}
+
+// RoomSummary is the /rooms/{roomID}/summary payload.
+type RoomSummary struct {
+	RoomID             string   `json:"room_id"`
+	Name               string   `json:"name,omitempty"`
+	Topic              string   `json:"topic,omitempty"`
+	AvatarURL          string   `json:"avatar_url,omitempty"`
+	CanonicalAlias     string   `json:"canonical_alias,omitempty"`
+	Aliases            []string `json:"aliases,omitempty"`
+	NumJoined          int64    `json:"num_joined_members"`
+	WorldReadable      bool     `json:"world_readable,omitempty"`
+	GuestCanJoin       bool     `json:"guest_can_join,omitempty"`
+	JoinRule           string   `json:"join_rule,omitempty"`
+	RoomVersion        string   `json:"room_version,omitempty"`
+	MembershipOf       string   `json:"membership,omitempty"`
+	AllowedRoomVersion string   `json:"allowed_room_version,omitempty"`
+}
+
+// Summary describes a room for /summary and for the room hierarchy.
+func (s *Service) Summary(ctx context.Context, roomID string, opts RenderOptions) (*RoomSummary, error) {
+	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+		return nil, err
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, err
+	}
+	aliases, err := s.AliasesOfRoom(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	return &RoomSummary{
+		RoomID:             room.ID,
+		Name:               room.Name,
+		Topic:              room.Topic,
+		AvatarURL:          room.AvatarURL,
+		CanonicalAlias:     room.CanonicalAlias,
+		Aliases:            aliases,
+		NumJoined:          room.JoinedCount,
+		WorldReadable:      room.HistoryVisibility == matrix.HistoryWorldReadable,
+		GuestCanJoin:       room.GuestAccess == matrix.GuestCanJoin,
+		JoinRule:           room.JoinRule,
+		RoomVersion:        room.Version,
+		MembershipOf:       opts.Membership,
+		AllowedRoomVersion: room.Version,
+	}, nil
+}
+
+// formatRoomCursor is the paging cursor of a list ordered by room ID.
+func formatRoomCursor(roomID string) string { return roomID }
+
+// membersAt answers /members for a reader whose access ended at a known position, from the
+// room's state at that moment.
+func (s *Service) membersAt(ctx context.Context, req MembersRequest, cutoff int64) ([]json.RawMessage, error) {
+	snapshot, err := s.store.Events.StateSnapshot(ctx, req.RoomID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]json.RawMessage, 0, len(snapshot))
+	for i := range snapshot {
+		row := snapshot[i]
+		if row.Type != matrix.EventTypeMember {
+			continue
+		}
+		var content struct {
+			Membership string `json:"membership"`
+		}
+		if err := json.Unmarshal([]byte(row.JSON), &content); err != nil {
+			continue
+		}
+		if req.Membership != "" && content.Membership != req.Membership {
+			continue
+		}
+		if !matchesNotMembership(req.NotMembership, content.Membership) {
+			continue
+		}
+		event, err := s.Render(ctx, &row, req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		if req.Terse {
+			event = terseEvent(event)
+		}
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+// matchesNotMembership reports whether a membership value survives a not_membership filter.
+func matchesNotMembership(notMemberships []string, membership string) bool {
+	for _, excluded := range notMemberships {
+		if excluded == membership {
+			return false
+		}
+	}
+	return true
+}
+
+// RelationsRequest is a request for the relations of one event.
+type RelationsRequest struct {
+	RoomID  string
+	EventID string
+	// RelType restricts the answer to one kind of relation (m.thread, m.replace, an annotation
+	// marker). Empty means every kind.
+	RelType string
+	// EventType restricts the answer to one event type. `*` and empty both mean "any".
+	EventType string
+	From      string
+	To        string
+	Direction string
+	Limit     int
+	Reader    RenderOptions
+}
+
+// RelationsResponse is the response body.
+type RelationsResponse struct {
+	Chunk []json.RawMessage `json:"chunk"`
+	// NextBatch is the token to continue with, omitted once the end has been reached — the same
+	// contract as /messages, and the same reason: a client that is always handed a token never
+	// stops asking.
+	NextBatch string          `json:"next_batch,omitempty"`
+	PrevBatch string          `json:"prev_batch,omitempty"`
+	Original  json.RawMessage `json:"original_event,omitempty"`
+}
+
+// Relations answers GET /rooms/{roomID}/relations/{eventID}.
+//
+// A relation is a claim an event makes about another event — a reply, an edit, a reaction — and this
+// endpoint is the only way to gather them, because a thread is not a container: it is whatever a
+// bunch of events happened to point at. Two consequences shape the implementation. The target event
+// may have been redacted, or may never have existed here at all, and neither is a reason to answer
+// that the relations do not exist: an edit of a redacted message is still an edit people can read.
+// And the caller sees only the relations it is allowed to see, which means a reply from a room it
+// cannot read is not answerable at all.
+func (s *Service) Relations(ctx context.Context, req RelationsRequest) (*RelationsResponse, error) {
+	if err := s.checkReadable(ctx, req.RoomID, req.Reader); err != nil {
+		if apiErr, ok := matrix.AsAPIError(err); ok && apiErr.Status == http.StatusNotFound {
+			// As with /messages, an unknown room is not an existence oracle.
+			return nil, matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+				"You are not permitted to read the relations of this room")
+		}
+		return nil, err
+	}
+	if req.EventID == "" {
+		return nil, matrix.NewInvalidParam("event ID is required")
+	}
+
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	direction := req.Direction
+	if direction == "" {
+		// Backward by default, matching /messages: a client asking for the relations of an event
+		// almost always wants the newest replies first, which is the order a thread is read in.
+		direction = DirectionBackward
+	}
+	if direction != DirectionBackward && direction != DirectionForward {
+		return nil, matrix.NewInvalidParam("dir must be %q or %q", DirectionForward, DirectionBackward)
+	}
+
+	from, err := parseStreamToken(req.From)
+	if err != nil {
+		return nil, err
+	}
+	// An absent `from` means "wherever this direction starts": the end of the timeline reading
+	// backwards, the beginning reading forwards. Defaulting both to the same place would make one
+	// of them wrong — a backward read from position zero is a request for events before anything
+	// happened, and a forward read from the tip is a request for events that have not been sent yet.
+	if req.From == "" || from < 0 {
+		from = 0
+		if direction == DirectionBackward {
+			from, err = s.store.Events.MaxPositionInRoom(ctx, req.RoomID)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	to, err := parseStreamToken(req.To)
+	if err != nil {
+		return nil, err
+	}
+
+	// One extra row is fetched to find out whether anything is left after this page. Asking the
+	// caller to make an extra round trip to discover it has reached the end is how clients end up
+	// showing a "load more" button that loads nothing.
+	query := store.EventQuery{
+		RoomIDs:          []string{req.RoomID},
+		RelatesToEventID: req.EventID,
+		RelType:          req.RelType,
+		Limit:            limit + 1,
+	}
+	if req.EventType != "" && req.EventType != "*" {
+		query.Types = []string{req.EventType}
+	}
+	if direction == DirectionBackward {
+		query.Before = from + 1
+		query.OrderDesc = true
+	} else {
+		query.After = from
+		if to > 0 {
+			query.Before = to + 1
+		}
+	}
+
+	rows, err := s.store.Events.Range(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	hasMore := len(rows) > limit
+	if hasMore {
+		rows = rows[:limit]
+	}
+	if direction == DirectionBackward {
+		// The chunk is answered oldest-first regardless of the direction walked, so that a client
+		// can append it to a thread without reversing it itself.
+		for left, right := 0, len(rows)-1; left < right; left, right = left+1, right-1 {
+			rows[left], rows[right] = rows[right], rows[left]
+		}
+	}
+
+	// A relation the caller may not see is dropped rather than answered: the same visibility rule
+	// that governs /messages governs this, or a thread becomes a side channel for leaking events a
+	// reader was not allowed to read directly.
+	visible := make([]store.EventRow, 0, len(rows))
+	for _, row := range rows {
+		if s.visibleTo(ctx, req.RoomID, &row, req.Reader) {
+			visible = append(visible, row)
+		}
+	}
+
+	events := make([]json.RawMessage, 0, len(visible))
+	for i := range visible {
+		event, err := s.Render(ctx, &visible[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	response := &RelationsResponse{Chunk: events}
+	if hasMore && len(rows) > 0 {
+		// The continuation token is the edge of the timeline this page touched, one step beyond
+		// it, so the next page continues from there without serving an event twice. The chunk is
+		// answered oldest-first in both directions, so which end is "the edge" depends on the
+		// direction walked, not on the order of the list.
+		edge := rows[len(rows)-1].ID
+		if direction == DirectionBackward {
+			edge = rows[0].ID - 1
+		}
+		response.NextBatch = formatStreamToken(edge)
+		response.PrevBatch = formatStreamToken(from)
+	}
+	return response, nil
+}
+
+// maxFilteredEventScan bounds the rows read in order to answer a content filter.
+//
+// A filter that is evaluated after the database has answered has to read more than a page to fill
+// one. The bound exists because a room with a year of history would otherwise be read in full to
+// answer "the five newest images", which is a way for one client to make the server do work
+// proportional to everything it has ever stored.
+const maxFilteredEventScan = 1000
+
+// boundedEventQuery returns a copy of a query capped at [maxFilteredEventScan] rows.
+func boundedEventQuery(query store.EventQuery) store.EventQuery {
+	query.Limit = maxFilteredEventScan
+	return query
+}
+
+// eventHasURL reports whether an event's content carries something to fetch.
+//
+// Both spellings count: `url` for a file or image, and the `file` object of an encrypted media
+// event, whose URL is a JWK rather than a URI. A client that lists "things I can open" asks for
+// either, and an encrypted attachment is not less of an attachment for being unreadable here.
+func eventHasURL(row store.EventRow) bool {
+	// The stored JSON is the whole event, so the URLs live inside `content`.
+	var event struct {
+		Content struct {
+			URL  string `json:"url"`
+			File *struct {
+				URL string `json:"url"`
+			} `json:"file"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(row.JSON), &event); err != nil {
+		return false
+	}
+	if event.Content.URL != "" {
+		return true
+	}
+	return event.Content.File != nil && event.Content.File.URL != ""
+}

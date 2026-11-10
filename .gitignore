@@ -1,0 +1,13 @@
+# Build output.
+/bin/
+
+# Runtime state. A homeserver's data directory holds its signing key, its database
+# and uploaded media; none of those belong in a repository, and the paths below are
+# what the defaults and the local run scripts produce.
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+signing.json
