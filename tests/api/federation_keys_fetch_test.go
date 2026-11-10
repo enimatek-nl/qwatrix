@@ -132,7 +132,7 @@ func (p *fakePeer) peerClient(t *testing.T) *fedapi.Peer {
 // that the response signs itself, then use the key to check something else the peer signed.
 func TestFederationBelievesAPeerThatSignsForItself(t *testing.T) {
 	peer := newFakePeer(t)
-	ring := fedapi.NewKeyRing(peer.peerClient(t))
+	ring := fedapi.NewKeyRing(peer.peerClient(t), nil)
 
 	results, err := ring.VerifyJSONs(context.Background(), []gomatrixserverlib.VerifyJSONRequest{fedapi.VerifyRequest(peer.serverNo, time.Now(), peer.document(t))})
 	if err != nil {
@@ -228,7 +228,7 @@ func TestFederationRefusesAKeyWithNoKeysAtAll(t *testing.T) {
 // busy room into a stack of blocking HTTP requests.
 func TestFederationCachesPeerKeys(t *testing.T) {
 	peer := newFakePeer(t)
-	ring := fedapi.NewKeyRing(peer.peerClient(t))
+	ring := fedapi.NewKeyRing(peer.peerClient(t), nil)
 	ctx := context.Background()
 	request := []gomatrixserverlib.VerifyJSONRequest{fedapi.VerifyRequest(peer.serverNo, time.Now(), peer.document(t))}
 	for i := 0; i < 3; i++ {

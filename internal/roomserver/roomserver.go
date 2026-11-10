@@ -64,6 +64,10 @@ type Service struct {
 	// observePresence is told about users who join rooms, so that presence has something to
 	// report to the people they just met. Nil means the feature is off.
 	observePresence PresenceObserver
+	// federationJoiner performs the part of joining that only the federation transport can do:
+	// asking a peer for a room this server does not hold. Nil means a room this server does not
+	// hold does not exist, which is the correct answer for a homeserver that does not federate.
+	federationJoiner FederationJoiner
 }
 
 // New builds the room server.

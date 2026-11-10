@@ -491,7 +491,15 @@ func handleJoinRoom(deps Deps) http.HandlerFunc {
 			}
 		}
 
-		eventID, err := deps.Rooms.JoinRoom(r.Context(), senderOf(session), roomID, body.Reason, body.extra)
+		// The servers to join through. `server_name` is this endpoint's spelling and `via` the one
+		// an invite or knock carries; a client that names none is asking this server to work out
+		// where the room is, which for a room it does not hold means the room ID's own home server.
+		var servers []string
+		servers = append(servers, r.URL.Query()["server_name"]...)
+		servers = append(servers, r.URL.Query()["via"]...)
+
+		eventID, err := deps.Rooms.JoinRoomVia(r.Context(), senderOf(session), roomID, body.Reason,
+			body.extra, servers)
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return

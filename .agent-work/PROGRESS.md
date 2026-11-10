@@ -728,3 +728,51 @@ named, is the correct answer until then.
   round tripper that performs the part of that job its documented policy allows — name as written, HTTPS,
   federation port 8448 when the name carries none — while SRV and `.well-known` resolution stay
   unimplemented and documented as such.
+
+## M7 stage 2f: joining a room that is only somebody else's (2026-11-11i)
+
+`POST /join/{roomID}` for a room this server has never heard of used to answer `M_NOT_FOUND`. It now asks
+a peer: `make_join` for a template, check the template, fill in and sign the join through the same event
+builder a local join uses (so the client's `reason` is inside what this server signs), `send_join`, verify
+the answer, and store the room in one transaction — room row, auth chain, state by depth, and this
+server's own join last so the room tip is the join.
+
+What the checks are for, in the order they earned their place:
+
+- **The template is checked before it is signed.** It must be an `m.room.member` for this user, in this
+  room, with membership `join`. After signing, this server has authored whatever it says, so a check
+  after that point is a complaint, not a defence.
+- **A peer's answer is verified rather than believed**: parse under the version the peer named, room ID
+  must match, signature must verify, the join must be in the state the peer returns.
+- **Authorisation runs against the state *before* the join** — the bug this task found. A `send_join`
+  answer contains the join event itself, and a membership event in the authorising state *is* the user's
+  previous membership. Authorising against the answer as given asks "may @alice join?" and answers it
+  with "@alice is already joined", for any room, on the strength of the event being questioned. Every
+  invite-only room is a public room under that rule; it took a test that was honest about *why* it passed
+  to notice.
+- **A join must carry the auth events the room's rules need.** Authorisation reads an event's own
+  `auth_events`, so a join that omits `m.room.join_rules` is evaluated against no join rule — and no join
+  rule means "public". This server now computes what the state would require and refuses when the join
+  left it out.
+- **Two state events for one `(type, state_key)` is a refusal**, because the room's rules then mean
+  whichever entry was read last. A peer can hide a ban behind a join, or a foreign power-levels event
+  behind the room's own. The exception is the join event itself: a correct answer is pre-join state plus
+  the join, so an invited or departed user legitimately appears twice. That over-strict check would have
+  broken every rejoin and every invited join, and it took writing the *correct* answer as a test to catch
+  it.
+- **A room ID on this server's own domain that this server does not hold is `M_NOT_FOUND`, not a
+  federation question.** Asking a stranger to vouch for an identity this server owns produces an answer
+  that is a lie by construction.
+
+Two findings that are not this task's fix:
+
+- An `invite` must be signed by the invited user's homeserver too. This server does not co-sign invites,
+  so invites it sends to remote users will be rejected by them. Tracked as **T714**.
+- gomatrixserverlib's `Allowed` reads the auth events an event declares. Any place this server hands it a
+  state that already contains the event being authorised is the same bug as above, waiting to be found
+  again.
+
+The verification method changed too. Each guard now has a test that is confirmed to fail **with the guard
+removed** (`.agent-work/guard-probe.py`); three of them were passing without their guard when checked that
+way, and one "test" had never run at all because a `t.Fatalf` sat before the assertion that would have
+shown it. A passing test is not evidence until something proves it can fail.

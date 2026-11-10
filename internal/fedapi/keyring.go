@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/enimatek-nl/qwatrix/internal/identity"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
 	xed25519 "golang.org/x/crypto/ed25519"
@@ -222,12 +223,54 @@ func CheckKeyResponse(server spec.ServerName, keys gomatrixserverlib.ServerKeys)
 	return nil
 }
 
-// NewKeyRing builds the verifier that checks peer signatures: keys are read from the cache, and on
-// a miss fetched from the peer that signed the document.
-func NewKeyRing(peer *Peer) *gomatrixserverlib.KeyRing {
-	cache := newKeyCache()
+// NewKeyRing builds the verifier that checks peer signatures: keys are read from the cache, and on a
+// miss fetched from the peer that signed the document.
+//
+// The identity may be nil for a deployment that has no signing key — a homeserver not federating — in
+// which case only this server's own key becomes unresolvable, which is the least it can get away with.
+func NewKeyRing(peer *Peer, id *identity.Identity) *gomatrixserverlib.KeyRing {
+	fetchers := make([]gomatrixserverlib.KeyFetcher, 0, 2)
+	if id != nil {
+		fetchers = append(fetchers, &localKeys{id: id})
+	}
+	if peer != nil {
+		fetchers = append(fetchers, &notaryFetch{peer: peer, now: time.Now})
+	}
 	return &gomatrixserverlib.KeyRing{
-		KeyFetchers: []gomatrixserverlib.KeyFetcher{&notaryFetch{peer: peer, now: time.Now}},
-		KeyDatabase: cache,
+		KeyFetchers: fetchers,
+		KeyDatabase: newKeyCache(),
 	}
 }
+
+// localKeys answers key lookups for this server's own name out of its identity.
+//
+// A key ring that only knows how to ask the network cannot answer "who is this server" without a round
+// trip — and the question is not hypothetical. A peer hands back an event this server signed (a join
+// this server made, reflected in the room's state), and every reader re-checks every signature in
+// front of it. This server should never have to ask anybody, including itself over the network, who it
+// is: the answer is the key it is holding, and a deployment whose own key endpoint is briefly
+// unreachable would otherwise refuse its own history.
+type localKeys struct {
+	id *identity.Identity
+}
+
+func (l *localKeys) FetchKeys(_ context.Context,
+	requests map[gomatrixserverlib.PublicKeyLookupRequest]spec.Timestamp,
+) (map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult, error) {
+	out := map[gomatrixserverlib.PublicKeyLookupRequest]gomatrixserverlib.PublicKeyLookupResult{}
+	for request := range requests {
+		if request.ServerName != l.id.ServerName || request.KeyID != l.id.KeyID {
+			continue
+		}
+		out[request] = gomatrixserverlib.PublicKeyLookupResult{
+			VerifyKey: gomatrixserverlib.VerifyKey{
+				Key: spec.Base64Bytes(l.id.PublicKey()),
+			},
+			ExpiredTS:    gomatrixserverlib.PublicKeyNotExpired,
+			ValidUntilTS: l.id.ValidUntil(),
+		}
+	}
+	return out, nil
+}
+
+func (l *localKeys) FetcherName() string { return "qwatrix-local-identity" }

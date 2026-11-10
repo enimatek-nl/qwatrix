@@ -490,26 +490,7 @@ func (s *Service) requireKnownPrevEvents(ctx context.Context, event gomatrixserv
 // would destroy the signature that proves who sent it, and would make this server the author of
 // somebody else's statement.
 func (s *Service) appendRemoteEvent(ctx context.Context, roomID string, event gomatrixserverlib.PDU) error {
-	stateKey := ""
-	if key := event.StateKey(); key != nil {
-		stateKey = *key
-	}
-	req := txAppend{
-		roomID:    roomID,
-		eventType: event.Type(),
-		stateKey:  stateKey,
-		isState:   event.StateKey() != nil,
-		sender:    string(event.SenderID()),
-		content:   json.RawMessage(event.Content()),
-	}
-	if event.Type() == string(matrix.EventTypeMember) {
-		var content struct {
-			Membership string `json:"membership"`
-		}
-		if err := json.Unmarshal(event.Content(), &content); err == nil {
-			req.membership = content.Membership
-		}
-	}
+	req := remoteAppendRequest(roomID, event)
 	return s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
 		writer := &eventWriter{service: s, tx: tx, ctx: ctx}
 		return writer.appendPrebuilt(req, event)

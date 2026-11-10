@@ -147,7 +147,8 @@ Every `[x]` must have evidence in `PROGRESS.md`.
 | T706 | Join v2 (`/make_join`, `/send_join`), leave v2, `/event` fetch, invite v2 | FR-73 | `[~]` — `/make_join` and `/send_join` (v1 legacy envelope and v2) served and interoperating: complement's own client completes a join against a qwatrix container; leave and invite are not |
 | T710 | Gap filling: `POST /get_missing_events` (bulk, anchored on the room's tip) then `GET /event/{eventID}` (single), before refusing an event whose predecessors are unknown | FR-73 | `[x]` — five in-process tests: a one-event gap, a four-event chain in one request, an unfillable gap refused, a partly-bridgeable gap refused with no fragment kept; against complement both endpoints are now reached |
 | T713 | Outlier events: persist an event whose history cannot be connected, using the peer's `/state_ids` + `/state` answer as the state at that event | FR-73 | `[ ]` — the named successor to the gap-fill refusal and the real blocker for `TestSyncTimelineGap`, whose peer deliberately bridges only part of a 50-event gap; storing such an event needs state-at-event, not graph continuity |
-| T711 | Outbound federated join: `POST /join/{roomID}?server_name=` for a room only a peer knows (outbound `/make_join` + `/send_join`, then persist the returned state) | FR-73 | `[ ]` — blocks `TestMessagesOverFederation` and `TestThreadReceiptsInSyncMSC4102`, both of which fail at hs2 answering `M_NOT_FOUND` for a room it has never heard of |
+| T711 | Outbound federated join: `POST /join/{roomID}?server_name=` for a room only a peer knows (outbound `/make_join` + `/send_join`, then persist the returned state) | FR-73 | `[x]` — `internal/fedapi/joinremote.go` + `internal/roomserver/joinremote.go`, pinned by nine in-process tests in `tests/api/federation_join_test.go`; a room this server owns but does not hold is answered `M_NOT_FOUND` rather than federated, and each security guard has a test that fails when the guard is removed (`.agent-work/guard-probe.py`) |
+| T714 | Co-sign the `m.room.member` invite events this server sends to a remote user (the invited user's homeserver must sign an invite alongside the sender's server) | FR-73 | `[ ]` — found while building T711: gomatrixserverlib requires an invite to carry a signature from the invitee's domain, so a remote server will reject an invitation this server issues to a remote user; `tests/api/federation_join_test.go` documents the rule in `TestAFederatedJoinOfARejoiningUser` and works around it there |
 | T712 | Federation of device lists (`GET /user/devices`, `m.device_list_updates` EDU) | FR-74 | `[ ]` — blocks `TestDeviceListUpdates`, the last mandatory AC-5 failure; needs T707 |
 | T707 | EDUs: typing, receipts, device lists, to-device over federation | FR-74 | `[ ]` — `/send` parses them and applies none; every drop is logged by type because the response cannot report an ephemeral failure |
 | T708 | `/query/profile`, `/query/user/info`, `/user/keys/*`, `/backfill`, `/missings` | FR-74 | `[ ]` |
@@ -182,7 +183,8 @@ Ordered by what they unlock, with the honest size of each.
    `TestAsyncUpload`, `TestGetRoomMembersAtPoint`, `TestInviteFromIgnoredUsersDoesNotAppearInSync`,
    `TestTxnIdWithRefreshToken` (refresh tokens), `TestThreadsEndpoint`, `TestChangePasswordPushers`,
    `TestE2EKeyBackupReplaceRoomKeyRules`.
-7. **T710, T711** — gap fill (`/get_missing_events`) and the outbound federated join. These two are
+7. **T710, T711** — gap fill (`/get_missing_events`) and the outbound federated join. **Done**
+   (2026-11-10); T713 and T714 are what they exposed. These were
    what every remaining federation test waits on; each names its own blocking test in its row.
 8. **T707–T709, T712** — federation EDUs, `/query/*`, `/backfill`, `/missings`, device-list
    federation, restricted remote joins.

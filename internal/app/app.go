@@ -194,6 +194,16 @@ func New(cfg *config.Config) (*App, error) {
 		Join:       rooms,
 		Peer:       peer,
 	})
+	// Joining a room this server does not hold is the one room operation that cannot be answered
+	// from the local database, so the room server is given the federation transport for it. Left
+	// unset, a room this server has never heard of simply does not exist — which is the correct
+	// answer for a homeserver that does not federate.
+	rooms.WithFederationJoiner(fedapi.NewRemoteJoiner(fedapi.RemoteJoinOptions{
+		ServerName: spec.ServerName(cfg.ServerName),
+		Peer:       peer,
+		Events:     eventService,
+		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
+	}))
 	return app, nil
 }
 

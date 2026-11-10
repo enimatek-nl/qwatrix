@@ -104,6 +104,10 @@ two differ in the specification and the server does not accept them interchangea
 `/rooms/{roomID}/join` accepts a room ID or a local alias. Who may perform a membership change is decided by the
 room's own events through the authorization rules — never by a special case in a handler.
 
+A join for a room this server does not hold is offered to the servers the client named with
+`?server_name=` (or `?via=`) and, failing those, to the room ID's own home server. None of them having
+admitted the user is reported as an error naming the room; it is never answered with a half-built room.
+
 `/rooms/{roomID}/state/{eventType}` with no state key is the empty state key, which is a real
 tuple rather than an absent one; the trailing-slash spelling and a state key containing a
 slash are served by the same route.
@@ -288,8 +292,9 @@ certificate is a refusal, and federation should refuse rather than pretend.
 Federation is being built in stages. Served today: implementation version, the signing-key publishing
 and lookup a peer must believe before anything else, the join handshake — `make_join` offers an
 unsigned join event, `send_join` accepts the signed result and returns the room's state and
-authentication chain so the peer can check the room for itself — and transaction ingest, by which a
-peer delivers events this server then authorises against the room.
+authentication chain so the peer can check the room for itself — transaction ingest, by which a
+peer delivers events this server then authorises against the room, and the same handshake in the
+outbound direction, by which this server joins one of its users into a room that only a peer holds.
 
 Ingest answers event by event: a transaction whose third event is bogus keeps the other two and
 reports which one did not land. It is idempotent by transaction ID, because a peer that did not hear
@@ -317,8 +322,30 @@ lot. Closing such a gap is not a matter of fetching more — it needs the peer's
 answer to be stored as the state *at* the event (an outlier event), which is separate work. A fragment of
 history kept because it was available is a hole a client can fall into.
 
+An outbound join is a peer's answer, and a peer's answer is an input from a party that benefits from
+this server being wrong, so it is checked as one. Every state and auth event must parse under the
+version the peer named, carry this room's ID, and verify against its sender's published key. The join
+event itself must appear in the state the peer returns. The room's rules are then applied by this
+server, to the state as it stood *before* the join: a send_join answer includes the join event, and a
+membership event found in the authorising state counts as the user's previous membership, so authorising
+against the answer as given would admit anyone anywhere on the strength of the very event being
+questioned.
+
+Two of these refusals are worth naming because they are how a peer's lie would otherwise be read as a
+fact. A join whose `auth_events` leave out an event the room's rules require — most importantly the join
+rules — is refused, because an absent join rule does not refuse anybody, it reads as "public". And a
+state holding two events for the same `(type, state_key)` is refused, because then the room's rules mean
+whichever entry was read last; the single exception is the join event itself, since a correct answer
+carries the pre-join state plus the join, and so legitimately holds two membership events for a user who
+was invited or had left.
+
 Next come state and event reads (`/state`, `/state_ids`, `/event`, `/backfill`), the EDUs above, and
 device list and to-device propagation between servers.
+
+One limitation deserves its own sentence because it is not this server being cautious: an `invite`
+membership event has to be signed by the invited user's homeserver as well as the sender's, and this
+server does not yet co-sign the invites it sends. A remote server will therefore reject an invitation
+issued here to a remote user.
 
 A signed federation request is authenticated twice over: the request signature covers the method, URI,
 origin, destination and body, and the event carries its own signature so that it stays checkable by

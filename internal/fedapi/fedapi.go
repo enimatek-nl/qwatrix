@@ -96,7 +96,7 @@ type transactionRecord struct {
 func New(id *identity.Identity, opts Options) http.Handler {
 	h := &Handler{identity: id, opts: opts, mux: http.NewServeMux()}
 	if opts.Peer != nil {
-		h.keyRing = NewKeyRing(opts.Peer)
+		h.keyRing = NewKeyRing(opts.Peer, id)
 	}
 	h.mux.HandleFunc("GET /_matrix/federation/v1/version", h.handleVersion)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/make_join/{roomID}/{userID}", h.handleMakeJoin)
