@@ -58,24 +58,20 @@ binary built outside the image, because complement rebuilds the image for every 
 
 ## Register a user
 
-Registration is open by default. User-Interactive Authentication is a conversation, so the first
-request is answered with the challenge and the client completes the stage it names:
+Registration is open by default. User-Interactive Authentication means a request may be answered
+with a 401 challenge listing the stages — but a request that already carries the stage it intends to
+satisfy is completed on the spot, which is what a script (and complement) does:
 
 ```sh
-# 1. Ask to register; take the session ID out of the 401 challenge.
-session=$(curl -s -X POST http://127.0.0.1:8008/_matrix/client/v3/register \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"alice","password":"correct horse battery staple"}' \
-  | sed -n 's/.*"session":"\([^"]*\)".*/\1/p')
-
-# 2. Complete the dummy stage and get a token.
 curl -s -X POST http://127.0.0.1:8008/_matrix/client/v3/register \
   -H 'Content-Type: application/json' \
-  -d "{\"username\":\"alice\",\"password\":\"correct horse battery staple\",
-       \"auth\":{\"type\":\"m.login.dummy\",\"session\":\"$session\"}}"
+  -d '{"username":"alice","password":"correct horse battery staple",
+       "auth":{"type":"m.login.dummy"}}'
 ```
 
-That returns `user_id`, `access_token` and `device_id`. Log in the same way with
+A client that does not know the stages yet sends no `auth` and gets `{"flows":[{"stages":[…]}],
+"session":"…"}` back; it then completes a stage and echoes that `session`. Both forms return
+`user_id`, `access_token` and `device_id`. Log in the same way with
 `POST /_matrix/client/v3/login`, and use the token either as `Authorization: Bearer <token>` or,
 less well, as `?access_token=`.
 

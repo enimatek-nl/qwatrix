@@ -150,17 +150,30 @@ func handleRegister(deps Deps) http.HandlerFunc {
 		// else's completed dummy stage by leaving the field out.
 		var session *uia.Session
 		if req.Auth != nil && req.Auth.Type != "" {
-			found, ok := deps.UIA.Get(req.Auth.Session)
-			if req.Auth.Session == "" || !ok {
-				challenge := uia.ChallengeFor(deps.UIA.Start(registrationStages, ""), nil)
-				if req.Auth.Session != "" {
+			switch req.Auth.Session {
+			case "":
+				// The client is presenting a stage it already knows it intends to satisfy, and
+				// `m.login.dummy` asks for no credential: this request has said everything the flow
+				// needs. Answering it with a challenge would turn a registration that could finish
+				// into a 401 — which is why complement's blueprint builder, and gomatrixserverlib's
+				// own client, could not bring a homeserver up at all against this server. A session is
+				// still opened, so the stage is recorded against this request and cannot be borrowed
+				// from another one.
+				session = deps.UIA.Start(registrationStages, "")
+			default:
+				found, ok := deps.UIA.Get(req.Auth.Session)
+				if !ok {
+					// A named session that does not exist is a different thing from no session: the
+					// caller is holding a stale or forged handle, and starting a fresh conversation
+					// would let one registration's completed stage satisfy another.
+					challenge := uia.ChallengeFor(deps.UIA.Start(registrationStages, ""), nil)
 					challenge.ErrCode = matrix.ErrSessionInvalid
 					challenge.Error = "Session is invalid or has expired"
+					httpx.RespondJSON(w, http.StatusUnauthorized, challenge)
+					return
 				}
-				httpx.RespondJSON(w, http.StatusUnauthorized, challenge)
-				return
+				session = found
 			}
-			session = found
 		}
 
 		// The client has not authenticated yet: answer with the flows and a session, which

@@ -649,6 +649,51 @@ func TestRegistrationViaClientAPI(t *testing.T) {
 		srv.Get(t, "/_matrix/client/v3/account/whoami", body.AccessToken).MustStatus(t, 200)
 	})
 
+	// A client that already knows which stage it intends to satisfy does not need to be told which
+	// stages exist. `m.login.dummy` asks for no credential at all, so a request carrying it has
+	// already done everything this flow requires; making the client ask for a session first turns a
+	// registration that could succeed into a 401. This is the shape complement's blueprint builder
+	// and gomatrixserverlib's own client use, so the whole server-server suite could not stand its
+	// homeservers up.
+	t.Run("a session-less dummy stage completes the flow", func(t *testing.T) {
+		resp := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+			"username": "gina",
+			"password": "pw",
+			"auth":     map[string]any{"type": "m.login.dummy"},
+		})
+		var body struct {
+			UserID      string `json:"user_id"`
+			AccessToken string `json:"access_token"`
+			DeviceID    string `json:"device_id"`
+		}
+		resp.MustStatus(t, 200).JSON(t, &body)
+		if body.UserID != "@gina:"+srv.ServerName || body.AccessToken == "" || body.DeviceID == "" {
+			t.Fatalf("unexpected registration result: %s", resp.Body)
+		}
+		srv.Get(t, "/_matrix/client/v3/account/whoami", body.AccessToken).MustStatus(t, 200)
+	})
+
+	// The same request with `inhibit_login` still creates the account and hands back no token.
+	t.Run("a session-less dummy stage honours inhibit_login", func(t *testing.T) {
+		resp := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+			"username":      "henri",
+			"password":      "pw",
+			"auth":          map[string]any{"type": "m.login.dummy"},
+			"inhibit_login": true,
+		})
+		var body struct {
+			UserID      string `json:"user_id"`
+			AccessToken string `json:"access_token"`
+		}
+		resp.MustStatus(t, 200).JSON(t, &body)
+		if body.UserID != "@henri:"+srv.ServerName {
+			t.Errorf("user_id = %q", body.UserID)
+		}
+		if body.AccessToken != "" {
+			t.Errorf("inhibit_login returned an access token anyway: %s", resp.Body)
+		}
+	})
+
 	// A session is what ties a completed stage to the request that asked for it, so an
 	// `auth` dict naming a stage must name a live session too. Answering such a request by
 	// starting over would let a client satisfy the stage of one registration with the

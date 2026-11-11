@@ -167,38 +167,33 @@ func freeLoopback(t *testing.T) string {
 
 // register makes a user over the running server's own client API, returning the access token.
 //
-// It walks the User-Interactive Authentication dance exactly as a client does: submit, take the 401
-// challenge, complete the stage it names, submit again. Doing it in one request would be testing a
-// shortcut this server does not offer.
+// It checks both halves of the User-Interactive Authentication contract against the real binary: a
+// request that names no stage is answered with the flows and a session — which is what drives a
+// client's registration form — and a request that already carries the stage it intends to satisfy is
+// completed on the spot. The second half is not a shortcut: `m.login.dummy` asks for no credential,
+// and complement's blueprint builder registers its users that way, so refusing it once stopped the
+// whole server-server suite from starting a homeserver.
 func register(t *testing.T, baseURL string) (string, string) {
 	t.Helper()
 	password := "runtime-test-password"
-	attempt := func(session string) (int, string) {
-		auth := map[string]any{"type": "m.login.dummy"}
-		if session != "" {
-			auth["session"] = session
-		}
-		body, err := json.Marshal(map[string]any{
-			"username": "testuser",
-			"password": password,
-			"auth":     auth,
-		})
+
+	post := func(body any) (int, string) {
+		payload, err := json.Marshal(body)
 		if err != nil {
 			t.Fatalf("encoding the registration: %v", err)
 		}
-		response, err := http.Post(baseURL+"/_matrix/client/v3/register", "application/json", bytes.NewReader(body))
+		response, err := http.Post(baseURL+"/_matrix/client/v3/register", "application/json", bytes.NewReader(payload))
 		if err != nil {
 			t.Fatalf("registering: %v", err)
 		}
 		defer func() { _ = response.Body.Close() }()
-		payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-		return response.StatusCode, string(payload)
+		raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+		return response.StatusCode, string(raw)
 	}
 
-	status, payload := attempt("")
+	status, payload := post(map[string]any{"username": "testuser", "password": password})
 	if status != http.StatusUnauthorized {
-		t.Fatalf("the first registration attempt answered %d, want the 401 authentication challenge: %s",
-			status, payload)
+		t.Fatalf("a registration with no auth answered %d, want the 401 challenge: %s", status, payload)
 	}
 	var challenge struct {
 		Session string `json:"session"`
@@ -206,7 +201,12 @@ func register(t *testing.T, baseURL string) (string, string) {
 	if err := json.Unmarshal([]byte(payload), &challenge); err != nil || challenge.Session == "" {
 		t.Fatalf("the authentication challenge carries no session: %v %s", err, payload)
 	}
-	status, payload = attempt(challenge.Session)
+
+	status, payload = post(map[string]any{
+		"username": "testuser",
+		"password": password,
+		"auth":     map[string]any{"type": "m.login.dummy"},
+	})
 	if status != http.StatusOK {
 		t.Fatalf("completing registration answered %d, want 200: %s", status, payload)
 	}
