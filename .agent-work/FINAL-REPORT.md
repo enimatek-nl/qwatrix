@@ -98,7 +98,7 @@ runs beside the listeners rather than behind them.
 |---|---|---|
 | AC-1 toolchain | `go build ./...`, `go vet ./...`, `gofmt -s -l cmd internal tests`, `golangci-lint run ./...` | all clean; `golangci-lint`: 0 issues |
 | AC-2 test location | `find . -name '*_test.go' -not -path './tests/*' -not -path './.git/*'` | prints nothing |
-| AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0 — `tests/api` 467 s, `tests/unit` 3.9 s, `tests/runtime` (non-race run) 7.3 s |
+| AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
 | AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
 | AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 84 of the 95 mandatory tests pass, 11 fail, 0 never ran (§ 5) |
