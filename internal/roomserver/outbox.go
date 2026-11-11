@@ -27,7 +27,12 @@ func (s *Service) queueFederationDelivery(ctx context.Context, tx store.Tx, room
 		// A deployment that is not federating must not grow a queue it will never drain.
 		return nil
 	}
-	members, err := s.store.Memberships.ListInTX(ctx, tx, roomID, []string{"join"}, nil)
+	// Whose servers are owed a copy: everybody currently joined, and everybody waiting on an
+	// invite. Invited counts because an invitation is a claim about a room made to a server that
+	// has not accepted it yet — a kick or a ban of that invitee has to arrive, or their server
+	// keeps an offer that has been withdrawn. Knocking does not count: a knocker is not in the
+	// room and is not owed its history.
+	members, err := s.store.Memberships.ListInTX(ctx, tx, roomID, []string{"join", "invite"}, nil)
 	if err != nil {
 		return err
 	}
@@ -53,6 +58,29 @@ func (s *Service) queueFederationDelivery(ctx context.Context, tx store.Tx, room
 			CreatedMS:   now,
 		})
 	}
+	// The subject of a membership event is owed the event even when the event is what removed
+	// them. The list above is computed after the event was applied, so a ban has already turned
+	// its target into a non-member and a leave has turned them into an ex-member: without this,
+	// the one homeserver that must be told is dropped from the queue, and nothing downstream can
+	// notice, because the peer never learns it was skipped. The victim's reads of the room are
+	// refused from now on, so a server that waits to be asked will never be asked — the victim
+	// just keeps a room they were thrown out of.
+	if row.Type == matrix.EventTypeMember && row.StateKey != nil {
+		if _, domain, err := matrix.ParseUserID(*row.StateKey, s.cfg.ServerName); err == nil &&
+			domain != s.cfg.ServerName && !seen[domain] {
+			seen[domain] = true
+			queued++
+			rows = append(rows, &store.FederationOutbox{
+				Destination: domain,
+				RoomID:      roomID,
+				EventID:     row.EventID,
+				JSON:        row.JSON,
+				NextMS:      now,
+				CreatedMS:   now,
+			})
+		}
+	}
+
 	if len(rows) == 0 {
 		return nil
 	}

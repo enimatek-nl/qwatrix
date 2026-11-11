@@ -3,6 +3,7 @@ package api_test
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"testing"
 	"time"
 
@@ -141,4 +142,105 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	}
 	t.Errorf("the left room's timeline does not carry the ban event; it holds %d events: %s",
 		len(leftRoom.Timeline.Events), left)
+}
+
+// TestABanFromAnotherServerReachesTheVictim is the other half of a ban: the room is on somebody
+// else's homeserver, and the person doing the banning is not this server's user.
+//
+// The event has to be *pushed*. A banned user's reads of that room are now refused, so a server that
+// waits for the victim's homeserver to ask will find that it never does, and the victim goes on holding
+// a room they were thrown out of — sending messages that will be refused, and seeing a member list that
+// no longer includes them.
+//
+// Which is why the queue that decides whom to tell cannot be computed from "who is joined". By the time
+// the ban exists, its target is by definition no longer joined: the event is what removed them. Computing
+// the destination list after applying the event drops the one server that must be told, and nothing
+// downstream can notice, because the peer never knows it was skipped.
+func TestABanFromAnotherServerReachesTheVictim(t *testing.T) {
+	hs2 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs2.FederationServer(t)
+	bob := hs2.Register(t, "bob", "pw-bob", false)
+	roomID := bob.MustCreateRoom(t, hs2, map[string]any{"preset": "public_chat"})
+
+	hs1 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs1.FederationServer(t)
+	alice := hs1.Register(t, "alice", "pw-alice", false)
+	alice.MustPostJSON(t, hs1, "/_matrix/client/v3/join/"+url.PathEscape(roomID)+
+		"?server_name="+url.QueryEscape(hs2.ServerName), map[string]any{}).MustStatus(t, 200)
+	hs1.DrainFederation(t)
+	since := alice.MustSync(t, hs1, url.Values{"timeout": []string{"0"}}).NextBatch
+
+	ban := bob.Do(t, hs2, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/ban",
+		Body:   map[string]any{"user_id": alice.UserID, "reason": "federation must carry this"},
+	})
+	if ban.StatusCode != http.StatusOK {
+		t.Fatalf("banning a remote member answered %d: %s", ban.StatusCode, ban.Body)
+	}
+	hs2.DrainFederation(t)
+
+	// Alice's own homeserver now knows she was banned, and says so in her sync.
+	var left map[string]json.RawMessage
+	for attempt := 0; attempt < 6; attempt++ {
+		synced := alice.MustGet(t, hs1, "/_matrix/client/v3/sync?since="+since+"&timeout=0")
+		left = decodeLeaveSection(t, synced.Body, roomID)
+		if len(left) > 0 {
+			return
+		}
+		hs1.DrainFederation(t)
+		hs2.DrainFederation(t)
+	}
+	t.Errorf("a ban issued on the room's own server never reached the victim's server: alice's sync has "+
+		"no leave entry for %s", roomID)
+
+	// The same care is needed to let them back in. An invite is a membership event aimed at a user
+	// this server does not own, and if its target is collapsed to a localpart it invites the local
+	// account of that name — which may not exist — while the remote user is never invited at all.
+	// A ban and its reversal then disagree about who was in the room.
+	unban := bob.Do(t, hs2, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/unban",
+		Body:   map[string]any{"user_id": alice.UserID},
+	})
+	if unban.StatusCode != http.StatusOK {
+		t.Fatalf("unbanning a remote member answered %d: %s", unban.StatusCode, unban.Body)
+	}
+	reinvite := bob.Do(t, hs2, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) + "/invite",
+		Body:   map[string]any{"user_id": alice.UserID},
+	})
+	if reinvite.StatusCode != http.StatusOK {
+		t.Fatalf("re-inviting a remote member answered %d: %s", reinvite.StatusCode, reinvite.Body)
+	}
+	hs2.DrainFederation(t)
+	for attempt := 0; attempt < 4; attempt++ {
+		synced := alice.MustGet(t, hs1, "/_matrix/client/v3/sync?since="+since+"&timeout=0")
+		if gjson.GetBytes(synced.Body, "rooms.invite."+gjson.Escape(roomID)).Exists() {
+			return
+		}
+		hs1.DrainFederation(t)
+		hs2.DrainFederation(t)
+	}
+	t.Errorf("the unban and re-invite never reached the remote user either: alice's sync shows no invite "+
+		"for %s, so the ban and its reversal named different people", roomID)
+}
+
+// decodeLeaveSection returns the room's entry under rooms.leave, if it has one.
+func decodeLeaveSection(t *testing.T, body []byte, roomID string) map[string]json.RawMessage {
+	t.Helper()
+	var rooms struct {
+		Leave map[string]json.RawMessage `json:"leave"`
+	}
+	if err := json.Unmarshal([]byte(gjson.GetBytes(body, "rooms").Raw), &rooms); err != nil {
+		t.Fatalf("decoding the sync's rooms: %v\n%s", err, body)
+	}
+	entry, ok := rooms.Leave[roomID]
+	if !ok {
+		return nil
+	}
+	return map[string]json.RawMessage{roomID: entry}
 }

@@ -364,6 +364,27 @@ func (s *Service) Forget(ctx context.Context, localpart, roomID string) error {
 	return nil
 }
 
+// membershipTarget names the room member a moderation call is aimed at, in the form this server
+// stores members under: a local user by their localpart, a remote user by their whole user ID.
+//
+// Collapsing both to a localpart is not a shorthand, it is a different person. "alice" on this
+// homeserver and @alice:other.example are two users, and a ban written against the localpart of a
+// remote user bans the local account of that name — or, when nobody holds it, bans nobody — while
+// answering 200 and returning an event ID, because an event was indeed created for the user that was
+// named. The caller watching for a refusal sees none. The remote member stays in the room, and their
+// server is never told, because as far as this server is concerned it acted on a member who was not
+// there to begin with.
+func (s *Service) membershipTarget(targetUserID string) (string, error) {
+	localpart, domain, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
+	if err != nil {
+		return "", err
+	}
+	if domain != "" && domain != s.cfg.ServerName {
+		return targetUserID, nil
+	}
+	return localpart, nil
+}
+
 // LeaveRoom is the join/leave/kick/ban/knock entry point used by the room-member routes.
 func (s *Service) LeaveRoom(ctx context.Context, sender Sender, roomID, targetLocalpart, reason string) (string, error) {
 	return s.UpdateMembership(ctx, MembershipRequest{
@@ -390,7 +411,7 @@ func (s *Service) JoinRoom(ctx context.Context, sender Sender, roomID, reason st
 
 // InviteToRoom invites a user, given their user ID.
 func (s *Service) InviteToRoom(ctx context.Context, sender Sender, roomID, targetUserID, reason string) (string, error) {
-	localpart, _, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
+	localpart, err := s.membershipTarget(targetUserID)
 	if err != nil {
 		return "", err
 	}
@@ -406,7 +427,7 @@ func (s *Service) InviteToRoom(ctx context.Context, sender Sender, roomID, targe
 // KickFromRoom removes a user from the room without banning them, which the spec spells as
 // a leave event sent by somebody else.
 func (s *Service) KickFromRoom(ctx context.Context, sender Sender, roomID, targetUserID, reason string) (string, error) {
-	localpart, _, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
+	localpart, err := s.membershipTarget(targetUserID)
 	if err != nil {
 		return "", err
 	}
@@ -437,7 +458,7 @@ func (s *Service) KickFromRoom(ctx context.Context, sender Sender, roomID, targe
 
 // BanUser bans a user from the room.
 func (s *Service) BanUser(ctx context.Context, sender Sender, roomID, targetUserID, reason string) (string, error) {
-	localpart, _, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
+	localpart, err := s.membershipTarget(targetUserID)
 	if err != nil {
 		return "", err
 	}
@@ -452,7 +473,7 @@ func (s *Service) BanUser(ctx context.Context, sender Sender, roomID, targetUser
 
 // UnbanUser removes a ban, which is a leave event for a banned user.
 func (s *Service) UnbanUser(ctx context.Context, sender Sender, roomID, targetUserID string) (string, error) {
-	localpart, _, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
+	localpart, err := s.membershipTarget(targetUserID)
 	if err != nil {
 		return "", err
 	}
