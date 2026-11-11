@@ -161,7 +161,7 @@ Every `[x]` must have evidence in `PROGRESS.md`.
 | ID | Task | Reqs | Status |
 | --- | --- | --- | --- |
 | T801 | Restart/persistence + sync-token survival tests | AC-7 | `[x]` — `harness.(*Server).Restart` plus six tests in `tests/api/persistence_test.go`: rooms/history/graph, tokens/devices/login, `since` tokens, account data, filters, read markers, receipts, push rules, media bytes + index; one test pins that the replaced server stops answering |
-| T802 | Error-path audit: no internal error text/stack to clients; log-secrets test | CN-7, AC-7 | `[ ]` |
+| T802 | Error-path audit: no internal error text/stack to clients; log-secrets test | CN-7, AC-7 | `[x]` — three real leaks found and fixed (Go type names on login/register; media identifiers at Info; a peer's X-Matrix signature in a refusal); `matrix.DecodeFailure`, `loggableID`, `redactedAuthorization`; 19 refusal shapes + panic/choke-point tests in `tests/api/errorhygiene_test.go` and `tests/unit/error_hygiene_test.go`; the audit test verified against a planted leak |
 | T803 | Full complement sweep + `.agent-work/COMPLEMENT-STATUS.md` history | AC-5 | `[~]` — `COMPLEMENT-STATUS.md` keeps the per-run history; the sweep keeps needing to be re-run as features land |
 | T804 | README, docs/, `.agent-work/FINAL-REPORT.md` | AC-6 | `[ ]` |
 | T805 | `golangci-lint` clean, `-race` clean, `gofmt -s` clean | CN-1, CN-3 | `[x]` — `golangci-lint run ./...` reports 0 issues (20 were cleared on 2026-11-11d: 9 unchecked `Close`/`Fprintf`, 7 dead helpers, 3 style), `-race` clean, `gofmt -s -l .` empty |

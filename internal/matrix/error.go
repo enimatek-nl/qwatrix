@@ -4,6 +4,7 @@
 package matrix
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -159,6 +160,39 @@ func NewInvalidParam(format string, args ...any) *APIError {
 }
 
 // NewBadJSON is the 400 for a body that is JSON but not the shape that was asked for.
+// DecodeFailure turns an error from decoding a request body into a refusal that describes the
+// caller's mistake without describing this server.
+//
+// Go's own decoder errors are written for a programmer reading a stack trace and name the program:
+// "json: cannot unmarshal array into Go struct field loginRequest.password of type string". Sent to
+// a client, that says which types this homeserver is built from and which field of which struct
+// parses a given endpoint — said, moreover, on the login and registration endpoints, which are the
+// most publicly reachable and the least authenticated things a homeserver does. So the caller is
+// told which of *their* fields was wrong, which is the part they can act on, and nothing else.
+func DecodeFailure(subject string, err error) *APIError {
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		if typeErr.Field != "" {
+			return NewAPIError(http.StatusBadRequest, ErrBadJSON,
+				"%s field %q does not hold a value of the type this endpoint expects",
+				subject, typeErr.Field)
+		}
+		return NewAPIError(http.StatusBadRequest, ErrBadJSON,
+			"%s does not hold a value of the type this endpoint expects", subject)
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(err, &syntaxErr) {
+		return NewAPIError(http.StatusBadRequest, ErrBadJSON, "%s is not valid JSON", subject)
+	}
+	// Anything else the decoder can say — an unsupported type, a destination that cannot be written
+	// to, an internal mismatch — is a fact about this program rather than about the caller's bytes,
+	// so it is reported as a malformed body and the detail is left where it belongs.
+	//
+	// Invalid UTF-8 is deliberately not handled here: `json.InvalidUTF8Error` is deprecated and the
+	// decoder no longer produces it, so the check for it lives where the bytes are read.
+	return NewBadJSON(subject + " could not be decoded as JSON")
+}
+
 func NewBadJSON(reason string) *APIError {
 	return NewAPIError(http.StatusBadRequest, ErrBadJSON, "%s", reason)
 }

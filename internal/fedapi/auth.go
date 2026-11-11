@@ -66,12 +66,39 @@ func (h *Handler) authenticatePeer(w http.ResponseWriter, r *http.Request) *fcli
 	// only way to see the pair disagree: the signature covers the method and the URI, so a peer that
 	// signed "/rooms/%21a%3Ahs1" and sent "/rooms/!a:hs1" (or the reverse) produces exactly this
 	// refusal, and nothing else in the log distinguishes it from a bad key.
+	header := r.Header.Get("Authorization")
 	slog.Warn("fedapi: refused a federation request that could not be authenticated",
 		"method", r.Method, "uri", r.URL.RequestURI(), "status", status,
-		"origin", authorizationOrigin(r.Header.Get("Authorization")),
-		"authorization", r.Header.Get("Authorization"), "reason", reason)
+		"origin", authorizationOrigin(header),
+		"authorization", redactedAuthorization(header), "reason", reason)
+	// The signature is not logged at any level, including debug. `sig=` alongside the method, URI,
+	// body hash, timestamp and nonce is a complete, replayable authorisation for that one request,
+	// and "we only write credentials when someone turns debugging on" is the same policy as writing
+	// them, because the level is not the thing that gets shipped to an aggregator or pasted into a
+	// channel — the file is. Whoever has to see the bytes a peer sent captures the wire, not the log.
 	httpx.RespondJSON(w, status, body)
 	return nil
+}
+
+// redactedAuthorization removes the signature from an `X-Matrix` Authorization header, leaving the
+// parts that make a refusal diagnosable: the claiming origin, the key it says it signed with, and the
+// nonce. Those identify the peer and the moment; the signature only authorises it.
+func redactedAuthorization(header string) string {
+	if header == "" {
+		return ""
+	}
+	const marker = `sig="`
+	start := strings.Index(header, marker)
+	if start < 0 {
+		// Nothing that looks like a signature: pass it through, because inventing a redaction for an
+		// unrecognised shape would hide the very malformation being investigated.
+		return header
+	}
+	end := strings.Index(header[start+len(marker):], `"`)
+	if end < 0 {
+		return header[:start] + `sig="<redacted>"`
+	}
+	return header[:start+len(marker)] + "<redacted>" + header[start+len(marker)+end:]
 }
 
 // authorizationOrigin pulls the claimed origin server name out of an Authorization header

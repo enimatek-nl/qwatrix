@@ -175,7 +175,7 @@ func DecodeJSON(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	if err := decoder.Decode(dst); err != nil {
-		return matrix.NewAPIError(http.StatusBadRequest, matrix.ErrBadJSON, "request body is not valid JSON: %s", err)
+		return matrix.DecodeFailure("the request body", err)
 	}
 	return nil
 }
@@ -214,7 +214,7 @@ func DecodeJSONIfPresent(r *http.Request, dst any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.UseNumber()
 	if err := decoder.Decode(dst); err != nil {
-		return matrix.NewAPIError(http.StatusBadRequest, matrix.ErrBadJSON, "request body is not valid JSON: %s", err)
+		return matrix.DecodeFailure("the request body", err)
 	}
 	return nil
 }

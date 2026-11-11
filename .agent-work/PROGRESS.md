@@ -890,3 +890,45 @@ Note on how they were written: four of the six first failed for reasons belongin
 bare `@alice` where a full user ID is required, `POST` where sending is `PUT`, an unescaped room ID
 turning into `M_UNRECOGNIZED`, and a read *receipt* mistaken for a read *marker*. Each was fixed in
 the test, and in each case the endpoint was right and my expectation was not.
+
+## M8 stage 2: what a failure says, and what a log keeps (T802)
+
+CN-7: no internal detail in error responses, no secrets in logs. Neither had a test. Three leaks found,
+all real, none hypothetical:
+
+1. **Login and register told clients the program's type names.** `request body is not valid JSON:
+   json: cannot unmarshal array into Go struct field loginRequest.password of type string` — on the two
+   most publicly reachable, least authenticated endpoints. Now: `the request body field "password"
+   does not hold a value of the type this endpoint expects` — the caller's field, which they can act
+   on, and nothing about this server. Fixed at the two shared decode helpers, so every endpoint
+   benefits; `matrix.DecodeFailure(subject, err)` keeps the phrasing right where the bytes are not a
+   request body (event content).
+2. **The media handler logged media identifiers at Info.** A media identifier is a *capability* — the
+   legacy unauthenticated download endpoint serves any file whose identifier is known — so the log was
+   a list of objects fetchable without a password. Logged with an 8-character prefix now: enough to
+   correlate with a user's report, not enough to download anything.
+3. **A refused federation request logged the peer's full `X-Matrix` header, signature included.** That
+   first moved the signature to a debug line, which the new test rejected: *the level is not what gets
+   shipped to an aggregator or pasted into a channel — the file is.* The signature is now in no log at
+   any level; the origin, key ID, nonce and URI, which are the diagnosable parts, stay.
+
+How the audit was made to mean something: the first version of the secrets test **passed while a
+password was being logged at Info**, because the harness logs at Error by default and so could not see
+the line. The test now runs its server at debug, and a deliberately planted leak was verified to make
+it fail before the fixes were written.
+
+Pinned by tests: 19 refusal shapes are matrix errors with an errcode and a message; none of them
+contains a marker that only an implementation says (`json:`, `struct field`, `.go:`, `sql:`, `goroutine`,
+`nil pointer dereference`, …); panic → 500 M_UNKNOWN naming nothing; an unexpected error →
+`Internal server error`, while a genuine `M_NOT_FOUND` keeps its text — sanitising is not silencing;
+pagination tokens, filters, media and query-string access tokens leak nothing.
+
+One guess of mine was wrong and is worth recording: I expected the request logger to leak query
+strings. It logs `r.URL.Path`, not `RequestURI()` — so that path was already safe. It is a test now,
+because it is one character away from not being.
+
+Measured: all new tests pass; whole in-process suite green (`tests/api` 143s, `tests/unit` 0.5s); go
+build, go vet, golangci-lint 0 issues, gofmt -s clean. Two mistakes of mine were caught by the gate on
+the way: `errors.As` **panicking at runtime** on a `json.InvalidUTF8Error` target (pointer receiver —
+and the type is deprecated anyway, so the branch is gone), and `NewBadJSON`/`NewNotJSON` taking no
+format arguments.

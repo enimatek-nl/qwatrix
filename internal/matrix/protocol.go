@@ -128,7 +128,7 @@ func ValidateEventContent(content []byte) error {
 	// is the only way to walk the document without ever turning a number into a float64.
 	open, err := decoder.Token()
 	if err != nil {
-		return NewBadJSON("the event content is not valid JSON: " + err.Error())
+		return DecodeFailure("the event content", err)
 	}
 	if delim, ok := open.(json.Delim); !ok || delim != '{' {
 		return NewBadJSON("the event content must be a JSON object")
@@ -159,7 +159,7 @@ func walkContent(decoder *json.Decoder, inObject bool) error {
 	for decoder.More() {
 		if inObject {
 			if _, err := decoder.Token(); err != nil { // the member name
-				return NewBadJSON("the event content is not valid JSON: " + err.Error())
+				return DecodeFailure("the event content", err)
 			}
 		}
 		if err := walkContentValue(decoder); err != nil {
@@ -167,7 +167,7 @@ func walkContent(decoder *json.Decoder, inObject bool) error {
 		}
 	}
 	if _, err := decoder.Token(); err != nil { // consume the closing } or ]
-		return NewBadJSON("the event content is not valid JSON: " + err.Error())
+		return DecodeFailure("the event content", err)
 	}
 	return nil
 }
@@ -176,7 +176,7 @@ func walkContent(decoder *json.Decoder, inObject bool) error {
 func walkContentValue(decoder *json.Decoder) error {
 	token, err := decoder.Token()
 	if err != nil {
-		return NewBadJSON("the event content is not valid JSON: " + err.Error())
+		return DecodeFailure("the event content", err)
 	}
 	switch value := token.(type) {
 	case json.Delim: // '{' or '[' — check inside, then continue with the siblings

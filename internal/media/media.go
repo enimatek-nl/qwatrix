@@ -83,6 +83,25 @@ func (s *Service) MaxUploadSize() int64 { return s.maxBytes }
 // row without bytes would be a download that 500s forever, and an orphan without a row is a file
 // nobody can name and can be swept by size. The hash is computed on the way through rather than in
 // memory, because the point of a limit is to bound memory as well as disk.
+// loggableID shortens a media identifier for a log line.
+//
+// A media identifier is a capability, not a label: the legacy unauthenticated download endpoint
+// serves any file whose identifier the caller knows. A log file is world-readable, shipped to an
+// aggregator, and pasted into issue tickets, so writing the whole identifier down would turn it into
+// a list of everything this homeserver holds that can be fetched without a password.
+//
+// A prefix is enough to do the job a log line is for — correlating this line with the report a user
+// files, who will be pasting the full URI themselves — and cannot be turned into a download.
+func loggableID(id string) string {
+	const keep = 8
+	if len(id) <= keep {
+		// Not an identifier this server minted, and too short to truncate usefully. Showing none of
+		// it costs nothing: an operator who needs the whole thing has the client that sent it.
+		return "[short]"
+	}
+	return id[:keep] + "…"
+}
+
 func (s *Service) Upload(ctx context.Context, localpart, fileName, contentType string, body io.Reader) (string, error) {
 	if contentType == "" {
 		// An absent type is not "text/plain" and not "application/octet-stream" by
@@ -142,7 +161,7 @@ func (s *Service) Upload(ctx context.Context, localpart, fileName, contentType s
 		_ = os.Remove(path)
 		return "", err
 	}
-	slog.Info("media: stored a file", "media_id", id, "size", written, "content_type", contentType)
+	slog.Info("media: stored a file", "media_id", loggableID(id), "size", written, "content_type", contentType)
 	return "mxc://" + s.serverName + "/" + id, nil
 }
 
@@ -169,7 +188,7 @@ func (s *Service) Download(ctx context.Context, origin, mediaID string) (*store.
 			// The row outlived the bytes. That is a bug worth a log and a 404: the
 			// alternative is a download that hangs or errors in a way that looks like the
 			// client's fault.
-			slog.Error("media: metadata has no file on disk", "media_id", row.ID, "error", err)
+			slog.Error("media: metadata has no file on disk", "media_id", loggableID(row.ID), "error", err)
 			return nil, nil, matrix.NewNotFound("Media %q was not found on this homeserver", mediaID)
 		}
 		return nil, nil, fmt.Errorf("opening media %q: %w", mediaID, err)
@@ -195,7 +214,7 @@ func Respond(w http.ResponseWriter, row *store.MediaFile, body io.Reader) {
 	w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'none'; navigate-to 'none'; form-action 'none'; frame-ancestors 'none'")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if _, err := io.Copy(w, body); err != nil {
-		slog.Warn("media: writing a file to a client failed", "media_id", row.ID, "error", err)
+		slog.Warn("media: writing a file to a client failed", "media_id", loggableID(row.ID), "error", err)
 	}
 }
 
