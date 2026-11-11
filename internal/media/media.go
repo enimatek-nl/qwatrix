@@ -46,6 +46,9 @@ type Service struct {
 	dir        string
 	serverName string
 	maxBytes   int64
+	// remote asks another server for a file it originates. Nil on a server that does not federate,
+	// which makes a request for foreign media a 404 rather than an error.
+	remote RemoteFetcher
 }
 
 // Options configures a [Service].
@@ -77,12 +80,6 @@ func New(st *store.Store, opts Options) (*Service, error) {
 // MaxUploadSize returns the configured cap, which is what /config advertises.
 func (s *Service) MaxUploadSize() int64 { return s.maxBytes }
 
-// Upload stores one file and returns its mxc:// URI.
-//
-// The bytes are written before the metadata row, and removed again if the row cannot be written: a
-// row without bytes would be a download that 500s forever, and an orphan without a row is a file
-// nobody can name and can be swept by size. The hash is computed on the way through rather than in
-// memory, because the point of a limit is to bound memory as well as disk.
 // loggableID shortens a media identifier for a log line.
 //
 // A media identifier is a capability, not a label: the legacy unauthenticated download endpoint
@@ -102,6 +99,12 @@ func loggableID(id string) string {
 	return id[:keep] + "…"
 }
 
+// Upload stores one file and returns its mxc:// URI.
+//
+// The bytes are written before the metadata row, and removed again if the row cannot be written: a
+// row without bytes would be a download that 500s forever, and an orphan without a row is a file
+// nobody can name and can be swept by size. The hash is computed on the way through rather than in
+// memory, because the point of a limit is to bound memory as well as disk.
 func (s *Service) Upload(ctx context.Context, localpart, fileName, contentType string, body io.Reader) (string, error) {
 	if contentType == "" {
 		// An absent type is not "text/plain" and not "application/octet-stream" by
@@ -165,33 +168,83 @@ func (s *Service) Upload(ctx context.Context, localpart, fileName, contentType s
 	return "mxc://" + s.serverName + "/" + id, nil
 }
 
-// Download looks a file up and returns its metadata.
+// Download looks a file up and returns its metadata with an open handle on its bytes.
 //
-// A file from another server is not fetched here: without federation this server has no way to
-// verify what it would receive, and a media cache that will fetch and serve arbitrary URLs on demand
-// is a way to make this server an open proxy for whoever can name an origin. The answer is therefore
-// "not found", which is also what the specification allows for media this server does not hold.
+// Files this server does not originate are fetched from the server that does and cached, which is what
+// turns "an image hosted on another server" into an image. The old behaviour was a flat 404, on the
+// grounds that a media cache which fetches on demand is a way to become an open proxy — and that
+// reasoning is right about the thing it describes: fetching *a URL a caller names* is exactly how a
+// server becomes somebody else's proxy. What happens here is narrower, and [Service.fetchRemote]
+// spells out why: a media ID and an origin server name one fixed, signed federation resource, and the
+// copy is bounded by this server's own upload limit.
+//
+// A cached copy is never served as though this server were its origin. The origin column is what makes
+// that check possible, and it is the reason a cached file keeps its own local ID rather than the
+// origin's.
 func (s *Service) Download(ctx context.Context, origin, mediaID string) (*store.MediaFile, *os.File, error) {
-	if origin != "" && origin != s.serverName {
-		return nil, nil, matrix.NewNotFound("Media %q:%q was not found on this homeserver", origin, mediaID)
+	want := origin
+	if want == "" {
+		want = s.serverName
 	}
-	row, err := s.store.Media.Get(ctx, mediaID)
-	if err != nil {
-		if store.IsNotFound(err) {
-			return nil, nil, matrix.NewNotFound("Media %q was not found on this homeserver", mediaID)
+
+	if want == s.serverName {
+		// Somebody is asking this server for a file it is told this server originates.
+		row, err := s.store.Media.Get(ctx, mediaID)
+		if err == nil && mediaHolder(row, s.serverName) == s.serverName {
+			return s.open(row)
 		}
+		if err != nil && !store.IsNotFound(err) {
+			return nil, nil, err
+		}
+		if row != nil && mediaHolder(row, s.serverName) != s.serverName {
+			// The ID exists here, but it belongs to another server's cached copy. Serving it would let
+			// this server publish bytes under its own name that it only ever borrowed.
+			slog.Warn("media: refusing to serve another server's file under this server's own origin",
+				"media_id", loggableID(mediaID), "origin", mediaHolder(row, s.serverName))
+		}
+		return nil, nil, matrix.NewNotFound("Media %q was not found on this homeserver", mediaID)
+	}
+
+	// A foreign origin: the cache first, because the point of caching is that the second viewer of an
+	// image does not depend on the server that has already been asked.
+	if cached, err := s.store.Media.GetUpstream(ctx, want, mediaID); err == nil {
+		return s.open(cached)
+	} else if !store.IsNotFound(err) {
 		return nil, nil, err
 	}
+	return s.fetchRemote(ctx, want, mediaID)
+}
+
+// OriginFile returns a file this server received from one of its own users, for a peer asking over
+// federation.
+//
+// It is [Service.Download] with the origin pinned to this server, which is the whole security property:
+// the federation endpoint cannot ask for a cached copy of another server's file, because asking for one
+// this way is a lookup that refuses it.
+func (s *Service) OriginFile(ctx context.Context, mediaID string) (*store.MediaFile, *os.File, error) {
+	return s.Download(ctx, s.serverName, mediaID)
+}
+
+// mediaHolder is the server a row says it came from, reading an empty origin as this server — which is
+// what every row written before media was federated means, and what is true of them.
+func mediaHolder(row *store.MediaFile, serverName string) string {
+	if row == nil || row.Origin == "" {
+		return serverName
+	}
+	return row.Origin
+}
+
+// open turns a metadata row into the file it describes.
+func (s *Service) open(row *store.MediaFile) (*store.MediaFile, *os.File, error) {
 	handle, err := os.Open(s.pathFor(row.ID))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			// The row outlived the bytes. That is a bug worth a log and a 404: the
-			// alternative is a download that hangs or errors in a way that looks like the
-			// client's fault.
+			// The row outlived the bytes. That is a bug worth a log and a 404: the alternative is a
+			// download that fails in a way which looks like the client's fault.
 			slog.Error("media: metadata has no file on disk", "media_id", loggableID(row.ID), "error", err)
-			return nil, nil, matrix.NewNotFound("Media %q was not found on this homeserver", mediaID)
+			return nil, nil, matrix.NewNotFound("Media %q was not found on this homeserver", row.ID)
 		}
-		return nil, nil, fmt.Errorf("opening media %q: %w", mediaID, err)
+		return nil, nil, fmt.Errorf("opening media %q: %w", row.ID, err)
 	}
 	return row, handle, nil
 }

@@ -64,6 +64,10 @@ type Options struct {
 	// a peer that hears "no devices" stops trying to encrypt to them, which is a quiet way of deleting
 	// somebody's conversations.
 	Devices DeviceListSource
+	// Media serves this server's own files to peers. It may be nil, in which case the media endpoint
+	// answers that this server does not serve media over federation — a refusal a peer can read, and
+	// the right answer for a server whose media repository is switched off.
+	Media MediaSource
 	// Join accepts federated joins into this server's rooms. It may be nil, in which case the
 	// join handshake answers that this server does not take federated joins — a refusal the
 	// peer can read, rather than a route it has to guess the meaning of.
@@ -110,6 +114,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/media/download/{mediaID}", h.handleFederationMedia)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server", h.handleKeys)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server/{keyID}", h.handleKeyByID)
 	h.mux.HandleFunc("/", h.handleUnknown)

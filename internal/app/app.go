@@ -205,12 +205,33 @@ func New(cfg *config.Config) (*App, error) {
 		Join:       rooms,
 		Peer:       peer,
 		Devices:    keyService,
+		Media:      mediaService,
 	})
 	// A client asking about a user who lives elsewhere has to be answered by that user's own server,
 	// so the key server is given the transport that can ask. Without it, /keys/query for a remote user
 	// answers "no devices" — which a client reads as a true statement about a stranger rather than as
 	// this server shrugging, and it will not ask again.
 	keyService.WithRemoteKeySource(fedapi.NewRemoteDevices(peer))
+	// An image hosted elsewhere is not this server's file, and a client cannot fetch it from the
+	// origin on its own behalf: a Matrix client asks its own homeserver, and this server has to be
+	// willing to go and ask. Without this, every image, avatar and file from another server in a
+	// federated room is a grey square with no error anywhere — the file exists, two hops away, and
+	// nothing the user can do makes it appear.
+	if cfg.FederationAddr != "" {
+		mediaService.WithRemoteFetcher(media.RemoteFetcherFunc(
+			func(ctx context.Context, origin string, path string) (*media.RemoteMedia, error) {
+				fetched, err := peer.GetSignedFile(ctx, spec.ServerName(origin), path)
+				if err != nil {
+					return nil, err
+				}
+				return &media.RemoteMedia{
+					ContentType: fetched.ContentType,
+					FileName:    fetched.FileName,
+					Body:        fetched.Body,
+					Size:        fetched.Size,
+				}, nil
+			}))
+	}
 	// Joining a room this server does not hold is the one room operation that cannot be answered
 	// from the local database, so the room server is given the federation transport for it. Left
 	// unset, a room this server has never heard of simply does not exist — which is the correct

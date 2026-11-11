@@ -1078,3 +1078,50 @@ test layers, federation status stated as working/not-working, package layout, li
 
 Measured: `go test ./tests/runtime/ -count=1` → ok (7.7s, 5 tests); build, `go vet`, `golangci-lint`
 0 issues, `gofmt -s` clean.
+
+## M8 stage 6: run 98 — every mandatory test measured at last, and remote media
+
+**The sweep finished its job.** `complement-sweep.sh` ran both packages with per-test retries:
+**197 verdicts, 0 never-run**. `tests/csapi` is unchanged at 91 pass / 15 fail — no regressions from the
+outbound-federation work. AC-5's mandatory set is now **79 passing, 16 failing**, and every one of the 16
+has a cause pulled from its own log line, not a guess:
+
+| Failing mandatory test | Cause, from the run's own output | Task |
+|---|---|---|
+| `TestContentMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestMediaWithoutFileNameCSMediaV1` | `GET /client/v1/media/download/hs1/…` → 404: a file hosted elsewhere was never fetched | **fixed below** |
+| `TestLocalPngThumbnail` | same, for `media/thumbnail` | T719 |
+| `TestEventAuth` | `MustLeaveRoom: send_leave failed` | T720 |
+| `TestUnbanViaInvite` | the invited user never appears: invites are not co-signed | T714 |
+| `TestSyncTimelineGap` | `MustSendTransaction … contained events the server rejected` (outlier/gap-fill) | T713 |
+| `TestDeviceListUpdates` | `device_lists.changed` never names a remote user | T712b |
+| `TestRoomSummaryAllowedRoomIDs` | `GET /_matrix/client/v1/room_summary/{roomID}` → 404: only `/rooms/{id}/hierarchy` is registered | T721 |
+| `TestClientSpacesSummary`, `TestRestrictedRoomsSpacesSummaryLocal`, `TestRestrictedRoomsLocalJoin` | restricted rooms / space hierarchy join rules | T709 |
+| `TestUnknownEndpoints` | `MatchResponse got status 404 want 405` | T722 |
+| `TestJumpToDateEndpoint`, `TestSyncOmitsStateChangeOnFilteredEvents` | blueprint construction failure / `POST /join/{roomID}` refused | T723 |
+
+**Remote media (MSC2448), because four mandatory tests depend on it.** A client never fetches a file
+from the server that has it — it asks *its own* homeserver, `GET /client/v1/media/download/{origin}/{id}`.
+If that server has never heard of the file and does not go and ask, the user sees a grey square, with
+nothing in the room state, the sync, or any error to explain it, forever, while the file sits two hops
+away.
+
+- `media.Service` gained a `RemoteFetcher` seam, and the fetch **caches**: the copy is stored under a
+  fresh local ID with `(origin, upstream_id)` as the way back to it, because reusing the origin's ID
+  would put rows in the table whose meanings depend on where they came from. Without a cache, every
+  re-render of an image depends on the origin again, and the day the origin disappears a room loses an
+  image it has displayed for months.
+- The inbound side is `GET /_matrix/federation/v1/media/download/{mediaID}` — signed, and served **only
+  for files this server originates**, through the same response writer as a client download so the three
+  safety headers cannot be stepped around. A test pins that a peer cannot ask hs2 for hs1's file, and
+  one pins the signature requirement.
+- The old comment justified refusing to fetch by saying an on-demand media cache makes this server an
+  open proxy. That is true of fetching *a URL a caller names*; what happens here is a signed GET to one
+  fixed federation path on the named origin, bounded by this server's own upload limit, and the comment
+  now says which rule is which.
+
+Measured: `TestRemoteMediaIsFetchedFromTheServerThatHoldsIt` (bytes, content type, filename preserved;
+and the origin is asked **exactly once** across two downloads, which is what proves the cache works
+rather than re-fetching), `TestAFederatedMediaRequestServesThisServersOwnFile`,
+`TestAFederatedMediaRequestCannotAskForAnotherServersFile`, `TestAFederatedMediaRequestMustBeSigned`.
+Whole in-process suite green (`tests/api` 157 s, `tests/runtime`, `tests/unit`); build, vet,
+golangci-lint 0 issues, `gofmt -s` clean.

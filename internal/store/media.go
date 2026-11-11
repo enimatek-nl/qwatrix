@@ -22,8 +22,16 @@ type MediaFile struct {
 	// Origin is the server that holds this file. It is stored because a download request names
 	// the origin it believes it is talking to, and answering for somebody else's media ID would
 	// let one server's cache impersonate another's content.
-	Origin    string `gorm:"size:255;index" json:"-"`
-	Localpart string `gorm:"size:255;index" json:"-"`
+	Origin string `gorm:"size:255;index" json:"-"`
+	// UpstreamID is the media ID the *origin* uses, for a file this server fetched and cached from
+	// another server. Empty for files this server received from one of its own users.
+	//
+	// A cached copy is stored under a fresh local ID — otherwise this table would hold rows whose IDs
+	// mean different things depending on where they came from — so this column is the only way back
+	// from "the file mxc://origin/xyz" to the copy already on disk. Without it the cache could never
+	// be found, and every view of an image would ask the origin again.
+	UpstreamID string `gorm:"size:255;index" json:"-"`
+	Localpart  string `gorm:"size:255;index" json:"-"`
 	// ContentType is served back verbatim. It is what the uploader sent, because the uploader is
 	// the party that knew what the bytes were; a sniffed type would be a guess about content the
 	// server has no business reinterpreting — and it is the difference between a client rendering
@@ -49,6 +57,8 @@ type MediaRepo interface {
 	Put(ctx context.Context, file *MediaFile) error
 	// Get returns one row, or [ErrNotFound].
 	Get(ctx context.Context, id string) (*MediaFile, error)
+	// GetUpstream returns the cached copy of another server's file, or [ErrNotFound].
+	GetUpstream(ctx context.Context, origin, upstreamID string) (*MediaFile, error)
 	// Delete removes the metadata of one file.
 	Delete(ctx context.Context, id string) error
 	// Count returns how many files this server holds.
@@ -67,6 +77,19 @@ func (r *MediaRepoImpl) Put(ctx context.Context, file *MediaFile) error {
 		return fmt.Errorf("storing media metadata %q: %w", file.ID, err)
 	}
 	return nil
+}
+
+// GetUpstream implements [MediaRepo].
+func (r *MediaRepoImpl) GetUpstream(ctx context.Context, origin, upstreamID string) (*MediaFile, error) {
+	var row MediaFile
+	err := session(ctx, r.db).Where("origin = ? AND upstream_id = ?", origin, upstreamID).First(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("media %q from %s: %w", upstreamID, origin, ErrNotFound)
+		}
+		return nil, fmt.Errorf("reading cached media %q from %s: %w", upstreamID, origin, err)
+	}
+	return &row, nil
 }
 
 // Get implements [MediaRepo].

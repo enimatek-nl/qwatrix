@@ -278,6 +278,7 @@ that arrives unauthenticated is a peer asking who this server is.
 | `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) |
 | `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
+| `GET` | `/_matrix/federation/v1/media/download/{mediaID}` | [MSC2448](https://github.com/matrix-org/matrix-spec-proposals/pull/2448) — signed; files this server originates only |
 
 The key response is signed by the key it publishes, so a peer needs to believe only the certificate
 of the connection it opened. An unknown key ID answers `404 M_NOT_FOUND`: "this server never had
