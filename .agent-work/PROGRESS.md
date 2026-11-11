@@ -1164,3 +1164,38 @@ routes and the `/{path}` tail), `TestAKnownEndpointRefusesTheWrongMethod`,
 `PUT …/login → 405 Allow: GET,HEAD,POST`, `PUT …/federation/v1/version → 405 Allow: GET,HEAD`,
 `PUT …/key/v2/query → 404`, unknown paths 404. Whole in-process suite green (156 s), build, vet,
 golangci-lint 0 issues, `gofmt -s` clean.
+
+## M8 stage 8: two defects that were hiding behind a 401 (T723, T727)
+
+Two complement failures had been recorded as "fails inside blueprint construction" and "fails on a
+refused `POST /join`". Both descriptions were symptoms. Measuring the *new* failure messages after the
+first fix is what turned them into two separate bugs:
+
+- **`m.login.dummy` without a session was refused** (fdb8bb8). Complement's blueprint builder registers
+  its users with one request carrying `auth: {type: "m.login.dummy"}` and no session, which Synapse
+  completes and this server answered with a 401 challenge. A stage that asks for no credential cannot
+  be made safer by demanding a session: the session binds a *completed stage* to a request, and there
+  is no credential here to bind. The named-but-unknown-session refusal stays — that is a stale or
+  forged handle, and silently starting over would let one registration's completed stage satisfy
+  another. The runtime test's helper carried the line "doing it in one request would be testing a
+  shortcut this server does not offer", which is a defect with a confident explanation attached.
+- **A peer's `send_join` state had to contain the join event** (044e334). complement's reference
+  federation server deliberately builds its state list before inserting the event, so it answers 200
+  and this server replied 500 `M_UNKNOWN`, "the peer's answer did not include the join it accepted" —
+  refusing a server that had said yes, to rooms that were perfectly willing to have us. The join's own
+  validity was never in question: it was built from the peer's `make_join` template, verified against
+  the peer's signing key, authorised against the state *before* it, and persistence keys state by event
+  ID, so a peer that does include it is not applied twice.
+
+The test that asserted the second behaviour was deleted rather than inverted: it pinned a defect, and
+the properties that genuinely must be refused (bad signature, foreign room, incomplete auth chain,
+duplicated `(type, state_key)`, unauthorised join) each have their own test.
+
+`TestJumpToDateEndpoint` then failed for the *third* time in a row somewhere else — an appservice
+bridge user joining with complement's `as_token`, answered `M_UNKNOWN_TOKEN` — which is a real feature
+(application services, T726) rather than a bug, and is recorded as such instead of chased.
+
+Measurement note: `POST /join/{roomID}?server_name=` returns 200 in-process and 401/500 in containers
+for two different reasons, and both looked like one bug until the container bodies were read. The
+bodies — `M_UNKNOWN_TOKEN` versus `the peer's answer did not include the join` — were the whole
+diagnosis.
