@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+
+	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
 
@@ -83,14 +85,25 @@ func TestACustomEventTypeDoesNotHaveToBeNamespaced(t *testing.T) {
 	}
 }
 
-// TestAStateOnlyEventTypeIsNotAcceptedThroughTheSendEndpoint keeps a room's rules honest.
+// TestAStateOnlyEventTypeSentToTheTimelineChangesNothing is about the difference between a lie and a
+// change.
 //
 // `m.room.power_levels` written through PUT /state is the room's rules. The same type written through
-// POST /send is a *timeline* event with no state key: it changes nothing, and yet the room now holds an
-// event that looks exactly like the room's power rules to anything reading the timeline rather than the
-// state. A room member can put that in front of every other member, which is a lie about the room rather
-// than a change to it — and the honest answer is to refuse the write.
-func TestAStateOnlyEventTypeIsNotAcceptedThroughTheSendEndpoint(t *testing.T) {
+// PUT /send is an event with no state key: it is not state, so it changes nothing, and it appears in
+// the timeline where a client walking events can see it. That looks like something worth refusing,
+// and refusing it was a mistake — complement's own room-forget test writes `m.room.join_rules` this
+// way, in a mandatory test that passed before this server decided to be pickier than every other
+// homeserver. Synapse accepts it; the specification's rules are about state resolution, not about
+// which types may appear on the timeline.
+//
+// What actually protects a room is that these events are inert, so that is what this test pins: the
+// fake rules arrive, and the real ones do not move. A client that reads a room's rules out of the
+// timeline instead of the state is reading the wrong thing, and no amount of refusing writes here
+// fixes that.
+//
+// Two types are still refused, by the room's own authorization rules rather than by a list kept
+// here: `m.room.member` and `m.room.create`, which cannot be evaluated as non-state events at all.
+func TestAStateOnlyEventTypeSentToTheTimelineChangesNothing(t *testing.T) {
 	server := harness.NewWithRegistration(t)
 	alice := server.Register(t, "alice", "pw-alice", false)
 	bob := server.Register(t, "bob", "pw-bob", false)
@@ -107,26 +120,59 @@ func TestAStateOnlyEventTypeIsNotAcceptedThroughTheSendEndpoint(t *testing.T) {
 		"m.room.canonical_alias", "m.room.server_acl", "m.room.tombstone",
 		"m.space.child", "m.space.parent",
 	} {
-		response := bob.Do(t, server, harness.Request{
+		// Sent by alice, the room's creator: the room's own authorization rules apply to these
+		// types exactly as they apply to writing them as state, so an ordinary member is refused a
+		// power-levels event and a creator is not. That is the rule doing its work, which is a
+		// different thing from this server refusing the type on principle.
+		response := alice.Do(t, server, harness.Request{
 			Method: http.MethodPut,
 			Path: "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) +
 				"/send/" + url.PathEscape(eventType) + "/txn-state-as-message",
-			Body: map[string]any{"users": map[string]any{"@eve:test.local": 100}},
+			Body: map[string]any{"users": map[string]any{"@eve:example.org": 100}},
+		})
+		if response.StatusCode != http.StatusOK {
+			t.Errorf("%s through the send endpoint answered %d, want 200: %s", eventType,
+				response.StatusCode, response.Body)
+		}
+	}
+
+	// A member without the power still cannot do it, and is told so by the same rules that would
+	// apply to writing the state.
+	withoutPower := bob.Do(t, server, harness.Request{
+		Method: http.MethodPut,
+		Path: "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) +
+			"/send/m.room.power_levels/txn-state-as-message",
+		Body: map[string]any{"users": map[string]any{"@bob:example.org": 100}},
+	})
+	if withoutPower.StatusCode == http.StatusOK {
+		t.Errorf("an ordinary member wrote a power-levels event as a timeline event: %s", withoutPower.Body)
+	}
+	if code := gjson.GetBytes(withoutPower.Body, "errcode").Str; code != "M_FORBIDDEN" {
+		t.Errorf("refusing a member without the power answered %q, want M_FORBIDDEN: %s",
+			code, withoutPower.Body)
+	}
+
+	// The room's real rules are untouched: an event with no state key is not state.
+	after := alice.MustGet(t, server,
+		"/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/state/m.room.power_levels").Body
+	if string(before) != string(after) {
+		t.Errorf("the room's power levels changed from events shaped like rules:\n before: %s\n after:  %s",
+			before, after)
+	}
+
+	// Two types cannot be non-state events at all, and the room's own authorization rules say so.
+	for _, eventType := range []string{"m.room.member", "m.room.create"} {
+		response := bob.Do(t, server, harness.Request{
+			Method: http.MethodPut,
+			Path: "/_matrix/client/v3/rooms/" + url.PathEscape(roomID) +
+				"/send/" + url.PathEscape(eventType) + "/txn-member-as-message",
+			Body: map[string]any{"membership": "leave"},
 		})
 		if response.StatusCode == http.StatusOK {
-			t.Errorf("%s was accepted as a timeline event; it is a state type, and a fake one in the "+
-				"timeline is read as the real thing by clients that walk events: %s", eventType, response.Body)
+			t.Errorf("%s was accepted as a timeline event: %s", eventType, response.Body)
 		}
 		if body := string(response.Body); strings.Contains(body, "M_UNKNOWN") {
 			t.Errorf("%s was refused by something that is not a refusal: %s", eventType, body)
 		}
-	}
-
-	// The room's real rules are untouched, which is the point of the refusal.
-	after := alice.MustGet(t, server,
-		"/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+"/state/m.room.power_levels").Body
-	if string(before) != string(after) {
-		t.Errorf("the room's power levels changed from the attempted writes:\n before: %s\n after:  %s",
-			before, after)
 	}
 }

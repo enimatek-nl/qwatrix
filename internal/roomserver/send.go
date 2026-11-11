@@ -39,11 +39,6 @@ func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventT
 	if err := validateEventType(eventType); err != nil {
 		return "", false, err
 	}
-	// A state type written here would be a timeline event pretending to be a room rule, so it is
-	// refused rather than persisted: see stateOnlyEventTypes.
-	if err := validateNotStateType(eventType); err != nil {
-		return "", false, err
-	}
 
 	if txnID != "" {
 		// A transaction ID is a device's own numbering, scoped to the room the client is
@@ -494,44 +489,14 @@ func redactsInContent(roomVersion string) bool {
 	return value >= 11
 }
 
-// stateOnlyEventTypes are the event types the specification defines as state events — the ones whose
-// meaning lives in a room's state, addressed by `(type, state_key)`.
-//
-// Writing one through `PUT /state` sets the room's rule. Writing the same type through `POST /send`
-// creates a *timeline* event with no state key, which changes nothing and yet reads as the real thing to
-// any client that walks events instead of resolving state. So a room member could drop an event shaped
-// exactly like the room's power rules in front of everybody in the room, and the room's actual rules
-// would be somewhere else entirely. That is a forgery of the room's appearance rather than a change to
-// it, and the honest response is to refuse the write and name the endpoint that means what the caller
-// evidently wanted.
-var stateOnlyEventTypes = map[string]bool{
-	"m.room.create":             true,
-	"m.room.member":             true,
-	"m.room.power_levels":       true,
-	"m.room.join_rules":         true,
-	"m.room.history_visibility": true,
-	"m.room.guest_access":       true,
-	"m.room.topic":              true,
-	"m.room.name":               true,
-	"m.room.avatar":             true,
-	"m.room.canonical_alias":    true,
-	"m.room.encryption":         true,
-	"m.room.server_acl":         true,
-	"m.room.tombstone":          true,
-	"m.room.pinned_events":      true,
-	"m.space.child":             true,
-	"m.space.parent":            true,
-}
-
-// validateNotStateType refuses a state event type arriving on the timeline path.
-func validateNotStateType(eventType string) error {
-	if stateOnlyEventTypes[eventType] {
-		return matrix.NewInvalidParam(
-			"event type %q is a state event; write it with PUT /_matrix/client/v3/rooms/{roomID}/state/%s",
-			eventType, eventType)
-	}
-	return nil
-}
+// A state event type sent to `PUT /send` is not refused. It arrives as a timeline event with no state
+// key, which is not state and changes no rule: `m.room.power_levels` put on the timeline does not
+// become the room's power levels, and a client that reads rules from the timeline rather than the
+// state is reading the wrong thing. Refusing these was tried and was wrong — the specification does
+// not restrict which types may be events, no other homeserver refuses them, and complement's own room
+// forget test writes `m.room.join_rules` this way. What is still refused is what the room's own
+// authorization rules cannot evaluate as a non-state event, `m.room.member` and `m.room.create`, and
+// those refusals come from the auth layer rather than from a list kept here.
 
 // validateEventType enforces the parts of the event-type grammar that protect this server: a type is
 // required, bounded, and made of characters that survive a URL path, a database key and a filename.
