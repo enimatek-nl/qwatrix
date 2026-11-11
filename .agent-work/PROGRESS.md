@@ -1224,3 +1224,30 @@ in a test is for: one page cannot show it.
 Measurement: `TestSyncOmitsStateChangeOnFilteredEvents` **passes** in complement since the event-type
 fix — a mandatory AC-5 test won by sending `please_filter_me`, which this server used to refuse because
 the type had no dots in it.
+
+## M8 stage 10: what the space walk found, and six defects behind it (T729–T735)
+
+Implementing `GET /rooms/{roomID}/hierarchy` was the last large local gap, and once it existed it
+worked as a detector: complement's mandatory tests started reaching assertions they had never got to,
+and four of them named something broken rather than something missing.
+
+| Measured cause | Was attributed to |
+|---|---|
+| `PUT /send` refused `m.room.join_rules` | thought to be hygiene; complement's room-forget test sends it |
+| `/sync` had no branch for membership `ban` | thought to be a federated-ban gap |
+| a restricted room's join rules read as the caller | thought to be MSC3083 join support |
+| room version 12 advertised, then refused by an internal check | thought to be unsupported-version hygiene |
+
+Two of those four were regressions I had introduced that morning, and both were caught only by the
+container suite — the in-process suite was green throughout. The lesson is written down twice now in
+this project's history: **a comment in one of my tests claiming complement requires a behaviour is not
+evidence.** It claimed complement only sends `m.room.message` through `/send` (it sends
+`m.room.join_rules`), and it claimed complement requires session-less registration (it requires it for
+a name it has never been challenged about, and requires the opposite — a 401 — once it has issued a
+session).
+
+The registration case is the interesting one, because both of complement's requests are byte-identical:
+username, password, `auth: {type: m.login.dummy}`, no session. Nothing inside either request says
+whether the server has already answered this caller with a challenge. The difference had to be
+remembered rather than inferred, so the session issued for a name under registration is now remembered
+under that name — the only handle the caller repeats.
