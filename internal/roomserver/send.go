@@ -39,6 +39,11 @@ func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventT
 	if err := validateEventType(eventType); err != nil {
 		return "", false, err
 	}
+	// A state type written here would be a timeline event pretending to be a room rule, so it is
+	// refused rather than persisted: see stateOnlyEventTypes.
+	if err := validateNotStateType(eventType); err != nil {
+		return "", false, err
+	}
 
 	if txnID != "" {
 		// A transaction ID is a device's own numbering, scoped to the room the client is
@@ -489,9 +494,54 @@ func redactsInContent(roomVersion string) bool {
 	return value >= 11
 }
 
-// validateEventType enforces the specification's event-type grammar: a custom type needs a
-// reverse-domain prefix, and no type may contain characters that would not survive being
-// written to disk or into a URL.
+// stateOnlyEventTypes are the event types the specification defines as state events — the ones whose
+// meaning lives in a room's state, addressed by `(type, state_key)`.
+//
+// Writing one through `PUT /state` sets the room's rule. Writing the same type through `POST /send`
+// creates a *timeline* event with no state key, which changes nothing and yet reads as the real thing to
+// any client that walks events instead of resolving state. So a room member could drop an event shaped
+// exactly like the room's power rules in front of everybody in the room, and the room's actual rules
+// would be somewhere else entirely. That is a forgery of the room's appearance rather than a change to
+// it, and the honest response is to refuse the write and name the endpoint that means what the caller
+// evidently wanted.
+var stateOnlyEventTypes = map[string]bool{
+	"m.room.create":             true,
+	"m.room.member":             true,
+	"m.room.power_levels":       true,
+	"m.room.join_rules":         true,
+	"m.room.history_visibility": true,
+	"m.room.guest_access":       true,
+	"m.room.topic":              true,
+	"m.room.name":               true,
+	"m.room.avatar":             true,
+	"m.room.canonical_alias":    true,
+	"m.room.encryption":         true,
+	"m.room.server_acl":         true,
+	"m.room.tombstone":          true,
+	"m.room.pinned_events":      true,
+	"m.space.child":             true,
+	"m.space.parent":            true,
+}
+
+// validateNotStateType refuses a state event type arriving on the timeline path.
+func validateNotStateType(eventType string) error {
+	if stateOnlyEventTypes[eventType] {
+		return matrix.NewInvalidParam(
+			"event type %q is a state event; write it with PUT /_matrix/client/v3/rooms/{roomID}/state/%s",
+			eventType, eventType)
+	}
+	return nil
+}
+
+// validateEventType enforces the parts of the event-type grammar that protect this server: a type is
+// required, bounded, and made of characters that survive a URL path, a database key and a filename.
+//
+// It deliberately does *not* enforce the specification's recommendation that a custom type carry a
+// reverse-domain prefix. The specification says such a type MUST be namespaced and defines no error for
+// the violation, and no other homeserver refuses one — so refusing would not keep anybody safe, it would
+// only mean this server's users cannot send anything to anybody. A type is opaque bytes to a homeserver;
+// namespaces are a courtesy between clients, and a courtesy is enforced by asking, not by breaking the
+// person who did not read the fine print.
 func validateEventType(eventType string) error {
 	if eventType == "" {
 		return matrix.NewInvalidParam("an event type is required")
@@ -501,9 +551,6 @@ func validateEventType(eventType string) error {
 	}
 	if strings.HasPrefix(eventType, "m.") {
 		return nil
-	}
-	if !strings.Contains(eventType, ".") {
-		return matrix.NewInvalidParam("custom event type %q must use a namespaced format", eventType)
 	}
 	for _, r := range eventType {
 		switch {

@@ -1407,12 +1407,15 @@ func TestFreshSyncFindsRecentEvent(t *testing.T) {
 	for i := 0; i < 25; i++ {
 		alice.MustSendText(t, server, roomID, fmt.Sprintf("message %d", i))
 	}
-	// Including a state-typed event sent through the timeline endpoint, which complement does.
+	// Including a custom event type with no namespace, which the specification discourages and every
+	// homeserver accepts. It belongs in the window like any other event: the type is opaque to this
+	// server, and a fresh sync that skipped it would be dropping a real event on a syntax technicality.
+	// (A *state* type cannot be sent this way at all — see TestAStateOnlyEventTypeIsNotAcceptedThroughTheSendEndpoint.)
 	alice.Do(t, server, harness.Request{
 		Method: http.MethodPut,
 		Path: "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) +
-			"/send/m.room.join_rules/txn-stateish",
-		RawBody: []byte(`{"join_rule":"public"}`),
+			"/send/please_filter_me/txn-unnamespaced",
+		RawBody: []byte(`{"body":"a type with no namespace"}`),
 	}).MustStatus(t, http.StatusOK)
 
 	last := alice.MustSendText(t, server, roomID, "the one to find")
