@@ -800,15 +800,19 @@ func (s *Service) leftRoom(ctx context.Context, req Request, membership store.Me
 		}
 		room.Timeline.Events = append(room.Timeline.Events, event)
 	}
-	if req.FullState {
-		// A client that asked for the full state gets the room's state as of the leave, which is
-		// the only state this reader has a right to.
-		state, err := s.stateAtLeave(ctx, membership.RoomID, membership.StreamPos, reader, req.Filter)
-		if err != nil {
-			return nil, false, false, err
-		}
-		room.State = &EventsBatch{Events: state}
+	// The state of the room as it was when the reader lost it goes along with the timeline, always,
+	// and not only when `full_state` was asked for. A client showing a room the user can no longer
+	// enter — the ban notice, the "you no longer have access" screen — draws it from what it is
+	// handed, because it cannot ask for more: every read it might make about that room is now
+	// refused. Synapse sends this state, and the specification carries the field for this.
+	//
+	// It is the state as of the leave, rendered with the reader's own (non-member) authority, so
+	// this hands back nothing the reader did not already have.
+	state, err := s.stateAtLeave(ctx, membership.RoomID, membership.StreamPos, reader, req.Filter)
+	if err != nil {
+		return nil, false, false, err
 	}
+	room.State = &EventsBatch{Events: state}
 	return room, false, true, nil
 }
 

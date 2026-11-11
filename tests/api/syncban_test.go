@@ -116,6 +116,14 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	// "you were thrown out, for this reason" are different messages to a user, and only the event
 	// says which happened.
 	var leftRoom struct {
+		State struct {
+			Events []struct {
+				Type    string `json:"type"`
+				Content struct {
+					Membership string `json:"membership"`
+				} `json:"content"`
+			} `json:"events"`
+		} `json:"state"`
 		Timeline struct {
 			Events []struct {
 				Type    string `json:"type"`
@@ -129,6 +137,15 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	if err := json.Unmarshal(left, &leftRoom); err != nil {
 		t.Fatalf("decoding the left room: %v\n%s", err, left)
 	}
+	// The state is there too. A client that has to render a room it is no longer in — the ban
+	// notice, the "you no longer have access" screen — draws it from the state it is handed, because
+	// it cannot ask the server for more. Synapse sends it, and the specification carries the field for
+	// exactly this.
+	if !hasBanEvent(leftRoom.State.Events) {
+		t.Errorf("the left room carries no state of its own (%d events) — a client rendering the room "+
+			"it cannot enter has nothing to draw: %s", len(leftRoom.State.Events), left)
+	}
+
 	for _, event := range leftRoom.Timeline.Events {
 		if event.Type == "m.room.member" && event.Content.Membership == "ban" {
 			if event.Content.Reason == "" {
@@ -139,4 +156,20 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	}
 	t.Errorf("the left room's timeline does not carry the ban event; it holds %d events: %s",
 		len(leftRoom.Timeline.Events), left)
+}
+
+type leftEvent = struct {
+	Type    string `json:"type"`
+	Content struct {
+		Membership string `json:"membership"`
+	} `json:"content"`
+}
+
+func hasBanEvent(events []leftEvent) bool {
+	for _, event := range events {
+		if event.Type == "m.room.member" && event.Content.Membership == "ban" {
+			return true
+		}
+	}
+	return false
 }

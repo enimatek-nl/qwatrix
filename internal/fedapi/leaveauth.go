@@ -8,8 +8,15 @@ import (
 	"github.com/tidwall/gjson"
 )
 
-// handleSendLeave serves `PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}`, the older
-// federation API's way of ending a membership.
+// handleSendLeave serves `PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}` and its v2, the
+// older federation API's way of ending a membership.
+//
+// Both are registered because peers ask them in the opposite order to the numbering. v1 is one of the
+// endpoints whose federation answer used to be the unsigned `[200, body]` pair, which is why v2 exists
+// with the object on its own; gomatrixserverlib's client asks v2 first and only falls back to v1 on a
+// 404, parsing v1's answer as that legacy pair. Serving v1 alone therefore reads, to a modern peer, as
+// a broken endpoint: its fallback takes this server's honest `{}` and fails to see two elements in
+// it, after the leave was already accepted.
 //
 // Room v11 moved leaves into the ordinary event stream, so a leave is now pushed inside a
 // transaction like any other event. This endpoint predates that and is still what homeservers that

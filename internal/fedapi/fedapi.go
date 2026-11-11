@@ -114,6 +114,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send_join/{roomID}/{eventID}", h.handleSendJoin(true))
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", h.handleSendJoin(false))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}", h.handleSendLeave)
+	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", h.handleSendLeave)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", h.handleEventAuth(false))
 	h.mux.HandleFunc("GET /_matrix/federation/v2/event_auth/{roomID}/{eventID}", h.handleEventAuth(true))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)

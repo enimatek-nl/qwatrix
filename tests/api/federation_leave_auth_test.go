@@ -66,6 +66,51 @@ func TestAPeerMayEndAMembershipByTheLegacyLeaveEndpoint(t *testing.T) {
 	}
 }
 
+// TestTheLeaveEndpointExistsForRoomVersionElevenAndNewer serves the version of the same call a
+// modern peer makes first.
+//
+// `PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}` is v1 with a clean answer: v1 is one of
+// the endpoints whose federation response was once the unsigned `[200, body]` pair, and v2 returns the
+// object on its own. gomatrixserverlib's client — complement's among them — asks v2 and only falls
+// back to v1 on a 404, then parses v1's body as that legacy pair. So answering v1 alone makes a
+// working endpoint look broken to the peers that ask the newer question first: their fallback reads
+// this server's honest `{}` as a two-element array and reports an unmarshalling failure rather than
+// the leave it just had accepted.
+func TestTheLeaveEndpointExistsForRoomVersionElevenAndNewer(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "host", "pw-host", false)
+	peer := newFakePeer(t)
+	roomID, join, version := joinedRoom(t, server, alice, peer, "public_chat")
+	remote := "@charlie:" + string(peer.serverNo)
+	state := remoteStateEventIDs(t, server, alice, roomID)
+
+	leave := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   remote,
+		Type:       "m.room.member",
+		StateKey:   strPtr(remote),
+		Depth:      join.Depth() + 1,
+		PrevEvents: []string{join.EventID()},
+		AuthEvents: []string{
+			state["m.room.create\x00"],
+			state["m.room.power_levels\x00"],
+			join.EventID(),
+		},
+		Content: spec.RawJSON(mustMarshal(t, map[string]any{"membership": "leave"})),
+	})
+
+	response := signedFederationPut(t, server, peer,
+		"/_matrix/federation/v2/send_leave/"+harness.PathEscape(roomID, leave.EventID()),
+		json.RawMessage(leave.JSON()))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("a v2 leave was refused with %d (%s), want 200",
+			response.StatusCode, federationBody(t, response))
+	}
+	if body := string(federationBody(t, response)); gjson.Parse(body).Get("errcode").Exists() {
+		t.Errorf("the v2 answer is an empty object, got %s", body)
+	}
+}
+
 // TestTheLegacyLeaveEndpointRefusesWhatItCannotUse keeps the endpoint narrower than `/send`.
 //
 // It takes one event and promises a membership change, so anything else is either a mistake or an
