@@ -1024,3 +1024,24 @@ suite green (`tests/api` 145s); go build, go vet, golangci-lint 0 issues, gofmt 
 The remaining `TestMessagesOverFederation` failure is precise: `Fetched 9 events from the /messages
 endpoint that included events -1 to -1` against `expected 20 events in timeline` — history from *before*
 the join point, which is `GET /_matrix/federation/v1/backfill` (T704), not delivery.
+
+### Measured again (cc37), and what `TestDeviceListUpdates` actually requires
+
+After the outbound relay and the remote announce fix, the container result for
+`TestDeviceListUpdates` is unchanged — and the reason turns out to be a real requirement rather than a
+missing link:
+
+```
+@user-4-alice:hs1 created test room
+@user-5-bob:hs2 joins the test room
+Sending and waiting for dummy device list update...   -> uploadNewKeys(barry)
+@user-4-alice:hs1 MustSyncUntil: timed out ... @user-6-barry:hs2 not found in device_lists.changed
+```
+
+barry lives on hs2 and shares the room with alice. Between alice's two syncs barry **only uploads device
+keys** — there is no room event, so no PDU crosses the boundary, so neither the delivery ledger nor a
+local announcement can ever tell hs1. The only thing that can is an `m.device_list_updates` EDU pushed
+from hs2 (T712b). That is now written into `TASKS.md` with the shape of the implementation, so the next
+attempt starts from the requirement instead of from a guess.
+
+`TestMessagesOverFederation` is unchanged and still fails only in its two `backfill` subtests.
