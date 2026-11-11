@@ -1045,3 +1045,36 @@ from hs2 (T712b). That is now written into `TASKS.md` with the shape of the impl
 attempt starts from the requirement instead of from a guess.
 
 `TestMessagesOverFederation` is unchanged and still fails only in its two `backfill` subtests.
+
+## M8 stage 5: what the operator actually runs (AC-7 runtime, AC-6 README)
+
+AC-7 claimed three runtime behaviours that had **never been checked**: booting with no arguments on a
+fresh directory, creating nothing outside the data path, and shutting gracefully on a signal. Every
+existing test started a homeserver from application code, which cannot see any of that.
+
+`tests/runtime` runs the **compiled binary** and measures the claims:
+
+- `TestBootingWithNoArgumentsUsesTheDevelopmentDefaults` — empty directory, no flags, no environment;
+  the server answers `/versions`, `qwatrix.db` appears in the working directory, and the test also
+  asserts the test's *own* directory was not written into.
+- `TestBootingCreatesNothingOutsideItsDataDirectory` — working directory must still be **empty** after
+  a healthy boot with `-data-dir` elsewhere.
+- `TestSIGTERMLetsAnInFlightRequestFinish` (and the `SIGINT` twin) — the assertion that makes the word
+  "graceful" mean something: a `/sync` long-poll started before the signal must come back `200` with a
+  real `next_batch`, not a dropped connection; exit code must be 0, and a process that dies of a signal
+  rather than exiting is a failure.
+- `TestBootLogsCarryNoSecrets` — the process's own stderr at default level, checked for the shared
+  registration secret, a user password, and an access token. **Proven to have teeth**: planting
+  `"registration_secret_VALUE", cfg.RegistrationSecret` in the startup log makes it fail; the leak was
+  then removed. Writing a log-secrets test and never planting a leak is how you end up with a test that
+  asserts nothing.
+
+Registration in these tests walks the real UIA conversation (submit → 401 challenge → complete the named
+stage → 200), because this server does not accept the single-request shortcut; the README documents the
+same exchange, verified by running it with `curl` against a live server rather than by assumption.
+
+`README.md` exists at last: run it, register a user, configuration (default < `QWATRIX_*` < flag), both
+test layers, federation status stated as working/not-working, package layout, limitations.
+
+Measured: `go test ./tests/runtime/ -count=1` → ok (7.7s, 5 tests); build, `go vet`, `golangci-lint`
+0 issues, `gofmt -s` clean.

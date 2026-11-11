@@ -19,6 +19,11 @@ set -uo pipefail
 COMPLEMENT_DIR="${COMPLEMENT_DIR:-$HOME/complement}"
 IMAGE="${COMPLEMENT_BASE_IMAGE:-localhost/qwatrix-complement:latest}"
 CHUNK="${COMPLEMENT_CHUNK_SIZE:-8}"
+# Which Complement package to enumerate. The suite lives in two: ./tests/csapi holds the
+# client-API tests, ./tests the server-server ones and several client tests AC-5 names as
+# mandatory. Sweeping only the first is a real mistake this file made once, so the package is
+# a parameter and the sweep script runs both.
+PKG="${COMPLEMENT_PKG:-./tests/csapi}"
 PREFIX="${1:-/tmp/complement-chunk}"
 TAGS="${COMPLEMENT_TAGS:-blacklist_common}"
 # Tests that abort their chunk's process. Kept in their own chunk of one so the crash cannot
@@ -30,9 +35,9 @@ export COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT="${COMPLEMENT_HOSTNAME_RUNNING_COM
 cd "$COMPLEMENT_DIR" || exit 1
 
 LIST="$PREFIX.list"
-go test -tags "$TAGS" -list '.*' ./tests/csapi 2>/dev/null | grep -E '^Test[A-Za-z0-9_]*$' | sort -u > "$LIST"
+go test -tags "$TAGS" -list '.*' "$PKG" 2>/dev/null | grep -E '^Test[A-Za-z0-9_]*$' | sort -u > "$LIST"
 TOTAL=$(wc -l < "$LIST")
-echo "suite: $TOTAL top-level tests (tags: $TAGS)"
+echo "suite: $PKG — $TOTAL top-level tests (tags: $TAGS)"
 
 RESULT="$PREFIX.results"
 LOGS="$PREFIX.log"
@@ -53,7 +58,7 @@ while true; do
   # regressions that never happened. Reclaiming between batches is cheap; a void measurement is
   # not, because it costs an hour and teaches nothing.
   docker system prune -f --volumes >/dev/null 2>&1 || true
-  timeout 900 go test -tags "$TAGS" -count=1 -timeout=15m -v -run "^($pattern)\$" ./tests/csapi \
+  timeout 900 go test -tags "$TAGS" -count=1 -timeout=15m -v -run "^($pattern)\$" "$PKG" \
     > "$out" 2>&1
   code=$?
   cat "$out" >> "$LOGS"
