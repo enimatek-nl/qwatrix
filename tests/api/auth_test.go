@@ -1014,3 +1014,79 @@ func TestDeviceDeleteRequiresInteractiveAuth(t *testing.T) {
 		Path:   "/_matrix/client/v3/devices/" + harness.PathEscape(elsewhere.DeviceID),
 	}).MustStatus(t, http.StatusNotFound)
 }
+
+// TestARegistrationSessionCannotBeDroppedOnceItWasIssued is the half of user-interactive
+// authentication that makes the session mean something.
+//
+// A challenge is not a hint. When this server answers a registration with a 401 carrying a session,
+// that session is the record of the attempt under way, and the client is expected to keep using it.
+// A client that throws the session away and sends the same request again is not a first-time caller:
+// it is continuing an attempt it was told to continue, and completing it as if it were new makes the
+// session identifier decorative — any stage satisfied elsewhere could be presented this way by simply
+// omitting the field that would pin it down.
+//
+// A request that has never been challenged is a different case, and this server does complete it:
+// `m.login.dummy` asks for no credential, so a client that already knows which stage it will satisfy
+// has said everything the flow needs. That is why the second half of this test registers a name
+// nobody has asked about and expects a user account back, not a form.
+func TestARegistrationSessionCannotBeDroppedOnceItWasIssued(t *testing.T) {
+	srv := harness.New(t)
+
+	challenge := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+		"username": "session-keeper",
+		"password": "pw-session",
+	})
+	if challenge.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("the first request answered %d, want the 401 challenge", challenge.StatusCode)
+	}
+	var issued struct{ Session string }
+	challenge.JSON(t, &issued)
+	if issued.Session == "" {
+		t.Fatalf("the challenge carries no session: %s", challenge.Body)
+	}
+
+	// The same request with the session dropped. The username is the one that was just challenged.
+	dropped := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+		"username": "session-keeper",
+		"password": "pw-session",
+		"auth":     map[string]any{"type": "m.login.dummy"},
+	})
+	if dropped.StatusCode == http.StatusOK {
+		t.Fatalf("a registration completed after dropping the session it was issued (%s)", dropped.Body)
+	}
+	if dropped.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401 with a challenge to continue on", dropped.StatusCode)
+	}
+	var refusal struct {
+		Session string `json:"session"`
+		ErrCode string `json:"errcode"`
+	}
+	dropped.JSON(t, &refusal)
+	if refusal.Session != issued.Session {
+		t.Errorf("the refusal names session %q, want the one already issued (%q) — the client should "+
+			"continue the attempt it started, not start a second one", refusal.Session, issued.Session)
+	}
+
+	// And the session it was given still works: this is a refusal to redirect, not a refusal to
+	// register.
+	completed := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+		"username": "session-keeper",
+		"password": "pw-session",
+		"auth":     map[string]any{"type": "m.login.dummy", "session": issued.Session},
+	})
+	if completed.StatusCode != http.StatusOK {
+		t.Fatalf("completing on the issued session answered %d, want 200: %s",
+			completed.StatusCode, completed.Body)
+	}
+
+	// A name that was never challenged has no session outstanding, so a single request that
+	// presents the stage is a complete registration.
+	fresh := srv.PostJSON(t, "/_matrix/client/v3/register", "", map[string]any{
+		"username": "never-challenged",
+		"password": "pw-fresh",
+		"auth":     map[string]any{"type": "m.login.dummy"},
+	})
+	if fresh.StatusCode != http.StatusOK {
+		t.Errorf("a first-ever registration answered %d, want 200: %s", fresh.StatusCode, fresh.Body)
+	}
+}

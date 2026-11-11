@@ -76,7 +76,19 @@ type Manager struct {
 	now      func() time.Time
 	// validity is a field so tests can shorten the expiry rather than sleep.
 	validity time.Duration
+
+	// bindings remembers which session this server issued for which caller-visible key. It is
+	// what lets an endpoint notice that a client had a session and stopped sending it, which no
+	// single request can show on its own.
+	bindings map[string]string
+	// bindingOrder is the insertion order behind the bound, oldest first.
+	bindingOrder []string
 }
+
+// maxBindings bounds the binding bookkeeping. Registrations are cheap to restart, so losing
+// the oldest binding costs a client one 401; leaving the map unbounded would let anybody grow
+// it by asking for challenges.
+const maxBindings = 4096
 
 // NewManager returns a manager with the default session validity.
 func NewManager() *Manager {
@@ -84,6 +96,66 @@ func NewManager() *Manager {
 		sessions: make(map[string]*Session),
 		now:      time.Now,
 		validity: SessionValidity,
+		bindings: make(map[string]string),
+	}
+}
+
+// Bind records that the session was handed out for `key`, so that a later request naming `key`
+// without a session can be recognised as the same attempt rather than a fresh one.
+func (m *Manager) Bind(key, sessionID string) {
+	if key == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if previous, ok := m.bindings[key]; ok && previous != sessionID {
+		delete(m.bindings, key)
+		for i, id := range m.bindingOrder {
+			if id == previous {
+				m.bindingOrder = append(m.bindingOrder[:i], m.bindingOrder[i+1:]...)
+				break
+			}
+		}
+	}
+	m.bindings[key] = sessionID
+	m.bindingOrder = append(m.bindingOrder, key)
+	for len(m.bindingOrder) > maxBindings {
+		oldest := m.bindingOrder[0]
+		m.bindingOrder = m.bindingOrder[1:]
+		delete(m.bindings, oldest)
+	}
+}
+
+// Bound returns the session still outstanding for `key`: one this server issued and has not
+// expired or finished.
+func (m *Manager) Bound(key string) (*Session, bool) {
+	if key == "" {
+		return nil, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.collectLocked()
+	sessionID, ok := m.bindings[key]
+	if !ok {
+		return nil, false
+	}
+	session, ok := m.sessions[sessionID]
+	if !ok {
+		return nil, false
+	}
+	return session, true
+}
+
+// Unbind forgets the outstanding session for `key`, used when the attempt it stood for ends.
+func (m *Manager) Unbind(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.bindings, key)
+	for i, id := range m.bindingOrder {
+		if id == key {
+			m.bindingOrder = append(m.bindingOrder[:i], m.bindingOrder[i+1:]...)
+			break
+		}
 	}
 }
 

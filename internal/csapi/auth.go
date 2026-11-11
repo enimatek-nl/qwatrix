@@ -148,10 +148,33 @@ func handleRegister(deps Deps) http.HandlerFunc {
 		// than treated as a fresh start: the session is what ties a completed stage to the
 		// request that asked for it, and ignoring it would let a client reuse somebody
 		// else's completed dummy stage by leaving the field out.
+		// A session this server issued for this username is the record of the attempt under
+		// way, and it is remembered under the only handle the caller repeats — the name being
+		// registered. Without that memory the two cases a client can arrive in are
+		// indistinguishable: a first request that already knows which stage it will satisfy, and
+		// a request continuing an attempt whose session was thrown away. The first is a complete
+		// registration; the second must be sent back to the session it was given, or the session
+		// identifier becomes decorative — a completed stage could be presented by anybody willing
+		// to omit the field that pins it to one conversation.
+		pendingKey := ""
+		if localpart != "" {
+			pendingKey = "register:" + localpart
+		}
 		var session *uia.Session
 		if req.Auth != nil && req.Auth.Type != "" {
 			switch req.Auth.Session {
 			case "":
+				if outstanding, ok := deps.UIA.Bound(pendingKey); ok {
+					// The session is not merely required, it exists: so the challenge names that
+					// one, and the client continues the attempt it started instead of opening a
+					// second, untracked one.
+					challenge := uia.ChallengeFor(outstanding, nil)
+					challenge.ErrCode = matrix.ErrSessionInvalid
+					challenge.Error = "Missing session: continue on the session this homeserver " +
+						"issued for this registration"
+					httpx.RespondJSON(w, http.StatusUnauthorized, challenge)
+					return
+				}
 				// The client is presenting a stage it already knows it intends to satisfy, and
 				// `m.login.dummy` asks for no credential: this request has said everything the flow
 				// needs. Answering it with a challenge would turn a registration that could finish
@@ -166,7 +189,9 @@ func handleRegister(deps Deps) http.HandlerFunc {
 					// A named session that does not exist is a different thing from no session: the
 					// caller is holding a stale or forged handle, and starting a fresh conversation
 					// would let one registration's completed stage satisfy another.
-					challenge := uia.ChallengeFor(deps.UIA.Start(registrationStages, ""), nil)
+					replacement := deps.UIA.Start(registrationStages, "")
+					deps.UIA.Bind(pendingKey, replacement.ID)
+					challenge := uia.ChallengeFor(replacement, nil)
 					challenge.ErrCode = matrix.ErrSessionInvalid
 					challenge.Error = "Session is invalid or has expired"
 					httpx.RespondJSON(w, http.StatusUnauthorized, challenge)
@@ -177,10 +202,13 @@ func handleRegister(deps Deps) http.HandlerFunc {
 		}
 
 		// The client has not authenticated yet: answer with the flows and a session, which
-		// is what every Matrix client's registration form is driven by.
+		// is what every Matrix client's registration form is driven by. The session is bound to
+		// the name under registration, which is what makes the next request's omission of it a
+		// thing this server can notice.
 		if session == nil {
-			httpx.RespondJSON(w, http.StatusUnauthorized,
-				uia.ChallengeFor(deps.UIA.Start(registrationStages, ""), nil))
+			fresh := deps.UIA.Start(registrationStages, "")
+			deps.UIA.Bind(pendingKey, fresh.ID)
+			httpx.RespondJSON(w, http.StatusUnauthorized, uia.ChallengeFor(fresh, nil))
 			return
 		}
 		stage, ok := req.Auth.MatchesStage(session)
@@ -205,6 +233,7 @@ func handleRegister(deps Deps) http.HandlerFunc {
 			return
 		}
 		deps.UIA.Drop(session.ID)
+		deps.UIA.Unbind(pendingKey)
 
 		response := registerResponse{UserID: account.UserID}
 		if !req.InhibitLogin {

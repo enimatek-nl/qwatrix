@@ -617,3 +617,35 @@ func (w *eventWriter) appendPrebuilt(req txAppend, event gomatrixserverlib.PDU) 
 	}
 	return nil
 }
+
+// AuthChainFor answers `GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}`: every event that
+// authorised the one a peer named, transitively — the event's auth chain, which is not its own event.
+//
+// A peer checking a history it is being shown cannot evaluate one event from its own
+// `auth_events` alone, because each of those was itself authorised by others. The closure is what
+// lets the peer run the same rules locally instead of trusting whoever is relaying.
+//
+// "No such event" and "that event lives in a different room" get the same refusal. This is a read a
+// peer can aim at any room and event ID it can guess, and telling the two apart confirms which
+// identifiers this server really holds.
+func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID string) ([]json.RawMessage, error) {
+	row, err := s.store.Events.ByEventID(ctx, eventID)
+	if err != nil || row.RoomID != roomID {
+		return nil, matrix.NewForbidden("Event %q not found in room %q", eventID, roomID)
+	}
+	event, err := s.Events().ParseRoomVersioned(row.RoomVersion, json.RawMessage(row.JSON))
+	if err != nil {
+		// A stored event this server cannot re-read is a broken row, not a caller error; the
+		// chain is incomplete either way, so say so rather than hand back a partial answer.
+		return nil, matrix.NewUnknown(fmt.Sprintf("the event %q cannot be read back", eventID))
+	}
+	chain, err := s.authChain(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	// The event itself is not in the answer. An event's auth chain is defined as the closure of the
+	// events that authorised it, and it is a set the peer is asked to run rules against: adding the
+	// event to the set it authorises would make the answer describe an event that is not part of the
+	// decision, and a peer counting on the size of the chain would be counting wrong.
+	return chain, nil
+}

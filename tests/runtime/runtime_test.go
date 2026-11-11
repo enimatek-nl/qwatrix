@@ -167,12 +167,17 @@ func freeLoopback(t *testing.T) string {
 
 // register makes a user over the running server's own client API, returning the access token.
 //
-// It checks both halves of the User-Interactive Authentication contract against the real binary: a
-// request that names no stage is answered with the flows and a session — which is what drives a
-// client's registration form — and a request that already carries the stage it intends to satisfy is
-// completed on the spot. The second half is not a shortcut: `m.login.dummy` asks for no credential,
-// and complement's blueprint builder registers its users that way, so refusing it once stopped the
-// whole server-server suite from starting a homeserver.
+// It walks the User-Interactive Authentication contract against the real binary: a request that names
+// no stage is answered with the flows and a session, and the attempt is then finished **on that
+// session**. Dropping the session is checked too, and refused — a session the server issued is the
+// record of the attempt under way, so a client that omits the field is not a new caller, and treating
+// it as one would let any completed stage be presented by whoever was willing to leave the identifier
+// out.
+//
+// (An earlier version of this helper asserted the opposite and blamed complement for it. Complement
+// does require one-request registration — of a name it has never been challenged about — and its
+// mandatory registration test requires the refusal asserted here. `tests/api/auth_test.go` pins both
+// halves; this helper is the same checks against the compiled binary.)
 func register(t *testing.T, baseURL string) (string, string) {
 	t.Helper()
 	password := "runtime-test-password"
@@ -207,8 +212,18 @@ func register(t *testing.T, baseURL string) (string, string) {
 		"password": password,
 		"auth":     map[string]any{"type": "m.login.dummy"},
 	})
+	if status != http.StatusUnauthorized {
+		t.Fatalf("a registration that dropped the session it was issued answered %d, want 401: %s",
+			status, payload)
+	}
+
+	status, payload = post(map[string]any{
+		"username": "testuser",
+		"password": password,
+		"auth":     map[string]any{"type": "m.login.dummy", "session": challenge.Session},
+	})
 	if status != http.StatusOK {
-		t.Fatalf("completing registration answered %d, want 200: %s", status, payload)
+		t.Fatalf("completing registration on the issued session answered %d, want 200: %s", status, payload)
 	}
 	var decoded struct {
 		AccessToken string `json:"access_token"`
