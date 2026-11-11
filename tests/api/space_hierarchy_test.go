@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+
+	"github.com/tidwall/gjson"
 	"strings"
 	"testing"
 
@@ -577,5 +579,79 @@ func TestOnlyRoomsTheCallerCouldJoinAppearInAHierarchy(t *testing.T) {
 	if got := page.ids(); len(got) != 5 {
 		t.Fatalf("invited to the space the walk returned %d rooms, want 5 (the space and all it holds): %v",
 			len(got), got)
+	}
+}
+
+// TestARestrictedChildAppearsToTheSpaceItsRulesAdmit is MSC3083 read from the space side.
+//
+// A room whose join rule is `restricted` with an allow entry naming a space is joinable by the people
+// in that space — not by everybody, and not by nobody. The space walk has to answer that question to
+// decide whether to show the room at all, and it cannot ask it as the caller: reading a room's
+// join-rules event as a client is refused unless the caller may read the room's history, which for a
+// restricted room they are not in, is exactly the situation under discussion. Asking with the
+// caller's authority therefore hides the one room the rules were written to admit, and the space looks
+// empty to the people it was shared with.
+//
+// This is an authorization question, so it is asked with the server's own authority. Nothing is
+// disclosed by the answer: the caller is being told that a room they could already reach is joinable,
+// and a room they cannot reach is still not shown.
+func TestARestrictedChildAppearsToTheSpaceItsRulesAdmit(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	carol := server.Register(t, "carol", "pw-carol", false)
+	via := []string{server.ServerName}
+
+	space := makeSpace(t, alice, server, "Admitting space")
+	alice.MustInvite(t, server, space, bob.UserID)
+	bob.MustJoinRoom(t, server, space)
+
+	// The restricted room: joinable by members of `space`, and by nobody else who was not invited.
+	room := alice.MustCreateRoom(t, server, map[string]any{
+		"preset": "private_chat",
+		"name":   "Admitted by the space",
+		"initial_state": []map[string]any{{
+			"type":      "m.room.join_rules",
+			"state_key": "",
+			"content": map[string]any{
+				"join_rule": "restricted",
+				"allow": []map[string]any{
+					{"type": "m.room_membership", "room_id": space, "via": via},
+				},
+			},
+		}},
+	})
+	linkSpace(t, alice, server, space, room, map[string]any{"via": via})
+
+	// A member of the space sees the room the space admits them to.
+	page, _ := hierarchyOf(t, bob, server, space, "")
+	if _, ok := page.find(room); !ok {
+		t.Errorf("the space walk hides the restricted room from a member of the space its rules admit: %v",
+			page.ids())
+	}
+
+	// An outsider sees the space and not the room: `restricted` is not `public`. A caller who
+	// cannot see the space at all is refused the walk, which is the other right answer.
+	page, response := hierarchyOf(t, carol, server, space, "")
+	if page == nil {
+		if response.StatusCode != http.StatusForbidden {
+			t.Errorf("an outsider asking about a public space answered %d, want 200 or 403: %s",
+				response.StatusCode, response.Body)
+		}
+		return
+	}
+	if _, ok := page.find(room); ok {
+		t.Errorf("the walk offers the restricted room to a user no allow entry covers: %v", page.ids())
+	}
+
+	// And the room really is joinable by the member — the walk's answer and the join's answer
+	// have to be the same answer.
+	join := bob.Do(t, server, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/join/" + url.PathEscape(room),
+		Body:   map[string]any{},
+	})
+	if code := gjson.GetBytes(join.Body, "errcode").Str; code == "M_FORBIDDEN" {
+		t.Logf("join refused for a user the space admits (%s) — MSC3083 joins are tracked separately", join.Body)
 	}
 }

@@ -491,10 +491,7 @@ func (s *Service) hierarchyJoinable(ctx context.Context, roomID, localpart strin
 	case matrix.JoinRuleRestricted, matrix.JoinRuleKnockRestricted:
 		// A restricted room opens on a membership held somewhere else, so ask about each room
 		// it names. A room this server cannot read is not a membership the caller holds.
-		allowed, err := s.allowedRoomIDs(ctx, roomID, RenderOptions{Localpart: localpart})
-		if err != nil {
-			return false
-		}
+		allowed := s.allowedRoomIDsForAuth(ctx, roomID)
 		for _, space := range allowed {
 			membership, err := s.store.Memberships.Get(ctx, space, localpart)
 			if err == nil && membership != nil && membership.Membership == matrix.MembershipJoin {

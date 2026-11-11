@@ -1319,9 +1319,45 @@ func (s *Service) allowedRoomIDs(ctx context.Context, roomID string, opts Render
 			"room_id", roomID, "error", err)
 		return nil, nil
 	}
-	// What comes back from the read path is a whole event, so the rules are inside `content` — and
-	// the fallback is not paranoia but arithmetic: a caller that handed this function a bare content
-	// object should get the same answer rather than an empty one.
+	return allowedRoomsFromJoinRuleContent(roomID, content)
+}
+
+// allowedRoomIDsForAuth answers the same question as [Service.allowedRoomIDs] for the server's own
+// use, reading the room's join-rules event with this server's authority instead of the caller's.
+//
+// The distinction is not a shortcut around permission. Deciding whether a restricted room is one a
+// caller could join is an authorization question, and asking it as a client guarantees a 403 in
+// exactly the case that matters: a restricted room whose history the caller cannot read, which is
+// what a restricted room looks like to somebody who is not in it yet. Asked that way the answer is
+// always "not joinable", so the room disappears from the space walk for the very people its allow
+// entry was written to admit.
+//
+// Nothing is disclosed by the answer. A room the caller may not see is still not shown to them; all
+// they learn is that a room they could reach is one they could join.
+func (s *Service) allowedRoomIDsForAuth(ctx context.Context, roomID string) []string {
+	entry, err := s.store.State.Get(ctx, roomID, matrix.EventTypeJoinRules, "")
+	if err != nil {
+		return nil
+	}
+	row, err := s.store.Events.ByEventID(ctx, entry.EventID)
+	if err != nil {
+		return nil
+	}
+	allowed, err := allowedRoomsFromJoinRuleContent(roomID, json.RawMessage(row.JSON))
+	if err != nil {
+		slog.Warn("roomserver: could not read the join rules of a restricted room for authorization",
+			"room_id", roomID, "error", err)
+		return nil
+	}
+	return allowed
+}
+
+// allowedRoomsFromJoinRuleContent picks the admitted rooms out of a join-rules event.
+//
+// It accepts a whole event or a bare content object because both reach it: the client-facing read
+// path returns events, and a caller holding a content object should get the same answer rather than
+// an empty one.
+func allowedRoomsFromJoinRuleContent(roomID string, content json.RawMessage) ([]string, error) {
 	var wrapper struct {
 		Content json.RawMessage `json:"content"`
 	}
@@ -1346,6 +1382,8 @@ func (s *Service) allowedRoomIDs(ctx context.Context, roomID string, opts Render
 	seen := map[string]bool{}
 	out := []string{}
 	for _, entry := range rules.Allow {
+		// An entry naming a *space* rather than a room admits that space's members; MSC3083 spells
+		// both as `room_id`, and the value is a room ID either way.
 		if entry.RoomID == "" || seen[entry.RoomID] {
 			continue
 		}
