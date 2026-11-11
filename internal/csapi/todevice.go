@@ -15,7 +15,7 @@ import (
 // remembering every transaction ID forever for a message the recipient may never need. Clients
 // already deduplicate on their side, and the room-event transaction store is where the guarantee
 // actually matters, because there the event becomes part of a timeline that shows the repeat.
-func registerToDeviceRoutes(mux *http.ServeMux, deps Deps) {
+func registerToDeviceRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("sendToDevice/{eventType}/{txnID}") {
 		mux.HandleFunc("PUT "+path, deps.requireAuth(handleSendToDevice(deps)))
 	}

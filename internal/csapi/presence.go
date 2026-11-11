@@ -14,7 +14,7 @@ import (
 )
 
 // registerPresenceRoutes registers the two presence endpoints.
-func registerPresenceRoutes(mux *http.ServeMux, deps Deps) {
+func registerPresenceRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("presence/{userID}/status") {
 		// Both are authenticated. Reading is authenticated because presence is only
 		// meaningful between people who share a room, and an anonymous reader shares one

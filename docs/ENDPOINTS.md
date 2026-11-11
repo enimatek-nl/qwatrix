@@ -280,6 +280,11 @@ that arrives unauthenticated is a peer asking who this server is.
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
 | `GET` | `/_matrix/federation/v1/media/download/{mediaID}` | [MSC2448](https://github.com/matrix-org/matrix-spec-proposals/pull/2448) — signed; files this server originates only |
 
+The version string and the published signing keys are also answered on the **client** listener. They
+are public facts about this server rather than something a caller earns by being a peer, and a
+deployment is usually probed at one address; nothing else in the server-server API is — transactions,
+joins, device lists and media all require a peer that has proved who it is.
+
 The key response is signed by the key it publishes, so a peer needs to believe only the certificate
 of the connection it opened. An unknown key ID answers `404 M_NOT_FOUND`: "this server never had
 that key" is a fact a peer can act on, while an empty `200` is indistinguishable from a server that

@@ -119,7 +119,7 @@ func splitComma(value string) []string {
 }
 
 // registerRoomRoutes registers the room, event, membership, alias and directory endpoints.
-func registerRoomRoutes(mux *http.ServeMux, deps Deps) {
+func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 	// Room creation.
 	for _, path := range versionedPath("createRoom") {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleCreateRoom(deps)))
@@ -236,7 +236,7 @@ func registerRoomRoutes(mux *http.ServeMux, deps Deps) {
 }
 
 // registerSyncRoutes registers /sync.
-func registerSyncRoutes(mux *http.ServeMux, deps Deps) {
+func registerSyncRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("sync") {
 		mux.HandleFunc("GET "+path, deps.requireAuth(handleSync(deps)))
 	}

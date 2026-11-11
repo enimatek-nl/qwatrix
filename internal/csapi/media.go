@@ -16,7 +16,7 @@ import (
 // that an unauthenticated media read lets any third party who obtains a media URI read it forever.
 // Serving only one of the two leaves either old clients or the security fix unimplemented, and the
 // two are not interchangeable: one answers 401 to an anonymous request and the other does not.
-func registerMediaRoutes(mux *http.ServeMux, deps Deps) {
+func registerMediaRoutes(mux *httpx.RouteTable, deps Deps) {
 	// Upload requires a token: an anonymous upload endpoint turns a homeserver into free file
 	// hosting for anybody with a URL, which is the opposite of what a chat server is for.
 	mux.HandleFunc("POST /_matrix/media/v3/upload", deps.requireAuth(handleUpload(deps)))

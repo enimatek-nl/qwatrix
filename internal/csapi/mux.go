@@ -32,9 +32,22 @@ import (
 // Deps is what a handler set needs to do its job. It is a struct rather than a dozen
 // parameters so that adding a service does not touch every handler signature.
 type Deps struct {
-	Config   *config.Config
-	Store    *store.Store
-	Accounts *accounts.Service
+	Config *config.Config
+	Store  *store.Store
+	// PublicFederation serves the read-only, unauthenticated parts of the server-server API — the
+	// version string and the published signing keys — for callers that arrived on the client
+	// listener.
+	//
+	// Those three resources are public information about this server rather than something a peer is
+	// entitled to by being a peer, and tools (complement among them) reasonably assume one Matrix
+	// deployment answers both APIs from one address. Nothing that *changes* state, and nothing that
+	// depends on which server is asking, is served this way: transactions, joins, device lists and
+	// media stay on the federation listener, where the caller has proved who it is.
+	//
+	// It is a function rather than an http.Handler because the server-server API is built after the
+	// client API, and a field captured at construction time would be nil forever.
+	PublicFederation func(w http.ResponseWriter, r *http.Request)
+	Accounts         *accounts.Service
 	// UIA is the user-interactive authentication session store.
 	UIA *uia.Manager
 	// SharedSecrets issues and redeems shared-secret registration nonces.
@@ -79,21 +92,31 @@ func (d Deps) optionalAuth(next http.HandlerFunc) http.HandlerFunc {
 // and are added by [prefixes] rather than repeated per endpoint.
 func NewMux(deps Deps) http.Handler {
 	mux := http.NewServeMux()
+	// Every route goes through the table, which registers it on the mux and remembers the path, so
+	// that a wrong method can later be recognised as a wrong method.
+	routes := httpx.NewRouteTable(mux)
 
 	// GET /_matrix/client/versions is the only endpoint served outside the versioned
 	// prefix, and the one every client and test harness calls first.
 	mux.HandleFunc("GET /_matrix/client/versions", handleVersions(deps))
 
-	registerAuthRoutes(mux, deps)
-	registerRoomRoutes(mux, deps)
-	registerSyncRoutes(mux, deps)
-	registerPresenceRoutes(mux, deps)
-	registerReadStateRoutes(mux, deps)
-	registerFilterRoutes(mux, deps)
-	registerKeyRoutes(mux, deps)
-	registerPushRuleRoutes(mux, deps)
-	registerToDeviceRoutes(mux, deps)
-	registerMediaRoutes(mux, deps)
+	registerAuthRoutes(routes, deps)
+	registerRoomRoutes(routes, deps)
+	registerSyncRoutes(routes, deps)
+	registerPresenceRoutes(routes, deps)
+	registerReadStateRoutes(routes, deps)
+	registerFilterRoutes(routes, deps)
+	registerKeyRoutes(routes, deps)
+	registerPushRuleRoutes(routes, deps)
+	registerToDeviceRoutes(routes, deps)
+	registerMediaRoutes(routes, deps)
+
+	if deps.PublicFederation != nil {
+		servePublic := func(w http.ResponseWriter, r *http.Request) { deps.PublicFederation(w, r) }
+		routes.HandleFunc("GET /_matrix/federation/v1/version", servePublic)
+		routes.HandleFunc("GET /_matrix/key/v2/server", servePublic)
+		routes.HandleFunc("GET /_matrix/key/v2/server/{keyID}", servePublic)
+	}
 
 	// Unmatched paths under /_matrix/ answer with M_UNRECOGNIZED, which is how Matrix
 	// distinguishes "this server does not speak that" from "nothing is here". These
@@ -102,9 +125,18 @@ func NewMux(deps Deps) http.Handler {
 	unrecognized := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpx.RespondError(w, r, matrix.NewUnrecognized("Unrecognized request: %s %s", r.Method, r.URL.Path))
 	})
-	mux.Handle("/_matrix/", unrecognized)
-	mux.Handle("/_synapse/", unrecognized)
-	mux.Handle("/.well-known/", unrecognized)
+	// A path this server does serve, asked for with a method it does not accept, is a 405 naming the
+	// methods it does. That distinction costs something to keep — it means remembering which paths
+	// exist, which is what the route table is for — and it is worth it: 404 tells a client "there is no
+	// such thing here", which is a different fact and one it cannot act on.
+	unknownMethod := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routes.ServeUnmatched(w, r, unrecognized)
+	})
+	// These are registered on the mux directly and without a method, which keeps them out of the
+	// route table: a catch-all is not an endpoint, and recording it would turn every 404 into a 405.
+	mux.Handle("/_matrix/", unknownMethod)
+	mux.Handle("/_synapse/", unknownMethod)
+	mux.Handle("/.well-known/", unknownMethod)
 	// Anything else is not a Matrix endpoint at all, so it gets a plain 404 rather than a
 	// Matrix error body — a request that never asked for Matrix should not be answered in
 	// its vocabulary.

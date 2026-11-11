@@ -10,7 +10,7 @@ import (
 )
 
 // registerKeyRoutes registers the end-to-end encryption key endpoints.
-func registerKeyRoutes(mux *http.ServeMux, deps Deps) {
+func registerKeyRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("keys/upload") {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleUploadKeys(deps)))
 	}

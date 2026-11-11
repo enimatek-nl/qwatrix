@@ -12,7 +12,7 @@ import (
 )
 
 // registerFilterRoutes registers the saved-filter endpoints.
-func registerFilterRoutes(mux *http.ServeMux, deps Deps) {
+func registerFilterRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("user/{userID}/filter") {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleCreateFilter(deps)))
 	}

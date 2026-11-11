@@ -18,7 +18,7 @@ import (
 )
 
 // registerAuthRoutes installs the account, session and device endpoints.
-func registerAuthRoutes(mux *http.ServeMux, deps Deps) {
+func registerAuthRoutes(mux *httpx.RouteTable, deps Deps) {
 	// Registration, standard client-server flow.
 	for _, path := range versionedPath("register") {
 		mux.HandleFunc("POST "+path, handleRegister(deps))

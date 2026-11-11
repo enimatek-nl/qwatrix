@@ -15,7 +15,7 @@ import (
 // specification's path for "all rules" is `/pushrules/`, and the path-joining rule that produces it
 // is a known wart (matrix-spec#457) that clients work around by adding the slash. A server that
 // answers 404 there has not declined a malformed request, it has refused the only URL a client has.
-func registerPushRuleRoutes(mux *http.ServeMux, deps Deps) {
+func registerPushRuleRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("pushrules") {
 		mux.HandleFunc("GET "+path, deps.requireAuth(handleGetAllPushRules(deps)))
 	}

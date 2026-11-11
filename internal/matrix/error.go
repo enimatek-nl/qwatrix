@@ -213,6 +213,13 @@ func NewUnrecognized(format string, args ...any) *APIError {
 	return NewAPIError(http.StatusNotFound, ErrUnrecognized, format, args...)
 }
 
+// NewMethodNotAllowed is the 405 for a path this server does serve, reached by a method it does not
+// accept. The errcode stays M_UNRECOGNIZED, which is what Matrix clients read; the status and the
+// Allow header are what a generic HTTP client reads, and both should tell the truth.
+func NewMethodNotAllowed(format string, args ...any) *APIError {
+	return NewAPIError(http.StatusMethodNotAllowed, ErrUnrecognized, format, args...)
+}
+
 // NewUnknown is a 500 whose message is safe to show: callers pass the real error to the
 // logger, not to the client.
 func NewUnknown(message string) *APIError {

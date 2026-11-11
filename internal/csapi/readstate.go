@@ -10,7 +10,7 @@ import (
 )
 
 // registerReadStateRoutes registers typing, receipts, read markers, and account data.
-func registerReadStateRoutes(mux *http.ServeMux, deps Deps) {
+func registerReadStateRoutes(mux *httpx.RouteTable, deps Deps) {
 	// Typing. The user ID is in the path because the endpoint is the one a client uses to
 	// report *somebody else's* typing on their behalf when relaying over federation; locally it
 	// may only ever be the caller, which the handler enforces.

@@ -30,6 +30,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/identity"
 	"github.com/enimatek-nl/qwatrix/internal/keyserver"
+	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/media"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
 	"github.com/enimatek-nl/qwatrix/internal/presence"
@@ -150,8 +151,16 @@ func New(cfg *config.Config) (*App, error) {
 	app := &App{cfg: cfg, store: st, accounts: acc, identity: serverIdentity, events: eventService, notifier: changes, rooms: rooms, sync: syncService}
 	app.handler = httpx.Chain(
 		csapi.NewMux(csapi.Deps{
-			Config:        cfg,
-			Store:         st,
+			Config: cfg,
+			Store:  st,
+			PublicFederation: func(w http.ResponseWriter, r *http.Request) {
+				// The server-server API is built after the client API, so this is read at request time.
+				if app.federation == nil {
+					httpx.RespondError(w, r, matrix.NewUnknown("This homeserver does not serve the federation API"))
+					return
+				}
+				app.federation.ServeHTTP(w, r)
+			},
 			Accounts:      acc,
 			UIA:           uia.NewManager(),
 			SharedSecrets: accounts.NewNonceStore(),

@@ -1125,3 +1125,42 @@ rather than re-fetching), `TestAFederatedMediaRequestServesThisServersOwnFile`,
 `TestAFederatedMediaRequestCannotAskForAnotherServersFile`, `TestAFederatedMediaRequestMustBeSigned`.
 Whole in-process suite green (`tests/api` 157 s, `tests/runtime`, `tests/unit`); build, vet,
 golangci-lint 0 issues, `gofmt -s` clean.
+
+## M8 stage 7: a wrong method is not a missing endpoint (T722)
+
+`PUT /_matrix/client/v3/login` answered **404**. That is a different fact from the one being asked, and a
+costly one: a client, a proxy with a route typo, or a library that sent a PUT instead of a POST is being
+told *there is no such thing here*, which it cannot act on and which no log will connect to the real
+mistake.
+
+The standard library already knows how to answer this — `http.ServeMux` returns 405 for a method
+mismatch — but only when nothing else matches the path, and a Matrix server must keep a `/_matrix/`
+catch-all to answer unknown endpoints with `M_UNRECOGNIZED`, which is exactly the pattern that swallows
+the mismatch. So the knowledge of which paths exist has to live somewhere, and `httpx.RouteTable` is
+that place: it registers on the mux, remembers the pattern, and answers the unmatched case with 405 +
+`Allow` + `M_UNRECOGNIZED`, or falls through to 404.
+
+Two things were refused rather than arranged:
+
+- The lookup is a **pattern match written here**, not `ServeMux.Handler`. Measured: the library reported
+  matches for paths that are not endpoints (a trailing-slash redirect is not a resource), which turned
+  404s into 405s for things that do not exist — the exact inverse of the bug being fixed.
+- `Allow` lists only methods that are served, plus HEAD for GET (Go serves a HEAD from a GET route).
+  An `Allow` header that advertises `OPTIONS` would be a claim about handling OPTIONS.
+
+**Deliberate, and written into `docs/ENDPOINTS.md`:** the version string and the published signing keys
+are now answered on the client listener as well. They are public facts about this server, not something
+a caller earns by being a peer, and a deployment is usually probed at one address. Nothing else moved:
+transactions, joins, device lists and media still require a peer that has proved who it is.
+
+`PUT /_matrix/key/v2/query` still answers 404, and that is honest — this server does not implement the
+removed key-notary endpoint, and registering a route solely to change a status code would be a server
+lying about what it has. Complement's `TestUnknownEndpoints` still fails on that one assertion; recorded
+rather than papered over.
+
+Measured: `TestRouteTableSeparatesAWrongMethodFromAnUnknownPath` (unit, six cases including placeholder
+routes and the `/{path}` tail), `TestAKnownEndpointRefusesTheWrongMethod`,
+`TestAnUnknownEndpointIsStillUnrecognized`; live-binary spot check —
+`PUT …/login → 405 Allow: GET,HEAD,POST`, `PUT …/federation/v1/version → 405 Allow: GET,HEAD`,
+`PUT …/key/v2/query → 404`, unknown paths 404. Whole in-process suite green (156 s), build, vet,
+golangci-lint 0 issues, `gofmt -s` clean.
