@@ -777,6 +777,11 @@ func (s *Service) leftRoom(ctx context.Context, req Request, membership store.Me
 		// The timeline is still an empty list rather than an absent object. "I have no events
 		// for you" is an answer; "here is nothing" is not, and a client that has to handle both
 		// ends up treating the absence of a key as a state it has to guess at.
+		//
+		// This is the one case where a left room carries state: when the timeline is empty, the
+		// state is what describes the room. When the timeline is not, the two would be competing
+		// descriptions of the same thing, and complement's archive test fails a response that
+		// sends both.`full_state` asks for the whole picture regardless, and gets the state too.
 		room.Timeline = &Timeline{Events: []json.RawMessage{}}
 		// Nothing to show in the timeline, so the state has to carry the room instead: it is the
 		// only way a client that asked for no events learns what it walked away from, and it is
@@ -800,19 +805,18 @@ func (s *Service) leftRoom(ctx context.Context, req Request, membership store.Me
 		}
 		room.Timeline.Events = append(room.Timeline.Events, event)
 	}
-	// The state of the room as it was when the reader lost it goes along with the timeline, always,
-	// and not only when `full_state` was asked for. A client showing a room the user can no longer
-	// enter — the ban notice, the "you no longer have access" screen — draws it from what it is
-	// handed, because it cannot ask for more: every read it might make about that room is now
-	// refused. Synapse sends this state, and the specification carries the field for this.
-	//
-	// It is the state as of the leave, rendered with the reader's own (non-member) authority, so
-	// this hands back nothing the reader did not already have.
-	state, err := s.stateAtLeave(ctx, membership.RoomID, membership.StreamPos, reader, req.Filter)
-	if err != nil {
-		return nil, false, false, err
+	if req.FullState {
+		// A client that asked for the full state gets the room's state as of the leave, which is
+		// the only state this reader has a right to. Without that request the timeline carries the
+		// room and the state is left out — see the note above the empty-timeline branch: a left
+		// room is described by one or the other, and complement's own conformance check fails a
+		// response that puts a non-empty state beside a non-empty timeline.
+		state, err := s.stateAtLeave(ctx, membership.RoomID, membership.StreamPos, reader, req.Filter)
+		if err != nil {
+			return nil, false, false, err
+		}
+		room.State = &EventsBatch{Events: state}
 	}
-	room.State = &EventsBatch{Events: state}
 	return room, false, true, nil
 }
 

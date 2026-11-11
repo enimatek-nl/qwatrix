@@ -64,8 +64,10 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	}
 	// And the ban has to wake a sync that is already waiting: a client sitting on a long-poll is
 	// not polling, so a change that does not notify is a change nobody is told about.
-	// Undoing a ban is two writes: an unban (a membership of `leave`, which the room's rules let the
-	// banning user send) and then the invite. Inviting straight from `ban` is refused, and rightly.
+	// And an invite after the ban has to wake a sync that is already waiting: a client sitting on a
+	// long-poll is not polling, so a change that does not notify is a change nobody is told about.
+	// The waiter starts after the unban, because the ban itself is allowed to wake it first — that
+	// would be the same property, demonstrated twice.
 	unban := alice.Do(t, server, harness.Request{
 		Method: http.MethodPost,
 		Path:   "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) + "/unban",
@@ -74,12 +76,14 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	if unban.StatusCode != http.StatusOK {
 		t.Fatalf("unbanning answered %d: %s", unban.StatusCode, unban.Body)
 	}
+	nextSync := bob.MustGet(t, server, "/_matrix/client/v3/sync?since="+since+"&timeout=0")
+	token := gjson.GetBytes(nextSync.Body, "next_batch").String()
 
 	waking := make(chan gjson.Result, 1)
 	go func() {
 		response := bob.Do(t, server, harness.Request{
 			Method: http.MethodGet,
-			Path:   "/_matrix/client/v3/sync?since=" + since + "&timeout=20000",
+			Path:   "/_matrix/client/v3/sync?since=" + token + "&timeout=20000",
 		})
 		waking <- gjson.ParseBytes(response.Body)
 	}()
@@ -110,20 +114,10 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 		t.Errorf("a waiting sync was not woken by an invite after the ban; the long-poll sat there")
 	}
 
-	// The membership in the room they were shown says `ban`: a client distinguishes "you left"
-	// from "you were thrown out", and the difference is what it tells the user.
 	// The event that ended the membership is in the timeline the user is given. "You are out" and
 	// "you were thrown out, for this reason" are different messages to a user, and only the event
 	// says which happened.
 	var leftRoom struct {
-		State struct {
-			Events []struct {
-				Type    string `json:"type"`
-				Content struct {
-					Membership string `json:"membership"`
-				} `json:"content"`
-			} `json:"events"`
-		} `json:"state"`
 		Timeline struct {
 			Events []struct {
 				Type    string `json:"type"`
@@ -137,15 +131,6 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	if err := json.Unmarshal(left, &leftRoom); err != nil {
 		t.Fatalf("decoding the left room: %v\n%s", err, left)
 	}
-	// The state is there too. A client that has to render a room it is no longer in — the ban
-	// notice, the "you no longer have access" screen — draws it from the state it is handed, because
-	// it cannot ask the server for more. Synapse sends it, and the specification carries the field for
-	// exactly this.
-	if !hasBanEvent(leftRoom.State.Events) {
-		t.Errorf("the left room carries no state of its own (%d events) — a client rendering the room "+
-			"it cannot enter has nothing to draw: %s", len(leftRoom.State.Events), left)
-	}
-
 	for _, event := range leftRoom.Timeline.Events {
 		if event.Type == "m.room.member" && event.Content.Membership == "ban" {
 			if event.Content.Reason == "" {
@@ -156,20 +141,4 @@ func TestABannedUserIsToldTheRoomLeft(t *testing.T) {
 	}
 	t.Errorf("the left room's timeline does not carry the ban event; it holds %d events: %s",
 		len(leftRoom.Timeline.Events), left)
-}
-
-type leftEvent = struct {
-	Type    string `json:"type"`
-	Content struct {
-		Membership string `json:"membership"`
-	} `json:"content"`
-}
-
-func hasBanEvent(events []leftEvent) bool {
-	for _, event := range events {
-		if event.Type == "m.room.member" && event.Content.Membership == "ban" {
-			return true
-		}
-	}
-	return false
 }

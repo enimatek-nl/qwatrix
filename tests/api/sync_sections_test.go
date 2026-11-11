@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/enimatek-nl/qwatrix/tests/harness"
-	"github.com/tidwall/gjson"
 )
 
 // TestLeftRoomShowsTheRoomAsTheReaderLeftIt checks what a departed member is told about a room.
@@ -49,24 +48,14 @@ func TestLeftRoomShowsTheRoomAsTheReaderLeftIt(t *testing.T) {
 			t.Errorf("%s sync: the leave timeline shows history written after the reader left: %v",
 				name, bodies)
 		}
-		// The state goes along with the timeline rather than instead of it. A client that has to
-		// render a room the reader can no longer query — the notice explaining why the room is gone —
-		// draws it from what this response carries, because every read it might make about that room
-		// is now refused. Synapse sends it and the specification carries the field for this. What is
-		// worth checking is that the two agree: state must not be a wider window on the room than the
-		// timeline is.
-		if len(leave.State.Events) == 0 {
-			t.Errorf("%s sync: the leave section carries no state, so a client has nothing to render a "+
-				"room it cannot ask about", name)
-		}
-		stateBodies := messageBodies(harness.DecodeEvents(t, leave.State.Events))
-		if strings.Contains(strings.Join(stateBodies, ","), "after the leave") {
-			t.Errorf("%s sync: the leave state shows history written after the reader left: %v",
-				name, stateBodies)
-		}
-		if membership := membershipOf(t, leave.State.Events, bob.UserID); membership != "leave" {
-			t.Errorf("%s sync: the leave state says the reader's membership is %q, want leave — this is "+
-				"the field a client trusts about why the room is gone", name, membership)
+		// A left room is described by its timeline *or* its state, never both. When the timeline
+		// carries the events the reader saw before leaving, that is the description; a state array
+		// beside it is a second, staler answer to the same question, and complement's archive test
+		// fails one that sends both. When the timeline is empty — a `limit: 0` filter, a room left
+		// before anything was sent — the state is what describes the room, which is the other test.
+		if len(leave.State.Events) != 0 {
+			t.Errorf("%s sync: the leave section carries state next to a non-empty timeline, so a "+
+				"client has two descriptions of one room: %d state events", name, len(leave.State.Events))
 		}
 	}
 
@@ -237,21 +226,4 @@ func TestJoiningAfterTheTokenMakesTheTimelineLimited(t *testing.T) {
 	if room, ok := caught.Rooms.Join[roomID]; ok && room.Timeline.Limited {
 		t.Errorf("a reader who missed nothing was told their timeline was limited")
 	}
-}
-
-// membershipOf reads the membership a state event list declares for the user whose ID starts with
-// the given prefix, which is how a test checks what a sync says about the reader without knowing the
-// harness's server name.
-func membershipOf(t *testing.T, events []json.RawMessage, userIDPrefix string) string {
-	t.Helper()
-	for _, event := range harness.DecodeEvents(t, events) {
-		if event.Type != "m.room.member" || event.StateKey == nil {
-			continue
-		}
-		if !strings.HasPrefix(*event.StateKey, userIDPrefix) {
-			continue
-		}
-		return gjson.GetBytes(event.Content, "membership").String()
-	}
-	return ""
 }
