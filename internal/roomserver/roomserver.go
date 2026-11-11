@@ -958,17 +958,7 @@ func validateRoomField(name, value string, max int) error {
 // membershipKey turns an m.room.member state key into the key this server stores the
 // membership under.
 func membershipKey(stateKey, serverName string) string {
-	localpart, domain, err := matrix.ParseUserID(stateKey, serverName)
-	if err != nil {
-		// A state key that is not a user ID can only have arrived from another server (or
-		// from a client that ignored the grammar). Keeping the whole string is the reading
-		// that cannot make two different users look like one.
-		return stateKey
-	}
-	if domain != serverName {
-		return stateKey
-	}
-	return localpart
+	return matrix.MembershipKey(stateKey, serverName)
 }
 
 // memberStateKey is the inverse: the state key for a local part.

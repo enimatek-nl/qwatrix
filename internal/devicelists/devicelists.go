@@ -16,6 +16,7 @@ import (
 	"context"
 	"log/slog"
 	"sort"
+	"strings"
 
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
@@ -46,12 +47,13 @@ func New(st *store.Store, n *notifier.Notifier, opts Options) *Service {
 // shared room and re-query the keys of somebody who is still in it. Getting that backwards either
 // keeps trusting a device that is gone or throws away keys still in use.
 func (s *Service) Announce(ctx context.Context, userID string, left bool) error {
-	localpart, _, err := matrix.ParseUserID(userID, s.serverName)
-	if err != nil {
-		// A remote user's device list is somebody else's to announce.
-		return nil
-	}
-	observers, err := s.observers(ctx, localpart)
+	// The subject is named the way the membership table names it, and that matters in both
+	// directions. A remote user's join has to be announceable at all — a client that is never told
+	// about a member it has just acquired quietly stops being able to encrypt to them — and it must
+	// not be announced under a bare local part, because "@alice:remote.example" and the local
+	// "@alice" would then be the same announcement: bob would be told to re-fetch somebody else's
+	// keys and would encrypt to the wrong device.
+	observers, err := s.observers(ctx, matrix.MembershipKey(userID, s.serverName))
 	if err != nil {
 		return err
 	}
@@ -114,6 +116,10 @@ func (s *Service) Changes(ctx context.Context, observer, from, to string) (chang
 
 // observers lists the local users that care about one user's devices: everyone who shares a room with
 // them, plus their own other devices.
+// observers returns the membership keys of everyone who shares a room with the subject.
+//
+// Only local users are returned: a change is something a /sync reads, and a remote user never syncs
+// here, so recording changes for them would be rows nobody will ever ask for.
 func (s *Service) observers(ctx context.Context, localpart string) ([]string, error) {
 	seen := map[string]bool{localpart: true}
 	rooms, err := s.store.Memberships.RoomsForUser(ctx, localpart)
@@ -131,6 +137,11 @@ func (s *Service) observers(ctx context.Context, localpart string) ([]string, er
 	}
 	out := make([]string, 0, len(seen))
 	for observer := range seen {
+		// A membership key carrying a domain belongs to a remote user, who will never read a change
+		// made here.
+		if strings.Contains(observer, ":") {
+			continue
+		}
 		out = append(out, observer)
 	}
 	return out, nil

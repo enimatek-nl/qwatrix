@@ -145,3 +145,20 @@ func AccessToken() string {
 
 // Nonce returns a value for the interactive-auth / shared-secret registration nonce.
 func Nonce() string { return RandomID(32) }
+
+// MembershipKey is how a user is named inside a room's membership data: a local user by their local
+// part, a remote user by their whole user ID.
+//
+// The asymmetry is deliberate. Two homeservers can each have an "alice", and storing both as "alice"
+// would let one member's rows answer questions about the other — including questions about whose keys
+// to fetch. Keeping the domain on the remote spelling is the only reading that cannot merge two users.
+func MembershipKey(userID, serverName string) string {
+	localpart, domain, err := ParseUserID(userID, serverName)
+	if err != nil || domain != serverName {
+		// Either not a user ID at all (it arrived from another server, or from a client that
+		// ignored the grammar) or somebody else's user. Keeping the whole string is the reading
+		// that cannot make two different users look like one.
+		return userID
+	}
+	return localpart
+}

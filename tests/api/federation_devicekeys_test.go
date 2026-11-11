@@ -228,3 +228,43 @@ func federationGetSigned(t *testing.T, server *harness.Server, peer *fakePeer, p
 	}
 	return response.StatusCode, body
 }
+
+// TestARemoteUserAppearsInDeviceListsChanged is what a client needs to know to encrypt to somebody it
+// has just met: alice joins a room bob is already in, and bob's server has to tell him that alice's
+// device list is worth fetching.
+//
+// It is the difference between an encrypted room where bob's client quietly sends nothing readable to
+// alice, and one where it fetches her keys and does.
+func TestARemoteUserAppearsInDeviceListsChanged(t *testing.T) {
+	hs2 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs2.FederationServer(t)
+	bob := hs2.Register(t, "bob", "pw-bob", false)
+	roomID := bob.MustCreateRoom(t, hs2, map[string]any{"preset": "public_chat"})
+	// A position taken before alice joins: a token taken afterwards would already have swallowed the
+	// change it is meant to be looking for.
+	before := bob.MustSync(t, hs2, url.Values{"timeout": []string{"0"}}).NextBatch
+
+	hs1 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs1.FederationServer(t)
+	alice := hs1.Register(t, "alice", "pw-alice", false)
+	uploadDeviceKeys(t, alice, hs1)
+	alice.MustPostJSON(t, hs1, "/_matrix/client/v3/join/"+url.PathEscape(roomID)+
+		"?server_name="+url.QueryEscape(hs2.ServerName), map[string]any{}).MustStatus(t, 200)
+	hs1.DrainFederation(t)
+
+	changed := []string{}
+	deadline := 4
+	for attempt := 0; attempt < deadline; attempt++ {
+		synced := bob.MustSync(t, hs2, url.Values{"timeout": []string{"0"}, "since": []string{before}})
+		changed = synced.DeviceLists.Changed
+		for _, userID := range changed {
+			if userID == alice.UserID {
+				return
+			}
+		}
+	}
+	t.Fatalf("bob was never told that %q's device list was worth fetching; device_lists.changed = %v\n"+
+		"HS2 LOG:\n%s", alice.UserID, changed, hs2.Logs())
+}
