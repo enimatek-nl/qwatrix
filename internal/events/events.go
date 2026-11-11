@@ -59,10 +59,22 @@ func (s *Service) DefaultRoomVersion() gomatrixserverlib.RoomVersion {
 // quietly refuses a version the specification calls stable is a server where an old room cannot
 // be created, and the client finds out only by failing; the versions this server supports are
 // advertised through /capabilities, so advertising the truth is what makes the choice safe.
+//
+// One property does stop being the library's to carry: how a room gets its ID. Versions in the
+// MSC4291 family have no domain in a room ID at all, and this server names rooms
+// `!random:its.own.domain` — a name that has to appear in the create event, which the authorisation
+// layer then refuses because the two do not match. That is not a version to advertise and then fail
+// on, so it is left out of the list, which is where the refusal belongs: /capabilities stops
+// promising it, and creating it answers M_INCOMPATIBLE_ROOM_VERSION instead of an internal complaint.
+//
+// The rule is read from the library rather than hardcoded, so the next version in that family is
+// excluded by the same fact that excludes this one.
 func RoomVersionsSupportedForCreation() []string {
 	out := []string{}
 	for version, impl := range gomatrixserverlib.StableRoomVersions() {
-		_ = impl
+		if impl.DomainlessRoomIDs() {
+			continue
+		}
 		out = append(out, string(version))
 	}
 	sort.Strings(out)
@@ -70,8 +82,13 @@ func RoomVersionsSupportedForCreation() []string {
 }
 
 // ResolveRoomVersion validates a requested room version, mapping the specification's
-// distinct error codes: M_UNSUPPORTED_ROOM_VERSION for something that does not exist,
-// M_IncompatibleRoomVersion for a known version this server will not serve.
+// distinct error codes: M_UNSUPPORTED_ROOM_VERSION for something that does not exist, and
+// M_INCOMPATIBLE_ROOM_VERSION for a known version this server will not serve.
+//
+// The spelling is the current specification's. Synapse answers this one as
+// `M_IncompatibleRoomVersion` and so does this server's federation path, where a peer's library may
+// compare the string it has always compared; a client asking to create a room gets the code the
+// error-code table actually defines.
 func (s *Service) ResolveRoomVersion(requested string) (gomatrixserverlib.RoomVersion, error) {
 	if requested == "" {
 		return s.DefaultRoomVersion(), nil
@@ -93,7 +110,7 @@ func (s *Service) ResolveRoomVersion(requested string) (gomatrixserverlib.RoomVe
 		}
 	}
 	if !known {
-		return "", matrix.NewAPIError(http.StatusBadRequest, matrix.ErrIncompatibleVersion,
+		return "", matrix.NewAPIError(http.StatusBadRequest, matrix.ErrIncompatibleRoomVersion,
 			"Room version %q is known but this server cannot create rooms in it", requested)
 	}
 	return version, nil
@@ -103,7 +120,7 @@ func (s *Service) ResolveRoomVersion(requested string) (gomatrixserverlib.RoomVe
 func (s *Service) RoomVersion(version string) (gomatrixserverlib.IRoomVersion, error) {
 	impl, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(version))
 	if err != nil {
-		return nil, matrix.NewAPIError(http.StatusBadRequest, matrix.ErrIncompatibleVersion,
+		return nil, matrix.NewAPIError(http.StatusBadRequest, matrix.ErrIncompatibleRoomVersion,
 			"Room version %q is not supported by this homeserver", version)
 	}
 	return impl, nil
