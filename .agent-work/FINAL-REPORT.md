@@ -24,7 +24,7 @@ storage, bundled aggregates), membership with invites and third-party invites, a
 levels, sync with long-polling and lazy loading, filters, read markers, receipts, typing, presence,
 to-device messages, device and cross-signing key management with key claims and OTK tracking,
 account data, push rules, media upload/download/thumbnails with capability URLs, profiles,
-aliases and the published-room directory, spaces/hierarchy, search-free room summaries,
+aliases and the published-room directory, room summaries, search, generated thumbnails,
 UIA-driven registration/login/logout/password/deactivation, and the Synapse-compatible shared-secret
 admin endpoint.
 

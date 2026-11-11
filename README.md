@@ -6,10 +6,11 @@ homeserver on loopback that clients can register with, sync from, and federate o
 
 It implements the Matrix client-server API used by real clients (rooms, events, membership,
 sync with long-polling, filters, read markers, receipts, typing, presence, to-device messages,
-end-to-end encryption key management, push rules, media, account data, relations/threads,
-spaces) and a working subset of the server-server API. `docs/ENDPOINTS.md` lists every endpoint
-with its status, and a test asserts that no route is undocumented; `.agent-work/FINAL-REPORT.md`
-records what was verified and what is knowingly incomplete.
+end-to-end encryption key management, push rules, media including generated thumbnails, account
+data, relations/threads, search, and room summaries) and a working subset of the server-server API.
+`docs/ENDPOINTS.md` lists every endpoint with its status, and a test asserts that no route is
+undocumented; `.agent-work/FINAL-REPORT.md` records what was verified and what is knowingly
+incomplete.
 
 ## Run it
 
@@ -191,7 +192,8 @@ docs/ENDPOINTS.md    every endpoint and its status; enforced by a test
 
 ## Known limitations
 
-Threads, search, URL preview, refresh tokens (MSC2918), key backup and cross-signing, knocking,
-server ACLs, push gateway delivery, and sliding sync are not implemented, and a handful of
-complement tests covering them fail. `.agent-work/FINAL-REPORT.md` lists them with the measured
+Room upgrades, the room hierarchy (so space summaries are not served), URL preview, refresh tokens
+(MSC2918), the threads timeline endpoint, key backup and cross-signing, knocking, server ACLs, push
+gateway delivery, and sliding sync are not implemented, and a handful of complement tests covering
+them fail. `.agent-work/FINAL-REPORT.md` lists them with the measured
 complement results, and `.agent-work/TASKS.md` tracks each one.

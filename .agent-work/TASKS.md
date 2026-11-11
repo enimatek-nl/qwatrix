@@ -230,46 +230,7 @@ server does not have and what Complement's own tests check; the method is named 
 - Adding a repository to `store.Store` is three edits (field, `AutoMigrate`, constructor); the third
   is the one that compiles while leaving the field nil and turning a request into a bare 500.
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+| T719 | Generate the thumbnails the docs advertised | done | `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaID}` and the authenticated form were documented and had a config flag, and nothing was registered — every request answered `M_UNRECOGNIZED`. `scale` fits the box and keeps the aspect ratio, `crop` fills it and gives up the edges; PNG out; one generation per size, cached beside the file; 1024 per edge maximum; an absurd decoded size refused because a small file can decompress to gigabytes. Another server's media works because a thumbnail goes through the same fetch-and-cache path. |
+| T721 | Answer `GET /_matrix/client/v1/room_summary/{roomIDOrAlias}` | done | The join rule and, for a restricted room, the rooms whose membership would satisfy it — which the cached room row does not hold, because the list lives in the join rules event. An unrestricted room omits the field: an empty list would claim "restricted by nobody", a different claim that invites a doomed join. Resolves an alias before asking permission, because permission is a fact about the room and an alias is only a way of naming one. |
+| T724 | Serve the filename-bearing download forms | done | `…/download/{serverName}/{mediaID}/{fileName}` on both media APIs. The name in the path is not a lookup key — the media ID is — and a client that saved a file under a name the user chose, in any script, should get a response that agrees with it. |
+| T725 | `GET /_matrix/client/v1/rooms/{roomID}/hierarchy` | open | Blocks `TestClientSpacesSummary` and the spaces-summary half of the restricted-room tests. Needs a walk over `m.space.child` with a depth and a page size, per-child room type, name, topic, world-readable and guest-join flags and member count, and it must ignore a child link on a room that is not a space. Larger than the summary endpoint and not a alias for it. The README and this file currently advertise spaces; they must say "not implemented" until this lands. |
