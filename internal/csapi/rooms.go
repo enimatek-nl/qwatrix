@@ -964,3 +964,57 @@ func handleRoomSummary(deps Deps) http.HandlerFunc {
 		httpx.RespondJSON(w, http.StatusOK, summary)
 	}
 }
+
+// handleRoomHierarchy answers GET /_matrix/client/v1/rooms/{roomID}/hierarchy.
+//
+// The query parameters are the caller's, not the room's: `limit` is how many rooms this page
+// should carry, `max_depth` how far down the tree to go, `suggested_only` whether to follow
+// links the space's administrator did not recommend, and `from` a position in a walk already
+// begun. They are parsed here and enforced there — see roomserver.Hierarchy for what each one
+// is allowed to change.
+func handleRoomHierarchy(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		roomID := r.PathValue("roomID")
+		query := r.URL.Query()
+
+		limit := 0
+		if raw := query.Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed <= 0 {
+				httpx.RespondError(w, r, matrix.NewInvalidParam("limit must be a positive integer"))
+				return
+			}
+			limit = parsed
+		}
+		// An absent max_depth means "as far as there is", which the service reads as -1;
+		// the specification allows a non-negative integer and treats no-limit as a value
+		// the caller has to ask for by leaving it out.
+		maxDepth := -1
+		if raw := query.Get("max_depth"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed < 0 {
+				httpx.RespondError(w, r, matrix.NewInvalidParam("max_depth must be a non-negative integer"))
+				return
+			}
+			maxDepth = parsed
+		}
+		suggestedOnly := false
+		if raw := query.Get("suggested_only"); raw != "" {
+			parsed, err := strconv.ParseBool(raw)
+			if err != nil {
+				httpx.RespondError(w, r, matrix.NewInvalidParam("suggested_only must be true or false"))
+				return
+			}
+			suggestedOnly = parsed
+		}
+
+		page, err := deps.Rooms.Hierarchy(r.Context(), roomID, dReader(deps, r, roomID, session),
+			limit, maxDepth, suggestedOnly, query.Get("from"))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, page)
+	}
+}

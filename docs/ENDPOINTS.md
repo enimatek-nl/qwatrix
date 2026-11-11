@@ -164,6 +164,7 @@ a room with the subject, which is the privacy rule of the feature.
 | `GET` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | [authenticated thumbnail](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediathumbnailservernamemediaid) |
 | `HEAD` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | The same, headers only |
 | `GET` | `/_matrix/client/v1/room_summary/{roomIDOrAlias}` | [Get a summary of a room](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1room_summaryroomidoralias) — a room ID or an alias, and the join rule plus the rooms a restricted join admits |
+| `GET` | `/_matrix/client/v1/rooms/{roomID}/hierarchy` | [Get a hierarchy of space rooms](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidhierarchy) — depth-first walk of the `m.space.child` tree, permission-filtered per room, with `limit`/`max_depth`/`suggested_only` and `next_batch` |
 | `GET` | `/_matrix/client/v1/media/config` | [authenticated config](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediaconfig) |
 
 Media is stored on disk under `<data-dir>/media` with its metadata in the database; uploads are

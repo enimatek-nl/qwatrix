@@ -128,6 +128,9 @@ func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 	// The room summary, which is a v1 resource and deliberately not aliased under v3: it was added
 	// after the version prefixes stopped being incremented, and clients ask for it by its v1 name.
 	mux.HandleFunc("GET /_matrix/client/v1/room_summary/{roomIDOrAlias}", deps.requireAuth(handleRoomSummary(deps)))
+	// The space hierarchy: a permission-filtered walk of the tree below a space, so a client
+	// can show a space without joining everything under it.
+	mux.HandleFunc("GET /_matrix/client/v1/rooms/{roomID}/hierarchy", deps.requireAuth(handleRoomHierarchy(deps)))
 
 	// Timeline and state writes. The transaction ID is part of the URL, which is what makes
 	// a retried send idempotent rather than duplicated.

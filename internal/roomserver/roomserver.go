@@ -143,6 +143,17 @@ type CreateRequest struct {
 	IsDirect bool
 }
 
+// roomTypeOfCreationContent reads the `type` field a create event is given, which is what makes
+// a room a space (`m.space`) rather than a conversation. An absent or non-string type is an
+// ordinary room, which is the common case and not worth an error.
+func roomTypeOfCreationContent(content map[string]any) string {
+	roomType, ok := content["type"].(string)
+	if !ok {
+		return ""
+	}
+	return roomType
+}
+
 // CreateRoom creates a room and returns its ID.
 //
 // The initial state is written in the order the authorization rules require: the create
@@ -225,6 +236,13 @@ func (s *Service) CreateRoom(ctx context.Context, req CreateRequest) (string, er
 			// Making a room publicly joinable publishes it unless the creator asks
 			// otherwise; the directory flag is then theirs to change.
 			Publishable: initial.listed,
+			// The room's type is a property of the room, not of the create event's
+			// journey through this transaction, so it is read here — before the row is
+			// written. Assigning it after `Rooms.Create` mutated a struct that had already
+			// been inserted, which meant a space was stored as an ordinary room: the
+			// directory's space flag was wrong, and a walk of the space tree refused to go
+			// below the root, because only a space has children.
+			RoomType: roomTypeOfCreationContent(req.CreationContent),
 		}
 		if err := s.store.Rooms.Create(ctx, room); err != nil {
 			return err
@@ -243,9 +261,6 @@ func (s *Service) CreateRoom(ctx context.Context, req CreateRequest) (string, er
 			createContent["creator"] = req.Creator
 		}
 		createContent["room_version"] = string(version)
-		if roomType, ok := createContent["type"].(string); ok {
-			room.RoomType = roomType
-		}
 		if _, ok := createContent["m.federate"]; !ok {
 			createContent["m.federate"] = true
 		}

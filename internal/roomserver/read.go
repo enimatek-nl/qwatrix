@@ -1074,7 +1074,11 @@ type PublicRoom struct {
 	GuestCanJoin  bool   `json:"guest_can_join"`
 	JoinRule      string `json:"join_rule,omitempty"`
 	RoomVersion   string `json:"room_version,omitempty"`
-	Space         bool   `json:"space,omitempty"`
+	// RoomType is the `type` from the room's create event, "m.space" for a space and absent
+	// for a conversation. The room directory once spelled this `space: true`; the current
+	// specification carries the type itself, which is what a client needs in order to filter
+	// on a type of its own rather than on "is this a space, yes or no".
+	RoomType string `json:"room_type,omitempty"`
 }
 
 // PublicRooms lists rooms this server publishes in the room directory.
@@ -1126,7 +1130,7 @@ func (s *Service) PublicRooms(ctx context.Context, req PublicRoomsRequest) (*Pub
 			WorldReadable:  room.HistoryVisibility == matrix.HistoryWorldReadable,
 			JoinRule:       room.JoinRule,
 			RoomVersion:    room.Version,
-			Space:          room.RoomType == matrix.RoomTypeSpace,
+			RoomType:       room.RoomType,
 		}
 		page.Chunk = append(page.Chunk, entry)
 	}
