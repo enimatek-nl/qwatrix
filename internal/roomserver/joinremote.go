@@ -117,18 +117,12 @@ func (s *Service) joinRemoteRoom(ctx context.Context, sender Sender, roomID, rea
 	// membership. Authorising against the answer as given therefore tells the room "this user is
 	// already a member, so let them in" — a rule that admits anybody, in any room, on the strength of
 	// the very event being questioned.
-	prior, err := stateBefore(remote.State, remote.JoinEvent.EventID())
-	if err != nil {
-		return "", err
-	}
+	prior := stateBefore(remote.State, remote.JoinEvent.EventID())
 	if err := s.requireCompleteAuthChain(remote.JoinEvent, prior); err != nil {
 		return "", err
 	}
 	if err := s.events.Authorize(remote.JoinEvent, prior); err != nil {
 		return "", err
-	}
-	if !containsEvent(remote.State, remote.JoinEvent.EventID()) {
-		return "", matrix.NewUnknown("the peer's answer did not include the join it accepted")
 	}
 	if err := s.persistFederatedJoin(ctx, roomID, remote); err != nil {
 		return "", err
@@ -137,18 +131,24 @@ func (s *Service) joinRemoteRoom(ctx context.Context, sender Sender, roomID, rea
 	return remote.JoinEvent.EventID(), nil
 }
 
-// stateExcept returns the state without one event.
-func stateBefore(state []gomatrixserverlib.PDU, eventID string) ([]gomatrixserverlib.PDU, error) {
+// stateBefore returns the peer's state without the join event being made, which is the state the join
+// has to be authorised against.
+//
+// The event is not necessarily in that list. Synapse answers send_join with the room's state
+// *including* the join it accepted; complement's reference federation server deliberately builds the
+// list before inserting it, so the join it has just accepted is absent. Both are peers saying yes, and
+// whether the event rides inside the array says nothing this server does not already hold: the join was
+// built from the peer's own make_join template and verified against the peer's signing key. Treating
+// its absence as a refusal was therefore wrong, and refusing a peer that returned 200 is a way of being
+// unable to join rooms that are perfectly willing to have you.
+func stateBefore(state []gomatrixserverlib.PDU, eventID string) []gomatrixserverlib.PDU {
 	prior := make([]gomatrixserverlib.PDU, 0, len(state))
 	for _, event := range state {
 		if event.EventID() != eventID {
 			prior = append(prior, event)
 		}
 	}
-	if len(prior) == len(state) {
-		return nil, matrix.NewUnknown("the peer's answer did not include the join it accepted")
-	}
-	return prior, nil
+	return prior
 }
 
 // requireCompleteAuthChain refuses a join whose auth events leave out what the room's rules require.
@@ -309,14 +309,4 @@ func createdMS(state []gomatrixserverlib.PDU) int64 {
 		}
 	}
 	return time.Now().UnixMilli()
-}
-
-// containsEvent reports whether an event is among a set of events.
-func containsEvent(events []gomatrixserverlib.PDU, eventID string) bool {
-	for _, event := range events {
-		if event.EventID() == eventID {
-			return true
-		}
-	}
-	return false
 }

@@ -693,30 +693,74 @@ func TestAFederatedJoinRefusesATemplateWithAnIncompleteChain(t *testing.T) {
 	assertRoomAbsent(t, alice, server, room.roomID)
 }
 
-// TestAFederatedJoinRefusesAnAnswerWithoutTheJoinItAccepted is a peer that answers a join with the
-// room's state and no join in it.
+// TestAFederatedJoinIsAcceptedWhenThePeerOmitsTheJoinFromItsState covers a peer that answers
+// `send_join` with the state *as it stood before* the join.
 //
-// A send_join response is an assertion about one event as much as about a room: "here is the room, and
-// here is your join in it". State without the join is how a peer makes a member appear absent in the
-// very state offered as proof they are present — and a room stored from that answer would leave this
-// server's user missing from the membership list they can read back a second later.
-func TestAFederatedJoinRefusesAnAnswerWithoutTheJoinItAccepted(t *testing.T) {
-	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
-	alice := server.Register(t, "host", "pw-host", false)
-	peer := newFakePeer(t)
-	room := newFederatedRoom(t, peer)
+// The specification describes the answer as the room's current state, and Synapse includes the join
+// event in it. complement's own reference federation server — the thing test suites worldwide use to
+// stand in for a remote homeserver — deliberately builds its state list before inserting the event, so
+// the join it has just accepted is missing from the list it returns. Refusing that answer means
+// refusing a server that said yes: the peer authenticated the request, signed its state, and replied
+// 200. Whether the join event rides inside the state array tells this server nothing it does not
+// already know, because the join is the event this server built itself from the peer's own template
+// and verified against the peer's signing key.
+func TestAFederatedJoinIsAcceptedWhenThePeerOmitsTheJoinFromItsState(t *testing.T) {
+	// Two shapes of the same answer: a room that never saw this user before, and a room holding an
+	// older membership event for them. The second is the interesting one — the state does name the
+	// user, with a membership that is not the join being made.
+	for _, shape := range []struct {
+		name       string
+		priorLeave bool
+	}{
+		{name: "a user the room has never had"},
+		{name: "a user who had left", priorLeave: true},
+	} {
+		t.Run(shape.name, func(t *testing.T) {
+			server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+			alice := server.Register(t, "host", "pw-host", false)
+			peer := newFakePeer(t)
+			room := newFederatedRoom(t, peer)
 
-	room.broken = func(answer *federatedJoinAnswer) {
-		// The state as it stood before the join, and nothing else: the join event is dropped.
-		answer.State = stateJSON(room.state)
-	}
-	serveFederatedRoom(t, peer, room)
+			if shape.priorLeave {
+				localUser := "@host:" + string(harness.ServerName)
+				room.priorMember = buildRemoteEvent(t, peer, room.version, gomatrixserverlib.ProtoEvent{
+					Type:     "m.room.member",
+					RoomID:   room.roomID,
+					StateKey: &localUser,
+					SenderID: room.remote,
+					Depth:    6,
+					Content:  spec.RawJSON(mustMarshal(t, map[string]any{"membership": "leave"})),
+				})
+			}
+			room.broken = func(answer *federatedJoinAnswer) {
+				// The join event is the entry the harness appended last.
+				answer.State = answer.State[:len(answer.State)-1]
+			}
+			serveFederatedRoom(t, peer, room)
 
-	response := server.PostJSON(t, "/_matrix/client/v3/join/"+
-		url.PathEscape(room.roomID)+"?server_name="+url.QueryEscape(string(peer.serverNo)),
-		alice.AccessToken, map[string]any{})
-	if response.StatusCode == http.StatusOK {
-		t.Fatal("a join was accepted from an answer that did not contain it")
+			response := server.PostJSON(t, "/_matrix/client/v3/join/"+
+				url.PathEscape(room.roomID)+"?server_name="+url.QueryEscape(string(peer.serverNo)),
+				alice.AccessToken, map[string]any{})
+			if response.StatusCode != http.StatusOK {
+				t.Fatalf("a peer that accepted the join was treated as refusing it (%d): %s",
+					response.StatusCode, response.Body)
+			}
+
+			// Accepting the answer must still produce a room this user is in, with the remote
+			// member in it and their own join as the membership of record.
+			sync := alice.MustSync(t, server, nil)
+			if _, ok := sync.Rooms.Join[room.roomID]; !ok {
+				t.Fatalf("the room is not in the local user's sync (%d joined rooms)",
+					len(sync.Rooms.Join))
+			}
+			members := roomMembers(t, alice, server, room.roomID)
+			if !members[room.remote] {
+				t.Errorf("the remote member %s is missing from the member list (%v)", room.remote, members)
+			}
+			if count := federationMemberCount(t, alice, server, room.roomID); count != 2 {
+				t.Errorf("the room holds %d member events, want 2 (the state's own membership and this join)",
+					count)
+			}
+		})
 	}
-	assertRoomAbsent(t, alice, server, room.roomID)
 }

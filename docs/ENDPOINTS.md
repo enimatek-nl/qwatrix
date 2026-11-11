@@ -361,12 +361,15 @@ history kept because it was available is a hole a client can fall into.
 
 An outbound join is a peer's answer, and a peer's answer is an input from a party that benefits from
 this server being wrong, so it is checked as one. Every state and auth event must parse under the
-version the peer named, carry this room's ID, and verify against its sender's published key. The join
-event itself must appear in the state the peer returns. The room's rules are then applied by this
-server, to the state as it stood *before* the join: a send_join answer includes the join event, and a
-membership event found in the authorising state counts as the user's previous membership, so authorising
-against the answer as given would admit anyone anywhere on the strength of the very event being
-questioned.
+version the peer named, carry this room's ID, and verify against its sender's published key. The room's
+rules are then applied by this server, to the state as it stood *before* the join: some peers answer
+`send_join` with the join event already inside the state they return, and a membership event found in
+the authorising state counts as the user's previous membership, so authorising against the answer as
+given would admit anyone anywhere on the strength of the very event being questioned. Peers differ on
+that point — Synapse includes the join, complement's reference federation server deliberately builds
+its state before inserting it — so its presence is not required: a peer that replied 200 has accepted
+the join, which this server knows independently, having built the event from the peer's own `make_join`
+template and verified it against the peer's signing key.
 
 Two of these refusals are worth naming because they are how a peer's lie would otherwise be read as a
 fact. A join whose `auth_events` leave out an event the room's rules require — most importantly the join
