@@ -43,6 +43,15 @@ rather than quoted.
 | 99 | — | 81 / 95 | method-mismatch 405s, filename-bearing media downloads, room summary |
 | 97 | — | 79 / 95 | first sweep that ran **both** packages; before it `COMPLEMENT_PKG` defaulted to `./tests/csapi`, so every earlier count covers less than the suite |
 
+### Not yet measured
+
+`ef4d6b0` (the delivery loop no longer requires a separate federation address) is in the tree after
+run 105's image and is **unmeasured**. It is expected to move no container number, because
+complement's entrypoint always passes `-federation-addr :8448` and so the loop was already running in
+every run above — which is exactly why the fault survived all of them. It matters to the default
+single-listener deployment, not to this suite. Quote 88 / 95 as the current number, and re-sweep
+before attributing any change to that commit.
+
 ### Still failing at run 105, and what each one needs
 
 | test | the behaviour, not the symptom |
