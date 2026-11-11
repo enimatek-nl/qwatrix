@@ -68,11 +68,27 @@ type Service struct {
 	// asking a peer for a room this server does not hold. Nil means a room this server does not
 	// hold does not exist, which is the correct answer for a homeserver that does not federate.
 	federationJoiner FederationJoiner
+	// federatesOutbound decides whether a locally originated event creates an obligation to tell
+	// other homeservers about it. On by default, because a homeserver that does not send events to
+	// peers is not federating, and the honest failure of a deployment that turns it off is a queue it
+	// knows about rather than one it discovers.
+	federatesOutbound bool
 }
 
 // New builds the room server.
 func New(st *store.Store, cfg *config.Config, eventService *events.Service, nf *notifier.Notifier) *Service {
-	return &Service{store: st, cfg: cfg, events: eventService, notifier: nf}
+	return &Service{store: st, cfg: cfg, events: eventService, notifier: nf, federatesOutbound: true}
+}
+
+// WithoutFederationOutbound stops locally originated events from being queued for peers, and returns
+// the service for chaining.
+//
+// It exists for a deployment that is walled off from other homeservers. The alternative — queueing
+// deliveries nothing will ever attempt — turns every room with a remote member into growing storage for
+// an event nobody will read.
+func (s *Service) WithoutFederationOutbound() *Service {
+	s.federatesOutbound = false
+	return s
 }
 
 // Store exposes the store to the read-side services that share this package's data.
@@ -641,6 +657,12 @@ func (w *eventWriter) append(req txAppend) (*store.EventRow, error) {
 		if err := s.applyStateSideEffects(ctx, w.tx, room, req, written, replaced); err != nil {
 			return nil, err
 		}
+	}
+
+	// The event and the duty to deliver it are written together, so that a crash between the two
+	// cannot leave a room whose members disagree about what happened.
+	if err := s.queueFederationDelivery(ctx, w.tx, req.roomID, written); err != nil {
+		return nil, err
 	}
 
 	return written, nil

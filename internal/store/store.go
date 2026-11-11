@@ -65,6 +65,9 @@ type Store struct {
 	Media MediaRepo
 	// ToDevice is the queue of messages sent to devices rather than rooms.
 	ToDevice ToDeviceRepo
+	// FederationOutbox is the ledger of peer copies this server still owes: events persisted here
+	// whose delivery to another homeserver has not been confirmed yet.
+	FederationOutbox FederationOutboxRepo
 	// PushRules are the per-account notification rules.
 	PushRules PushRuleRepo
 	// Directory is the user directory: the names local users go by, per room.
@@ -111,26 +114,27 @@ func Open(path string) (*Store, error) {
 	}
 
 	return &Store{
-		db:          db,
-		Users:       NewUserRepo(db),
-		Devices:     NewDeviceRepo(db),
-		Tokens:      NewTokenRepo(db),
-		Rooms:       NewRoomRepo(db),
-		Events:      NewEventRepo(db),
-		State:       NewStateRepo(db),
-		Memberships: NewMembershipRepo(db),
-		Aliases:     NewAliasRepo(db),
-		Txns:        NewTxnRepo(db),
-		Presence:    NewPresenceRepo(db),
-		Receipts:    NewReceiptRepo(db),
-		Filters:     NewFilterRepo(db),
-		AccountData: NewAccountDataRepo(db),
-		Keys:        NewKeyRepo(db),
-		DeviceLists: NewDeviceListRepo(db),
-		Media:       NewMediaRepo(db),
-		ToDevice:    NewToDeviceRepo(db),
-		PushRules:   NewPushRuleRepo(db),
-		Directory:   NewDirectoryRepo(db),
+		db:               db,
+		Users:            NewUserRepo(db),
+		Devices:          NewDeviceRepo(db),
+		Tokens:           NewTokenRepo(db),
+		Rooms:            NewRoomRepo(db),
+		Events:           NewEventRepo(db),
+		State:            NewStateRepo(db),
+		Memberships:      NewMembershipRepo(db),
+		Aliases:          NewAliasRepo(db),
+		Txns:             NewTxnRepo(db),
+		Presence:         NewPresenceRepo(db),
+		Receipts:         NewReceiptRepo(db),
+		Filters:          NewFilterRepo(db),
+		AccountData:      NewAccountDataRepo(db),
+		Keys:             NewKeyRepo(db),
+		DeviceLists:      NewDeviceListRepo(db),
+		Media:            NewMediaRepo(db),
+		ToDevice:         NewToDeviceRepo(db),
+		FederationOutbox: NewFederationOutboxRepo(db),
+		PushRules:        NewPushRuleRepo(db),
+		Directory:        NewDirectoryRepo(db),
 	}, nil
 }
 
@@ -233,6 +237,7 @@ func migrate(db *gorm.DB) error {
 		&ToDeviceMessage{},
 		&MediaFile{},
 		&DeviceListChange{},
+		&FederationOutbox{},
 	); err != nil {
 		return fmt.Errorf("migrating schema: %w", err)
 	}

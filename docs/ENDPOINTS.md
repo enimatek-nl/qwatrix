@@ -306,6 +306,19 @@ server where any peer can mint a device for any user anywhere. A peer that canno
 user with no devices in the answer rather than failing the query, because a query usually covers a whole
 room at once and one dead homeserver must not silence every encrypted room its users share.
 
+Delivery runs the other way too, and through a ledger rather than inline. When this server originates
+an event it writes a copy-to-send row for every other homeserver with a member in that room, in the same
+transaction as the event, and a worker keeps trying until each peer confirms it. A peer that is
+unreachable therefore cannot make a local user's `PUT /send` fail — the message was accepted and is
+true — and cannot make it disappear either, because the obligation was written down before anything could
+be sent. Failed attempts back off up to ten minutes apart; a delivery is abandoned only after many
+hundreds of attempts and a week, and abandoning one is logged as an error, because a message that was
+given up on is the fact an operator most needs to find out about.
+
+Not done: this server sends its own events and not other servers' ones. A room spanning three homeservers
+therefore hears each participant's messages from the servers its members are directly connected to, and
+forwarding is the work that closes the rest.
+
 Ingest answers event by event: a transaction whose third event is bogus keeps the other two and
 reports which one did not land. It is idempotent by transaction ID, because a peer that did not hear
 the answer sends the transaction again, and a room where every message appears twice is a broken room.

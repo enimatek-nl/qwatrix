@@ -154,3 +154,51 @@ func TestAHomeserverNamedWithoutAPortFederatesAJoin(t *testing.T) {
 		t.Fatalf("hs1 joined room %q, wanted %q", got, roomID)
 	}
 }
+
+// TestAMessageTravelsToAServerThatSharesTheRoom is the outbound direction of the join tests above:
+// alice, on one homeserver, says something in a room that also has members on another, and the other
+// homeserver ends up with what she said.
+//
+// Until this test the server could only ever *receive*. A homeserver that can be written to but cannot
+// speak is a homeserver whose users can read a room and never answer it, which looks like a network
+// problem to everybody involved and is not one.
+func TestAMessageTravelsToAServerThatSharesTheRoom(t *testing.T) {
+	hs2 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs2.FederationServer(t)
+	bob := hs2.Register(t, "bob", "pw-bob", false)
+	roomID := bob.MustCreateRoom(t, hs2, map[string]any{"preset": "public_chat", "name": "shared"})
+
+	hs1 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs1.FederationServer(t)
+	alice := hs1.Register(t, "alice", "pw-alice", false)
+	alice.MustPostJSON(t, hs1, "/_matrix/client/v3/join/"+url.PathEscape(roomID)+
+		"?server_name="+url.QueryEscape(hs2.ServerName), map[string]any{}).MustStatus(t, 200)
+
+	for _, body := range []string{"hello over federation", "and again"} {
+		alice.MustSendText(t, hs1, roomID, body)
+	}
+
+	// Delivery is a queue with retries, so draining once is allowed to be partial; three passes is the
+	// same thing the production worker would do inside a few seconds.
+	delivered := 0
+	for attempt := 0; attempt < 3 && len(messageBodies(messagesOf(t, bob, hs2, roomID))) < 2; attempt++ {
+		delivered += hs1.DrainFederation(t)
+	}
+	bodies := messageBodies(messagesOf(t, bob, hs2, roomID))
+	for _, want := range []string{"hello over federation", "and again"} {
+		found := false
+		for _, body := range bodies {
+			if body == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("%q never reached the other homeserver, which holds %v (%d events delivered)\n"+
+				"HS1 LOG:\n%s\nHS2 LOG:\n%s",
+				want, bodies, delivered, hs1.Logs(), hs2.Logs())
+		}
+	}
+}

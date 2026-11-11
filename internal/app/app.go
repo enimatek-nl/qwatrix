@@ -60,6 +60,9 @@ type App struct {
 	// federation is the server-server API, served on its own TLS listener because it is a
 	// different protocol with a different way of proving who is asking.
 	federation http.Handler
+	// outbox delivers this server's queued peer copies. It is a ledger rather than an inline send so
+	// that an unreachable peer can neither fail a local user's message nor make it vanish.
+	outbox *fedapi.Outbox
 	// closed guards Close so a test cleanup and a deferred call cannot double-close.
 	closed bool
 }
@@ -188,6 +191,14 @@ func New(cfg *config.Config) (*App, error) {
 			"This is for test networks and must not be used in a deployment",
 			"server_name", cfg.ServerName)
 	}
+	// A deployment that is not serving federation does not queue deliveries either: the events would
+	// accumulate against a worker that was never going to run, which is storage spent on a message
+	// nobody will ever be told about.
+	if cfg.FederationAddr == "" {
+		rooms.WithoutFederationOutbound()
+	}
+	app.outbox = fedapi.NewOutbox(peer, st, spec.ServerName(cfg.ServerName))
+
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
 		ServerName: spec.ServerName(cfg.ServerName),
 		Version:    "qwatrix/" + cfg.Version,
@@ -211,6 +222,18 @@ func New(cfg *config.Config) (*App, error) {
 		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
 	}))
 	return app, nil
+}
+
+// DrainFederationOutbox attempts the queued peer copies now and reports how many reached a peer.
+//
+// A production server does not need this — the delivery worker runs on a tick — but a test cannot be
+// served by a goroutine it has no influence over, and "the message arrived eventually" is not an
+// assertion anybody wants to debug at three in the morning.
+func (a *App) DrainFederationOutbox(ctx context.Context) (int, error) {
+	if a.outbox == nil {
+		return 0, nil
+	}
+	return a.outbox.DrainOnce(ctx)
 }
 
 // Handler returns the client-server HTTP handler, including middleware.
@@ -295,6 +318,13 @@ func (a *App) Run(ctx context.Context) error {
 			<-ctx.Done()
 			return fedSrv.Shutdown(context.WithoutCancel(ctx))
 		})
+	}
+
+	// The federation delivery ledger, running beside the listeners rather than behind them: a peer that
+	// is unreachable is a reason to keep a copy queued, not a reason for anything a local user does to
+	// wait or to fail.
+	if a.cfg.FederationAddr != "" && a.outbox != nil {
+		group.Go(func() error { return a.outbox.Run(ctx) })
 	}
 
 	group.Go(func() error {

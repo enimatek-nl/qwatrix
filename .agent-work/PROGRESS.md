@@ -974,3 +974,40 @@ the documentation test still holds.
 nothing when a remote user's keys move. That is the remaining half of Complement's
 `TestDeviceListUpdates`; the `/keys/query` half this commit closes was not tested there and would have
 shown up as undecryptable messages instead.
+
+## M8 stage 4: this server can speak (outbound event federation)
+
+The join worked, device keys could be fetched, and **nothing a local user did ever reached a peer**. The
+server received transactions and had no code to send one, so a qwatrix user in a federated room could
+read it and never answer it — a failure that presents to everybody as a network problem.
+
+Delivery is a ledger, not an inline HTTP call:
+
+- `store.FederationOutbox` holds one row per (event, destination), written **in the same transaction as
+  the event**. A separate write afterwards can be lost between the two statements, and the result is a
+  room whose members disagree about what happened, permanently and silently.
+- A worker (`fedapi.Outbox`) batches by destination — forty members on two servers is two transactions,
+  not eighty — sends `PUT /send/{txnID}`, and deletes the rows only once the peer confirms. A failure
+  doubles the delay up to ten minutes; a delivery is abandoned after `outboxGiveUpAfter` attempts *and*
+  a week, and abandoning logs at Error, because "we stopped trying to tell them" is the fact somebody
+  needs to be able to find.
+- Deleting rows before the commit could mean a duplicate, which is a no-op; deleting after means a
+  missing message, which is not. The code says so where the two differ.
+- `App.DrainFederationOutbox` exists because a test cannot be served by a goroutine it has no influence
+  over, and `(*harness.Server).DrainFederation` exposes it. A production server just ticks.
+
+Tested between two real homeservers: alice joins hs2's room, sends two messages, hs2's `/messages`
+contains both. That is `TestAMessageTravelsToAServerThatSharesTheRoom`, and it is the first test in the
+suite with an event crossing the boundary in that direction.
+
+One harness change carried it: the harness declared `FederationAddr = ""`, so every in-process
+homeserver believed it was not federating and queued nothing. Federation is now declared (on a port the
+harness never binds, since it serves its own TLS listener).
+
+Limitation recorded in `docs/ENDPOINTS.md`: this server sends **its own** events, not other servers'.
+Forwarding is the next piece, and until then a three-server room only hears from servers its members are
+directly joined to.
+
+Measured: `TestAMessageTravelsToAServerThatSharesTheRoom`, `TestARemoteUsersDevicesComeFromTheirOwnServer`
+and `TestAPublishedDeviceListCarriesThisServersOwnUsers` pass across two real servers; whole in-process
+suite green (`tests/api` 145s); go build, go vet, golangci-lint 0 issues, gofmt -s clean.

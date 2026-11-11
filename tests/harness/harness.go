@@ -9,6 +9,7 @@ package harness
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha1"
 	tlsconfig "crypto/tls"
@@ -180,7 +181,11 @@ func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server 
 	cfg := config.Default()
 	cfg.ServerName = options.ServerName
 	cfg.ClientAddr = "127.0.0.1:0"
-	cfg.FederationAddr = ""
+	// Federation is declared rather than left unset: the harness serves the server-server API on a
+	// listener of its own; this address is never bound. What matters is that the homeserver underneath
+	// knows it is federating, because
+	// that is what makes it queue the peer copies of its own events instead of keeping them to itself.
+	cfg.FederationAddr = "127.0.0.1:8449"
 	cfg.DataDir = dir
 	cfg.DatabasePath = dir + "/qwatrix.db"
 	cfg.MediaSizeLimitBytes = 5 << 20
@@ -221,6 +226,21 @@ func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server 
 		}
 	})
 	return server
+}
+
+// DrainFederation attempts the queued peer copies of this server's events now, and reports how many
+// reached a peer.
+//
+// A running homeserver delivers them on a tick; a test needs it to have happened at a point it chooses.
+// Without this, an outbound federation test can only assert that something will eventually arrive, which
+// is the sort of assertion that quietly passes for the wrong reason.
+func (s *Server) DrainFederation(t *testing.T) int {
+	t.Helper()
+	sent, err := s.instance.DrainFederationOutbox(context.Background())
+	if err != nil {
+		t.Fatalf("draining the federation delivery queue: %v", err)
+	}
+	return sent
 }
 
 // Logs returns everything the server has logged so far, for tests that assert that

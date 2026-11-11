@@ -58,6 +58,8 @@ type MembershipRepo interface {
 	Get(ctx context.Context, roomID, localpart string) (*Membership, error)
 	// List returns the members of a room. An empty memberships list means "any".
 	List(ctx context.Context, roomID string, memberships []string, notMemberships []string) ([]Membership, error)
+	// ListInTX reads the same list through an open transaction.
+	ListInTX(ctx context.Context, tx *gorm.DB, roomID string, memberships []string, notMemberships []string) ([]Membership, error)
 	// ListByUser returns every membership row of a user (rooms they have not forgotten),
 	// which is what /sync needs: the room list together with each room's membership value
 	// and stream position, in one query.
@@ -125,7 +127,21 @@ func (r *MembershipRepoImpl) Get(ctx context.Context, roomID, localpart string) 
 
 // List implements [MembershipRepo].
 func (r *MembershipRepoImpl) List(ctx context.Context, roomID string, memberships, notMemberships []string) ([]Membership, error) {
-	q := session(ctx, r.db).Where("room_id = ?", roomID)
+	return r.list(ctx, r.db, roomID, memberships, notMemberships)
+}
+
+// ListInTX implements [MembershipRepo].
+//
+// Reading the members from inside a write transaction is what lets a decision about *whom* to tell be
+// made in the same transaction as the event that changed the room. The same connection has to be used:
+// a second one would either block on the open write or read the room as it was before the event, and
+// the two differ exactly when it matters.
+func (r *MembershipRepoImpl) ListInTX(ctx context.Context, tx *gorm.DB, roomID string, memberships, notMemberships []string) ([]Membership, error) {
+	return r.list(ctx, tx, roomID, memberships, notMemberships)
+}
+
+func (r *MembershipRepoImpl) list(ctx context.Context, db *gorm.DB, roomID string, memberships, notMemberships []string) ([]Membership, error) {
+	q := session(ctx, db).Where("room_id = ?", roomID)
 	if len(memberships) > 0 {
 		q = q.Where("membership IN ?", memberships)
 	}
