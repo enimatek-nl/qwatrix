@@ -354,7 +354,13 @@ func (a *App) Run(ctx context.Context) error {
 	// The federation delivery ledger, running beside the listeners rather than behind them: a peer that
 	// is unreachable is a reason to keep a copy queued, not a reason for anything a local user does to
 	// wait or to fail.
-	if a.cfg.FederationAddr != "" && a.outbox != nil {
+	// The condition is whether this server federates at all, not whether it was given a separate
+	// address to federate on. With no federation address the server-server API is served from the
+	// client listener and federation is still on — which is the default deployment — and a server
+	// that only delivers when somebody configures a second port is a server that never invites,
+	// never kicks and never bans anybody on another homeserver. The queue keeps the obligation
+	// either way, so what a wrong condition here produces is silence rather than an error.
+	if a.outbox != nil {
 		group.Go(func() error { return a.outbox.Run(ctx) })
 	}
 
