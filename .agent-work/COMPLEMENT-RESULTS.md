@@ -1,8 +1,28 @@
 # Upstream complement results
 
-The evidence behind `.agent-work/COMPLEMENT-STATUS.md`. Each run is one `make complement`
-against the container image, so the numbers are comparable: same suite, same base image, same
-`COMPLEMENT_SERVER_TRACEBACK=true`.
+The evidence behind the complement claims in `.agent-work/FINAL-REPORT.md` and this file's own
+summary: every number below comes from a run against the container image, so runs are comparable —
+same suite, same base image, same `COMPLEMENT_SERVER_TRACEBACK=true`.
+
+Since run 97 the measurement is `.agent-work/complement-sweep.sh <dir>`, which sweeps **both**
+packages (`./tests/csapi` and the server-server `./tests`), re-runs any test left without a verdict
+one per process before calling it CRASH, merges `results.txt`, and scores AC-5 with
+`.agent-work/ac5-check.py`, which reads the mandatory test names out of
+`.agent-work/ACCEPTANCE-CRITERIA.md` so the requirement list cannot drift from the measurement. Runs
+before 97 covered `./tests/csapi` alone, because that is what `COMPLEMENT_PKG` defaulted to; their
+counts are not comparable with later ones and say so.
+
+## The suite this file measures
+
+complement is checked out at `7b38a63c9db3337292bee5887fc8533be3a57b9f` (2026-11-03) for every run
+from 97 onward, built with `-tags blacklist_common`. Pinning matters: the suite's mandatory list and
+its per-homeserver skip guards change, and a number that moved because the yardstick moved is not
+progress.
+
+The tag does **not** satisfy complement's per-homeserver `runtime.SkipIf` guards — those need a
+`*_blacklist` tag — so tests a non-Synapse server would normally skip are counted here as real
+failures, with a warning line in the log saying complement could not tell which homeserver is
+running. The counts below are conservative rather than flattering.
 
 ## Run 1 — 2025-11-09 20:16, commit state after M0–M3 (rooms + sync)
 

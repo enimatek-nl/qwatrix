@@ -2,7 +2,7 @@
 
 Every criterion has an objective, executable check. `make help` lists the targets.
 Results are recorded with real command output in `.agent-work/PROGRESS.md` and
-`.agent-work/COMPLEMENT-STATUS.md` — nothing is claimed without being run.
+`.agent-work/COMPLEMENT-RESULTS.md` — nothing is claimed without being run.
 
 ## Mandatory criteria
 
@@ -39,7 +39,7 @@ that must pass:
 
 ### AC-5 Upstream complement suite — measured compliance
 `make complement` runs complement's own suite from the pinned checkout and
-`.agent-work/COMPLEMENT-STATUS.md` records, per run: complement commit, command, counts of
+`.agent-work/COMPLEMENT-RESULTS.md` records, per run: complement commit, command, counts of
 PASS / FAIL / SKIP with the named test lists.
 
 Rules for the recorded run:

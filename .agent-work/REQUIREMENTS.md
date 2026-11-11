@@ -109,7 +109,7 @@ Priority: **M** = mandatory, **S** = should (compliance depth), **L** = later (t
 | CN-7 | Spec-shaped errors for every failure path: `{"errcode","error"}` JSON, correct status; no Go/SQLite error text leaked to clients (M) | api tests + review |
 | CN-8 | Rate limiting with spec status `429 M_LIMIT_EXCEEDED` + `retry_after_ms`, generous defaults so compliance tests are not flaky (S) | api test |
 | CN-9 | CORS per spec (incl. `Access-Control-Allow-Origin: *`, `?access_token` allowed header) (S) | api test |
-| CN-10 | Documented endpoints & compliance status in the repo (`docs/ENDPOINTS.md`, `.agent-work/COMPLEMENT-STATUS.md`) (M) | files |
+| CN-10 | Documented endpoints & compliance status in the repo (`docs/ENDPOINTS.md`, `.agent-work/COMPLEMENT-RESULTS.md`) (M) | files |
 
 ## 10. Complement integration requirements
 

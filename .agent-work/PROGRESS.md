@@ -15,7 +15,7 @@ A Matrix homeserver that runs, deploys as a container, and passes upstream Compl
 **M1 (accounts, sessions, devices) is signed off**: its ten Complement exit-gate tests pass
 against the container with zero skips. Closing it took five protocol errors that every in-process
 test had walked past, because each test asserted what the server did rather than what the protocol
-asks (see `.agent-work/COMPLEMENT-STATUS.md`).
+asks (see `.agent-work/COMPLEMENT-RESULTS.md`).
 
 Implemented so far: the client-server skeleton (mux, error contract, auth middleware,
 user-interactive auth), accounts (registration through both the standard and the Synapse
@@ -248,7 +248,7 @@ suite that exists — currently 106 tests — or the criterion cannot be evaluat
 
 ## Next
 
-1. Finish diagnosing the 30 remaining Complement failures (`.agent-work/COMPLEMENT-STATUS.md`
+1. Finish diagnosing the 30 remaining Complement failures (`.agent-work/COMPLEMENT-RESULTS.md`
    has the grouped list), starting with the ones that are protocol errors rather than missing
    milestones: `TestRoomState`, `TestRoomCanonicalAlias`, `TestRoomDeleteAlias`,
    `TestRoomMembers`, `TestRoomForget`.

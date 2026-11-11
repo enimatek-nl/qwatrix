@@ -66,7 +66,7 @@ handling, table-driven tests, race detector, gofmt + golangci-lint).
 | R2 | Scope: the CS API is ~234 endpoints, the SS API ~30 more; full compliance is a multi-week effort | Milestone plan (`PLAN.md`) with a measured complement pass-list; every milestone independently shippable and verified |
 | R3 | gormlite (WASM SQLite) is slower than cgo SQLite under complement's `perf_*`-style tests | Batched writes, `journal_mode=WAL`, `synchronous=NORMAL`, narrow indexes, and stream-position based queries instead of graph walks |
 | R4 | Writing tests only under `tests/` forbids package-internal white-box tests | Tests exercise exported constructors only (aligns with the TDD skill: behaviour through public interfaces); `internal/...` stays importable from `tests/` inside the module |
-| R5 | complement's suite changes under a moving `main` | Pin the complement commit in `.agent-work/COMPLEMENT-STATUS.md`; Makefile takes `COMPLEMENT=` path/checkout |
+| R5 | complement's suite changes under a moving `main` | Pin the complement commit in `.agent-work/COMPLEMENT-RESULTS.md`; Makefile takes `COMPLEMENT=` path/checkout |
 
 ## Loaded skills
 
