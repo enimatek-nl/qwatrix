@@ -294,3 +294,39 @@ renders that person as unknown for as long as they keep quiet. So a room whose m
 its presence picture re-sent, which stops by itself once the client's token passes the join. The
 alternative, stamping every co-member's row on every join, is a write per person per join in the worst
 room in the deployment.
+
+## 2026-11-11 — run 97: the complement package that had never been swept (`tests`, root)
+
+**Why this run exists.** Every recorded sweep up to and including run 95 ran `./tests/csapi` only,
+because AC-5 phrases its pass threshold as "≥ 70 of the 107 `tests/csapi` tests". Checking AC-5's
+*mandatory named set* against the pinned checkout shows that was the wrong scope: 15 of the 95 mandatory
+tests live in the root `tests` package, and had never been run at all. The threshold and the mandatory
+set are different requirements, and only satisfying the first is how this stayed hidden.
+
+**Command.** `COMPLEMENT_BASE_IMAGE=localhost/qwatrix-complement:latest COMPLEMENT_HOSTNAME_RUNNING_COMPLEMENT=host.containers.internal go test -tags blacklist_common -count=1 -timeout 2350s -v ./tests` (image from the code at `3ae8c5d`).
+
+**Result: incomplete — 33 tests decided, 6 passing, then the package aborted.**
+
+```
+--- FAIL: TestSendJoinPartialStateResponse (3.69s)
+panic: runtime error: index out of range [0] with length 0 [recovered, repanicked]
+FAIL	github.com/matrix-org/complement/tests	294.349s
+```
+
+The panic is inside complement's test binary — it indexes into something this server's `send_join`
+answer did not provide — and a panic there ends the whole package, so 59 tests never ran. Results are in
+`.agent-work/complement-run-97-root-package-partial.txt`.
+
+**Mandatory tests this run touched** (`TestWriteMDirectAccountData` passed; `TestContentMediaV1`,
+`TestEventAuth`, `TestUnbanViaInvite` failed; **11 mandatory tests still have never been run** because of
+the abort). Against run 95, AC-5's mandatory set therefore stands at **79 passing, 5 failing, 11
+unmeasured** — not the "2 failing" the csapi-only sweep implied.
+
+**What the failures look like, honestly:** `TestEventAuth` is `GET /_matrix/federation/v1/event_auth`
+(T704, open) and `TestUnbanViaInvite` needs co-signed federation invites (T714, open) — both are known
+gaps, not new breakage. `TestContentMediaV1` and the media-name tests are not on any open task and need
+diagnosis. The rest of the 27 failures are deep federation (`/missing_events`, event-size limits,
+corrupted auth chains, `send_leave` v1/v2 rejection), which is the deferred-depth list.
+
+**Action:** the sweep script must cover `./tests ./tests/csapi`, and the sweep must be split so one
+panicking test cannot hide 59 others.
