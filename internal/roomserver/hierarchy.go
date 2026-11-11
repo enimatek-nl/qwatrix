@@ -236,7 +236,18 @@ func (s *Service) hierarchyRoomAt(ctx context.Context, roomID string, depth, max
 
 	// Permission first, before any of the room's details are read: a summary of a room the
 	// caller cannot see is a way of reading its name, its member count and its join rules.
-	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+	//
+	// The room the walk was asked about and a room found on the way are different questions. The
+	// subject was named by the caller and is answered for anyone allowed to read it. What lies
+	// under it is a list of places the caller could go, so it is answered by MSC3173 instead: a
+	// membership they hold, or a door anybody can use. Reading a room's history is not that test —
+	// a world-readable conversation is still closed behind an invite, and a client offers this list
+	// as somewhere it can take you.
+	if depth > 0 {
+		if !s.hierarchyJoinable(ctx, roomID, opts.Localpart) {
+			return nil, nil, matrix.NewForbidden("Room %q is not visible in this hierarchy", roomID)
+		}
+	} else if err := s.checkReadable(ctx, roomID, opts); err != nil {
 		return nil, nil, err
 	}
 	room, err := s.store.Rooms.Get(ctx, roomID)
@@ -450,6 +461,48 @@ func decodeHierarchyToken(from string) (hierarchyToken, error) {
 		return hierarchyToken{}, matrix.NewInvalidParam("that hierarchy pagination token is not one this server issued")
 	}
 	return hierarchyToken{offset: offset, maxDepth: depth, suggestedOnly: suggested}, nil
+}
+
+// hierarchyJoinable is MSC3173's "potentially joinable", applied per room of a space walk.
+//
+// A membership the caller holds settles it — being in the room, or waiting in it on an invite, is
+// stronger than any join rule. Otherwise the door has to be open: a public room anybody can join, a
+// knockable room anybody can ask about, and a restricted room for a caller who holds one of the
+// memberships the room admits. An invite-only room with no invite is the case this exists to catch,
+// and it stays out even when its history is world-readable.
+func (s *Service) hierarchyJoinable(ctx context.Context, roomID, localpart string) bool {
+	if localpart != "" {
+		membership, err := s.store.Memberships.Get(ctx, roomID, localpart)
+		if err == nil && membership != nil {
+			switch membership.Membership {
+			case matrix.MembershipJoin, matrix.MembershipInvite:
+				return true
+			}
+		}
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		// Unknown room, or the store had a bad moment; either way nothing can be said for it.
+		return false
+	}
+	switch room.JoinRule {
+	case matrix.JoinRulePublic, matrix.JoinRuleKnock:
+		return true
+	case matrix.JoinRuleRestricted, matrix.JoinRuleKnockRestricted:
+		// A restricted room opens on a membership held somewhere else, so ask about each room
+		// it names. A room this server cannot read is not a membership the caller holds.
+		allowed, err := s.allowedRoomIDs(ctx, roomID, RenderOptions{Localpart: localpart})
+		if err != nil {
+			return false
+		}
+		for _, space := range allowed {
+			membership, err := s.store.Memberships.Get(ctx, space, localpart)
+			if err == nil && membership != nil && membership.Membership == matrix.MembershipJoin {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isForbidden reports whether a failure is the "not allowed to see this" kind, which the

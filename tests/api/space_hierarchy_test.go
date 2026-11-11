@@ -67,6 +67,17 @@ func makeSpace(t *testing.T, account *harness.Account, server *harness.Server, n
 	})
 }
 
+// makeClosedSpace creates a space that an invite opens, which is the shape that matters for
+// permission tests: a public space is a door anybody can walk through.
+func makeClosedSpace(t *testing.T, account *harness.Account, server *harness.Server, name string) string {
+	t.Helper()
+	return account.MustCreateRoom(t, server, map[string]any{
+		"preset":           "private_chat",
+		"name":             name,
+		"creation_content": map[string]any{"type": "m.space"},
+	})
+}
+
 // linkSpace links a child into a space. `content` is written verbatim so a test can leave
 // `via` out, which is not a link at all and must be discarded.
 func linkSpace(t *testing.T, account *harness.Account, server *harness.Server, space, child string, content map[string]any) {
@@ -507,5 +518,64 @@ func TestASpaceIsRememberedAsASpace(t *testing.T) {
 	}
 	if !found {
 		t.Log("the space is not in the published-room directory; the directory flag is another test's subject")
+	}
+}
+
+// TestOnlyRoomsTheCallerCouldJoinAppearInAHierarchy is the space walk's permission rule, and it is
+// not the rule for reading a room.
+//
+// A space can hold a conversation the caller is not in. The walk answers with rooms they are in,
+// rooms they have been invited to, and rooms they could simply join — public, knock, or restricted
+// and they hold one of the memberships the room admits. An invite-only room is not on that list, and
+// "world readable" does not put it there either: being allowed to read a room's history is not the
+// same as being able to walk into it, and a client draws this list as places it can offer to take
+// you.
+//
+// The rule applies to what the walk descends into as well, which is why an invisible space hides
+// everything below it: the walk cannot see the child links of a room it was not shown.
+func TestOnlyRoomsTheCallerCouldJoinAppearInAHierarchy(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	via := []string{server.ServerName}
+
+	root := makeSpace(t, alice, server, "Root")
+	r1 := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat", "name": "R1"})
+	ss1 := makeClosedSpace(t, alice, server, "Sub-Space 1")
+	r2 := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat", "name": "R2"})
+	r3 := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat", "name": "R3"})
+	for _, link := range [][3]string{{root, r1}, {root, ss1}, {ss1, r2}, {ss1, r3}} {
+		linkSpace(t, alice, server, link[0], link[1], map[string]any{"via": via})
+	}
+	// The root is the one room bob joins; everything else is decided by the rule.
+	bob.MustJoinRoom(t, server, root)
+
+	// Not invited anywhere yet: the root alone, though its child links are still listed.
+	page, _ := hierarchyOf(t, bob, server, root, "")
+	if got := page.ids(); len(got) != 1 || got[0] != root {
+		t.Fatalf("before any invite the walk returned %v, want only the root — an invite-only room is not joinable", got)
+	}
+	if index, ok := page.find(root); ok {
+		if links := page.Rooms[index].ChildrenState; len(links) != 2 {
+			t.Errorf("the root listed %d child links, want 2: an invisible child is hidden, its link is not", len(links))
+		}
+	}
+
+	// Invited to R1 and R3. R1 appears; R3 stays hidden because the space above it is not visible,
+	// and a walk cannot follow a link it was never shown.
+	alice.MustInvite(t, server, r1, bob.UserID)
+	alice.MustInvite(t, server, r3, bob.UserID)
+	page, _ = hierarchyOf(t, bob, server, root, "")
+	if got := page.ids(); len(got) != 2 || got[0] != root || got[1] != r1 {
+		t.Fatalf("invited to R1 and R3 the walk returned %v, want the root and R1", got)
+	}
+
+	// Invited to the space: it appears, and so does everything under it that the rule admits —
+	// including R3, which was already invited but unreachable.
+	alice.MustInvite(t, server, ss1, bob.UserID)
+	page, _ = hierarchyOf(t, bob, server, root, "")
+	if got := page.ids(); len(got) != 5 {
+		t.Fatalf("invited to the space the walk returned %d rooms, want 5 (the space and all it holds): %v",
+			len(got), got)
 	}
 }
