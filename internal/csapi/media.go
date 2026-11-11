@@ -1,7 +1,9 @@
 package csapi
 
 import (
+	"bytes"
 	"net/http"
+	"strconv"
 
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
@@ -34,6 +36,15 @@ func registerMediaRoutes(mux *httpx.RouteTable, deps Deps) {
 	// the routes out of this file's literals, and a computed pattern is a route it cannot see and
 	// a reader cannot find.
 	mux.HandleFunc("GET /_matrix/client/v1/media/download/{serverName}/{mediaID}", deps.requireAuth(handleDownload(deps)))
+
+	// Thumbnails. A client laying out a grid cannot download originals to find out how big they are,
+	// so the homeserver makes the small copy on request.
+	mux.HandleFunc("GET /_matrix/media/v3/thumbnail/{serverName}/{mediaID}",
+		deps.optionalAuth(handleThumbnail(deps)))
+	mux.HandleFunc("HEAD /_matrix/media/v3/thumbnail/{serverName}/{mediaID}",
+		deps.optionalAuth(handleThumbnail(deps)))
+	mux.HandleFunc("GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}", deps.requireAuth(handleThumbnail(deps)))
+	mux.HandleFunc("HEAD /_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}", deps.requireAuth(handleThumbnail(deps)))
 	// The filename-bearing form takes the name from the *request*, not from what was uploaded: it is
 	// the name the user saw when they saved the file, and a client that put "invoice.pdf" in the URL
 	// should get a response that agrees with it. The media ID remains the only lookup key, so a wrong
@@ -107,4 +118,43 @@ func handleMediaConfig(deps Deps) http.HandlerFunc {
 			"m.upload.size": deps.Media.MaxUploadSize(),
 		})
 	}
+}
+
+// handleThumbnail answers GET /_matrix/media/v3/thumbnail/{serverName}/{mediaID} and its authenticated
+// equivalent. The size and method come from the query because they describe what the *caller* wants to
+// see, not what was uploaded.
+func handleThumbnail(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		width, err := positiveInt(query.Get("width"))
+		if err != nil {
+			httpx.RespondError(w, r, matrix.NewInvalidParam("width must be a positive integer"))
+			return
+		}
+		height, err := positiveInt(query.Get("height"))
+		if err != nil {
+			httpx.RespondError(w, r, matrix.NewInvalidParam("height must be a positive integer"))
+			return
+		}
+		row, body, err := deps.Media.Thumbnail(r.Context(), r.PathValue("serverName"),
+			r.PathValue("mediaID"), width, height, query.Get("method"))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		media.Respond(w, row, bytes.NewReader(body))
+	}
+}
+
+// positiveInt reads a query parameter that has to be a positive number. An absent or unparseable value
+// is not zero: zero is a size, and a request that never named one should not get one.
+func positiveInt(value string) (int, error) {
+	if value == "" {
+		return 0, strconv.ErrSyntax
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, err
+	}
+	return parsed, nil
 }

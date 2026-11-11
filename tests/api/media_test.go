@@ -3,6 +3,9 @@ package api_test
 import (
 	"bytes"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/url"
 	"strings"
@@ -270,4 +273,91 @@ func TestADownloadMayNameTheFileDifferently(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestAThumbnailIsSmallerThanTheOriginal covers GET /_matrix/media/v3/thumbnail/{serverName}/{mediaID}.
+//
+// A client with a grid of images cannot download the originals to know how big they are, so the
+// homeserver generates a small copy on request. The two methods are genuinely different: `scale` keeps
+// the whole picture inside the box, `crop` fills the box exactly and gives up the edges.
+func TestAThumbnailIsSmallerThanTheOriginal(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	mxc := uploadFile(t, alice, server, "photo.png", "image/png", largePNG(t, 200, 100))
+	_, mediaID := splitMXC(t, mxc)
+	path := "/_matrix/media/v3/thumbnail/" + url.PathEscape(server.ServerName) + "/" + mediaID
+
+	scale := alice.MustGet(t, server, path+"?width=32&height=32&method=scale")
+	width, height := decodeImageDims(t, scale.Body)
+	if width > 32 || height > 32 || width == 0 {
+		t.Errorf("a 32x32 scale thumbnail came out %dx%d", width, height)
+	}
+	if width != height*2 {
+		t.Errorf("scaling to %dx%d did not preserve the source's 2:1 aspect ratio", width, height)
+	}
+
+	crop := alice.MustGet(t, server, path+"?width=32&height=32&method=crop")
+	if width, height := decodeImageDims(t, crop.Body); width != 32 || height != 32 {
+		t.Errorf("a 32x32 crop thumbnail came out %dx%d, want exactly 32x32", width, height)
+	}
+
+	// The second request for the same thumbnail is answered from the copy that was already made,
+	// byte for byte. Regenerating on every request would make a gallery page a benchmark.
+	again := alice.MustGet(t, server, path+"?width=32&height=32&method=scale")
+	if !bytes.Equal(again.Body, scale.Body) {
+		t.Error("the second thumbnail request produced different bytes: the thumbnail was not cached")
+	}
+
+	// A size is required, and a size that is not a number is the client's mistake to hear about.
+	for _, bad := range []string{"?method=scale", "?width=0&height=0&method=scale", "?width=abc&height=32"} {
+		// MustGet would fail the test on the 400 this case is about, so the request is made directly.
+		account := alice.Do(t, server, harness.Request{Method: http.MethodGet, Path: path + bad})
+		if account.StatusCode != http.StatusBadRequest {
+			t.Errorf("GET %s%s: status %d, want 400: %s", path, bad, account.StatusCode, account.Body)
+		}
+	}
+}
+
+// TestAThumbnailOfSomethingThatIsNotAnImageIsRefused keeps thumbnailing a text file a refusal. The
+// answer cannot be an empty image: a client would show a broken tile forever.
+func TestAThumbnailOfSomethingThatIsNotAnImageIsRefused(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	mxc := uploadFile(t, alice, server, "notes.txt", "text/plain", []byte("not a picture"))
+	_, mediaID := splitMXC(t, mxc)
+	response := alice.Do(t, server, harness.Request{
+		Method: http.MethodGet,
+		Path: "/_matrix/media/v3/thumbnail/" + url.PathEscape(server.ServerName) + "/" + mediaID +
+			"?width=32&height=32&method=scale",
+	})
+	if response.StatusCode == http.StatusOK {
+		t.Fatal("thumbnailed a text file")
+	}
+}
+
+// testPNG returns a valid PNG of the given size, coloured so that scaling cannot quietly return a
+// blank image of the requested dimensions.
+func largePNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	image := image.NewRGBA(image.Rect(0, 0, width, height))
+	for x := 0; x < width; x++ {
+		for y := 0; y < height; y++ {
+			image.Set(x, y, color.RGBA{R: uint8(x % 256), G: uint8(y % 256), B: 128, A: 255})
+		}
+	}
+	var out bytes.Buffer
+	if err := png.Encode(&out, image); err != nil {
+		t.Fatalf("encoding the test image: %v", err)
+	}
+	return out.Bytes()
+}
+
+func decodeImageDims(t *testing.T, body []byte) (int, int) {
+	t.Helper()
+	decoded, _, err := image.Decode(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("the thumbnail is not a decodable image (%d bytes): %v", len(body), err)
+	}
+	bounds := decoded.Bounds()
+	return bounds.Dx(), bounds.Dy()
 }

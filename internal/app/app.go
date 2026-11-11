@@ -132,9 +132,10 @@ func New(cfg *config.Config) (*App, error) {
 	rooms.WithPresenceObserver(presenceService)
 	toDeviceService := todevice.New(st, changes, todevice.Options{ServerName: cfg.ServerName})
 	mediaService, err := media.New(st, media.Options{
-		Dir:        filepath.Join(cfg.DataDir, "media"),
-		ServerName: cfg.ServerName,
-		MaxBytes:   cfg.MediaSizeLimitBytes,
+		Dir:               filepath.Join(cfg.DataDir, "media"),
+		ServerName:        cfg.ServerName,
+		MaxBytes:          cfg.MediaSizeLimitBytes,
+		ThumbnailsEnabled: cfg.ThumbnailsEnabled,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("opening the media repository: %w", err)

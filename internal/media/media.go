@@ -49,6 +49,11 @@ type Service struct {
 	// remote asks another server for a file it originates. Nil on a server that does not federate,
 	// which makes a request for foreign media a 404 rather than an error.
 	remote RemoteFetcher
+
+	thumbnailsEnabled bool
+	// thumbnailDir holds the generated thumbnails, named after the file and the size each one was
+	// made at. They are derived files: deleting them costs a recomputation and nothing else.
+	thumbnailDir string
 }
 
 // Options configures a [Service].
@@ -59,6 +64,9 @@ type Options struct {
 	ServerName string
 	// MaxBytes caps one upload.
 	MaxBytes int64
+	// ThumbnailsEnabled turns on-the-fly thumbnail generation on. With it off the thumbnail endpoint
+	// refuses rather than serving something the operator switched off deliberately.
+	ThumbnailsEnabled bool
 }
 
 // New builds the media repository.
@@ -74,7 +82,20 @@ func New(st *store.Store, opts Options) (*Service, error) {
 	if opts.MaxBytes <= 0 {
 		opts.MaxBytes = 100 << 20
 	}
-	return &Service{store: st, dir: opts.Dir, serverName: opts.ServerName, maxBytes: opts.MaxBytes}, nil
+	service := &Service{
+		store:             st,
+		dir:               opts.Dir,
+		serverName:        opts.ServerName,
+		maxBytes:          opts.MaxBytes,
+		thumbnailsEnabled: opts.ThumbnailsEnabled,
+		thumbnailDir:      filepath.Join(opts.Dir, "thumbnails"),
+	}
+	if opts.ThumbnailsEnabled {
+		if err := os.MkdirAll(service.thumbnailDir, 0o750); err != nil {
+			return nil, fmt.Errorf("creating the thumbnail directory: %w", err)
+		}
+	}
+	return service, nil
 }
 
 // MaxUploadSize returns the configured cap, which is what /config advertises.
