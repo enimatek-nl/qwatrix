@@ -1199,3 +1199,28 @@ Measurement note: `POST /join/{roomID}?server_name=` returns 200 in-process and 
 for two different reasons, and both looked like one bug until the container bodies were read. The
 bodies — `M_UNKNOWN_TOKEN` versus `the peer's answer did not include the join` — were the whole
 diagnosis.
+
+## M8 stage 9: the space walk, and a room type that was never stored (T725)
+
+`GET /_matrix/client/v1/rooms/{roomID}/hierarchy` was listed in the README, listed in the final
+report, and not registered. Implementing it was a day's work; what it found was two bugs with much
+wider reach than the endpoint.
+
+**A space was stored as an ordinary room.** `CreateRoom` inserts the room row and *then* builds the
+create event, and the code that read the type out of the create content assigned it to the struct after
+`Rooms.Create` — so the assignment went nowhere. Every reader of `Room.RoomType` was quietly wrong:
+the room directory's space flag, the summary's `room_type`, and the new walk, which refused to descend
+below the root because only a space has children. Nothing failed a test until a feature needed the
+field.
+
+**The room directory answered `space: true`.** The current specification's public-rooms chunk carries
+`room_type` (the create event's type), which is what a client needs to filter on a type other than
+"space or not". The old boolean is gone.
+
+**A pagination token compared normalised settings against raw ones**, so page 2 of any walk that used a
+default was refused as if the caller had changed the tree underneath it. This is what a second request
+in a test is for: one page cannot show it.
+
+Measurement: `TestSyncOmitsStateChangeOnFilteredEvents` **passes** in complement since the event-type
+fix — a mandatory AC-5 test won by sending `please_filter_me`, which this server used to refuse because
+the type had no dots in it.
