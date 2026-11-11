@@ -120,6 +120,9 @@ type Server struct {
 	options          Options
 	// client is shared so many tests do not each open their own connection pool.
 	client *http.Client
+	// stopped records that Restart took this server down, so the test's cleanup does not
+	// close the same database twice and report a phantom failure.
+	stopped bool
 	// logCapture holds the server's log output for assertions.
 	logCapture *syncBuffer
 }
@@ -130,17 +133,50 @@ type Server struct {
 func New(t *testing.T, opts ...Option) *Server {
 	t.Helper()
 
-	options := Options{
+	options := defaultOptions()
+	for _, opt := range opts {
+		opt(&options)
+	}
+	return start(t, options, t.TempDir(), &syncBuffer{})
+}
+
+func defaultOptions() Options {
+	return Options{
 		EnableRegistration: true,
 		ServerName:         ServerName,
 		DefaultRoomVersion: "11",
 		LogLevel:           slog.LevelError,
 	}
-	for _, opt := range opts {
-		opt(&options)
-	}
+}
 
-	dir := t.TempDir()
+// Restart stops this homeserver and starts another one over the same data directory, returning the
+// replacement. It exists because durability is not a property a running process can demonstrate:
+// the only way to ask "did that survive?" is to stop, start again, and look.
+//
+// The receiver stops answering — its URL stops working — so a test must use the returned server
+// afterwards. The log capture is deliberately shared: a test that audits what the server wrote
+// about a request has to see both processes' output, since the interesting half of a restart bug is
+// what the second one said about data the first one left behind.
+func (s *Server) Restart(t *testing.T) *Server {
+	t.Helper()
+	if s.stopped {
+		t.Fatalf("harness: this homeserver was already restarted; use the server Restart returned")
+	}
+	s.stopped = true
+	s.httpSrv.Close()
+	if err := s.instance.Close(); err != nil {
+		t.Fatalf("harness: closing the homeserver to restart it: %v", err)
+	}
+	// The same options and the same directory; only the process is new.
+	restarted := start(t, s.options, s.Dir, s.logCapture)
+	restarted.federationClient = s.federationClient
+	return restarted
+}
+
+// start builds a homeserver over an existing data directory, sharing a log buffer.
+func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server {
+	t.Helper()
+
 	cfg := config.Default()
 	cfg.ServerName = options.ServerName
 	cfg.ClientAddr = "127.0.0.1:0"
@@ -155,7 +191,8 @@ func New(t *testing.T, opts ...Option) *Server {
 	cfg.FederationInsecureSkipTLSVerify = options.FederationInsecureTLS
 	cfg.Version = "test"
 
-	logs := &syncBuffer{}
+	// The log handler is process-global, so the most recently started server in this test owns
+	// it; the buffer they all write into is the same object.
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: options.LogLevel})))
 	t.Cleanup(func() { slog.SetDefault(previous) })

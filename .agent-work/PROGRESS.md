@@ -861,3 +861,32 @@ The chain that hid it is worth one line: a swallowed key-fetch error, a generic
 "could not download key", and a signature refusal that quoted the key rather than the connection. Each
 layer was technically accurate and the whole was unreadable; the fix that made this findable was logging
 the reason at each one.
+
+## M8 stage 1: durability, which had never been tested (T801)
+
+AC-7 promises a restart loses nothing. Until today nothing in this suite had ever restarted a
+homeserver, so the promise was unmeasured — and an unmeasured promise is the kind that fails during a
+3 a.m. upgrade.
+
+`tests/harness` grew `(*Server).Restart(t)`: close the instance, open another over the same data
+directory, share the log buffer (the interesting half of a restart bug is what the *second* process
+said about data the first one left behind).
+
+Six tests in `tests/api/persistence_test.go`:
+
+| Survives | Also asserted |
+|---|---|
+| Room, state, membership, event graph | a post-restart send fits onto the pre-restart graph |
+| Access tokens, devices, the account | a wrong password is still refused — a restart must not loosen authentication |
+| Sync position (`since`) | a pre-restart token still advances; a fresh sync still sees the room |
+| Account data, saved filter, read marker, read receipt, push-rule change | each fact is checked *before* the restart too — a fact never stored also "survives" nothing |
+| Media: bytes on disk and the index beside them | an event naming the media still reads back |
+| — | `TestRestartStopsTheServerItReplaced`: the replaced server stops answering, the same directory is reopened. Without this, every test above could pass by reading the server that never restarted. |
+
+Measured: all six pass; whole in-process suite green (`tests/api` 142s); go build, go vet,
+golangci-lint 0 issues, gofmt -s clean.
+
+Note on how they were written: four of the six first failed for reasons belonging to the tests — a
+bare `@alice` where a full user ID is required, `POST` where sending is `PUT`, an unescaped room ID
+turning into `M_UNRECOGNIZED`, and a read *receipt* mistaken for a read *marker*. Each was fixed in
+the test, and in each case the endpoint was right and my expectation was not.

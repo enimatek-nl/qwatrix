@@ -160,7 +160,7 @@ Every `[x]` must have evidence in `PROGRESS.md`.
 
 | ID | Task | Reqs | Status |
 | --- | --- | --- | --- |
-| T801 | Restart/persistence + sync-token survival tests | AC-7 | `[ ]` |
+| T801 | Restart/persistence + sync-token survival tests | AC-7 | `[x]` — `harness.(*Server).Restart` plus six tests in `tests/api/persistence_test.go`: rooms/history/graph, tokens/devices/login, `since` tokens, account data, filters, read markers, receipts, push rules, media bytes + index; one test pins that the replaced server stops answering |
 | T802 | Error-path audit: no internal error text/stack to clients; log-secrets test | CN-7, AC-7 | `[ ]` |
 | T803 | Full complement sweep + `.agent-work/COMPLEMENT-STATUS.md` history | AC-5 | `[~]` — `COMPLEMENT-STATUS.md` keeps the per-run history; the sweep keeps needing to be re-run as features land |
 | T804 | README, docs/, `.agent-work/FINAL-REPORT.md` | AC-6 | `[ ]` |
