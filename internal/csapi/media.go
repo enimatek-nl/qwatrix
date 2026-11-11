@@ -34,6 +34,15 @@ func registerMediaRoutes(mux *httpx.RouteTable, deps Deps) {
 	// the routes out of this file's literals, and a computed pattern is a route it cannot see and
 	// a reader cannot find.
 	mux.HandleFunc("GET /_matrix/client/v1/media/download/{serverName}/{mediaID}", deps.requireAuth(handleDownload(deps)))
+	// The filename-bearing form takes the name from the *request*, not from what was uploaded: it is
+	// the name the user saw when they saved the file, and a client that put "invoice.pdf" in the URL
+	// should get a response that agrees with it. The media ID remains the only lookup key, so a wrong
+	// name cannot fetch a different file.
+	mux.HandleFunc("GET /_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}",
+		deps.optionalAuth(handleDownload(deps)))
+	mux.HandleFunc("HEAD /_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}",
+		deps.optionalAuth(handleDownload(deps)))
+	mux.HandleFunc("GET /_matrix/client/v1/media/download/{serverName}/{mediaID}/{fileName}", deps.requireAuth(handleDownload(deps)))
 	mux.HandleFunc("GET /_matrix/client/v1/media/config", deps.requireAuth(handleMediaConfig(deps)))
 	mux.HandleFunc("GET /_matrix/media/v3/config", deps.optionalAuth(handleMediaConfig(deps)))
 	mux.HandleFunc("GET /_matrix/media/v1/config", deps.optionalAuth(handleMediaConfig(deps)))
@@ -67,6 +76,13 @@ func handleDownload(deps Deps) http.HandlerFunc {
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return
+		}
+		if requested := r.PathValue("fileName"); requested != "" {
+			// The row is copied rather than edited: it is the metadata of a file other requests are
+			// answering from, and this request's chosen name is not a fact about the stored file.
+			renamed := *row
+			renamed.FileName = requested
+			row = &renamed
 		}
 		// The file handle outlives this function, so it is closed here rather than by the
 		// caller: the response has been fully written by the time the handler returns.

@@ -151,11 +151,15 @@ a room with the subject, which is the privacy rule of the feature.
 | `POST` | `/_matrix/media/v3/upload` | [upload](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) |
 | `POST` | `/_matrix/media/v1/upload` | [upload (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) |
 | `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) |
+| `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | Legacy download naming the file the client wants it saved as — the name comes from the request, the media ID is the only lookup key |
+| `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}/{fileName}` | Authenticated download with the same filename rule |
 | `GET` | `/_matrix/media/v1/download/{serverName}/{mediaID}` | [download (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) |
 | `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download headers](https://spec.matrix.org/latest/client-server-api/#head_matrixmediav3downloadservernamemediaid) |
+| `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | The same, headers only |
 | `GET` | `/_matrix/media/v3/config` | [config](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) |
 | `GET` | `/_matrix/media/v1/config` | [config (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) |
 | `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}` | [authenticated download](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediadownloadservernamemediaid) |
+| `GET` | `/_matrix/client/v1/room_summary/{roomIDOrAlias}` | [Get a summary of a room](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1room_summaryroomidoralias) — a room ID or an alias, and the join rule plus the rooms a restricted join admits |
 | `GET` | `/_matrix/client/v1/media/config` | [authenticated config](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediaconfig) |
 
 Media is stored on disk under `<data-dir>/media` with its metadata in the database; uploads are

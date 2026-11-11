@@ -229,3 +229,45 @@ func TestMessagesCanFilterToEventsWithURLs(t *testing.T) {
 		t.Errorf("the file event carries %q, want %q", file.URL, uri)
 	}
 }
+
+// TestADownloadMayNameTheFileDifferently covers the filename-bearing download form,
+// `GET /media/…/download/{serverName}/{mediaID}/{fileName}`.
+//
+// The path segment is not a lookup key — the media ID is — and the specification is explicit that a
+// client may put a different name there, because it is the name the *user* saw when they saved the
+// file. Refusing a mismatch, or ignoring the segment, both break saving a file under the name the user
+// picked.
+func TestADownloadMayNameTheFileDifferently(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	payload := []byte("bytes with a name of their own")
+
+	for _, upload := range []struct{ fileName string }{{"original.png"}} {
+		mxc := uploadFile(t, alice, server, upload.fileName, "image/png", payload)
+		_, mediaID := splitMXC(t, mxc)
+
+		for _, path := range []string{
+			"/_matrix/media/v3/download/" + url.PathEscape(server.ServerName) + "/" + mediaID + "/renamed.png",
+			"/_matrix/client/v1/media/download/" + url.PathEscape(server.ServerName) + "/" + mediaID + "/renamed.png",
+			// A name the user chose in another script is still just a name.
+			"/_matrix/client/v1/media/download/" + url.PathEscape(server.ServerName) + "/" + mediaID + "/%E2%98%95",
+		} {
+			response := alice.MustGet(t, server, path)
+			if response.StatusCode != http.StatusOK {
+				t.Errorf("GET %s: status %d, want 200\nbody: %s", path, response.StatusCode, response.Body)
+				continue
+			}
+			if string(response.Body) != string(payload) {
+				t.Errorf("GET %s: body is %d bytes, want %d", path, len(response.Body), len(payload))
+			}
+			wantName := path[strings.LastIndex(path, "/")+1:]
+			if decoded, err := url.PathUnescape(wantName); err == nil {
+				wantName = decoded
+			}
+			disposition := response.Header.Get("Content-Disposition")
+			if !strings.Contains(disposition, wantName) {
+				t.Errorf("GET %s: Content-Disposition = %q, want the name from the URL (%q)", path, disposition, wantName)
+			}
+		}
+	}
+}

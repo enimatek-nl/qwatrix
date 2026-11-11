@@ -125,6 +125,10 @@ func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleCreateRoom(deps)))
 	}
 
+	// The room summary, which is a v1 resource and deliberately not aliased under v3: it was added
+	// after the version prefixes stopped being incremented, and clients ask for it by its v1 name.
+	mux.HandleFunc("GET /_matrix/client/v1/room_summary/{roomIDOrAlias}", deps.requireAuth(handleRoomSummary(deps)))
+
 	// Timeline and state writes. The transaction ID is part of the URL, which is what makes
 	// a retried send idempotent rather than duplicated.
 	for _, path := range versionedPath("rooms/{roomID}/send/{eventType}/{txnID}") {

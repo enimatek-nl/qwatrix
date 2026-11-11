@@ -932,3 +932,35 @@ func handleRelations(deps Deps) http.HandlerFunc {
 		httpx.RespondJSON(w, http.StatusOK, response)
 	}
 }
+
+// handleRoomSummary answers GET /_matrix/client/v1/room_summary/{roomIDOrAlias}.
+//
+// A client asks this before it asks to join, so the fields that matter are the ones that decide what
+// joining would cost: the join rule, the rooms whose membership would satisfy a restricted join,
+// whether guests may enter, and how many people are already in there. Returning a summary of a room
+// the caller cannot see would leak all of that about a private room, so the read permission check is
+// the same one every other read of the room makes.
+func handleRoomSummary(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		// Resolve first, then decide what the caller may see: permission is a fact about the room, and
+		// an alias is only a way of naming one. Asking whether the caller may read "#office:example"
+		// is not a question with an answer.
+		roomID := r.PathValue("roomIDOrAlias")
+		if strings.HasPrefix(roomID, "#") {
+			resolved, err := deps.Rooms.ResolveAlias(r.Context(), roomID)
+			if err != nil {
+				httpx.RespondError(w, r, err)
+				return
+			}
+			roomID = resolved
+		}
+		summary, err := deps.Rooms.RoomSummaryV1(r.Context(), roomID,
+			dReader(deps, r, roomID, session))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, summary)
+	}
+}

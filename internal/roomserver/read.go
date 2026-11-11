@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -1221,6 +1222,136 @@ type RoomSummary struct {
 	RoomVersion        string   `json:"room_version,omitempty"`
 	MembershipOf       string   `json:"membership,omitempty"`
 	AllowedRoomVersion string   `json:"allowed_room_version,omitempty"`
+}
+
+// RoomSummaryV1 is the response of GET /_matrix/client/v1/room_summary/{roomIDOrAlias}.
+//
+// It is a different shape from [RoomSummary] — that one answers /rooms/{id}/hero+summary, which is a
+// member-counting endpoint with a legacy shape — and the two are not interchangeable. This one exists
+// so a client can decide *before* attempting a join what joining would require.
+type RoomSummaryV1 struct {
+	RoomID         string `json:"room_id"`
+	Name           string `json:"name,omitempty"`
+	Topic          string `json:"topic,omitempty"`
+	AvatarURL      string `json:"avatar_url,omitempty"`
+	CanonicalAlias string `json:"canonical_alias,omitempty"`
+	RoomType       string `json:"room_type,omitempty"`
+	RoomVersion    string `json:"room_version,omitempty"`
+	NumJoined      int64  `json:"num_joined_members"`
+	WorldReadable  bool   `json:"world_readable"`
+	GuestCanJoin   bool   `json:"guest_can_join"`
+	JoinRule       string `json:"join_rule,omitempty"`
+	// AllowedRoomIDs is present only for a restricted room. Omitting it for an unrestricted room is
+	// not the same statement as an empty list: one says "not restricted", the other "restricted by
+	// nobody", and a client that offered a join on the second reading would be wrong.
+	AllowedRoomIDs []string `json:"allowed_room_ids,omitempty"`
+	Predecessor    string   `json:"predecessor,omitempty"`
+	Successor      string   `json:"successor,omitempty"`
+}
+
+// RoomSummaryV1 describes a room for the room-summary endpoint, resolving an alias if the caller sent
+// one: the path parameter is a room ID *or alias*, and a client should not have to know which it
+// happens to hold.
+func (s *Service) RoomSummaryV1(ctx context.Context, roomIDOrAlias string, opts RenderOptions) (*RoomSummaryV1, error) {
+	roomID := roomIDOrAlias
+	if strings.HasPrefix(roomID, "#") {
+		resolved, err := s.ResolveAlias(ctx, roomID)
+		if err != nil {
+			return nil, err
+		}
+		roomID = resolved
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+				"Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, err
+	}
+	// Permission is the same question every read of this room asks: a summary of a room the caller
+	// cannot see is a way of reading its name, its member count and its join rules.
+	if err := s.checkReadable(ctx, roomID, opts); err != nil {
+		return nil, err
+	}
+
+	summary := &RoomSummaryV1{
+		RoomID:         room.ID,
+		Name:           room.Name,
+		Topic:          room.Topic,
+		AvatarURL:      room.AvatarURL,
+		CanonicalAlias: room.CanonicalAlias,
+		RoomType:       room.RoomType,
+		RoomVersion:    room.Version,
+		NumJoined:      room.JoinedCount,
+		WorldReadable:  room.HistoryVisibility == matrix.HistoryWorldReadable,
+		GuestCanJoin:   room.GuestAccess == matrix.GuestCanJoin,
+		JoinRule:       room.JoinRule,
+		Predecessor:    room.PredecessorRoomID,
+		Successor:      room.UpgradedToRoomID,
+	}
+	if room.JoinRule == matrix.JoinRuleRestricted || room.JoinRule == matrix.JoinRuleKnockRestricted {
+		// The rooms a restricted join admits are in the join-rules event, not in the cached row: the
+		// cache holds the rule's name, which is enough to know a room is restricted and not enough to
+		// say which of the caller's own memberships would satisfy it.
+		allowed, err := s.allowedRoomIDs(ctx, roomID, opts)
+		if err != nil {
+			return nil, err
+		}
+		summary.AllowedRoomIDs = allowed
+	}
+	return summary, nil
+}
+
+// allowedRoomIDs reads the rooms a restricted join admits from the room's join-rules event.
+func (s *Service) allowedRoomIDs(ctx context.Context, roomID string, opts RenderOptions) ([]string, error) {
+	content, err := s.StateEventRow(ctx, roomID, matrix.EventTypeJoinRules, "", opts)
+	if err != nil {
+		// A room whose join rules cannot be read is not going to report any admitted rooms, and that is
+		// an answer rather than a failure: the caller asked which rooms a restricted join would admit,
+		// and "none that this server can name" is what it can be told. The reason goes to the log,
+		// because a room that *should* be restricted and is not is an administration bug worth finding.
+		slog.Warn("roomserver: could not read the join rules of a restricted room",
+			"room_id", roomID, "error", err)
+		return nil, nil
+	}
+	// What comes back from the read path is a whole event, so the rules are inside `content` — and
+	// the fallback is not paranoia but arithmetic: a caller that handed this function a bare content
+	// object should get the same answer rather than an empty one.
+	var wrapper struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(content, &wrapper); err != nil {
+		return nil, fmt.Errorf("roomserver: the join rules of %s are unreadable: %w", roomID, err)
+	}
+	body := content
+	if len(wrapper.Content) > 0 {
+		body = wrapper.Content
+	}
+	var rules struct {
+		Allow []struct {
+			Type   string `json:"type"`
+			RoomID string `json:"room_id"`
+		} `json:"allow"`
+	}
+	if err := json.Unmarshal(body, &rules); err != nil {
+		return nil, fmt.Errorf("roomserver: the join rules of %s are unreadable: %w", roomID, err)
+	}
+	// Room IDs are kept in the order the event lists them, with duplicates removed: the order is the
+	// room administrator's, and a client that displays them has no better ordering to use.
+	seen := map[string]bool{}
+	out := []string{}
+	for _, entry := range rules.Allow {
+		if entry.RoomID == "" || seen[entry.RoomID] {
+			continue
+		}
+		seen[entry.RoomID] = true
+		out = append(out, entry.RoomID)
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 // Summary describes a room for /summary and for the room hierarchy.
