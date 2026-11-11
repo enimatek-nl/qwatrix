@@ -1011,3 +1011,16 @@ directly joined to.
 Measured: `TestAMessageTravelsToAServerThatSharesTheRoom`, `TestARemoteUsersDevicesComeFromTheirOwnServer`
 and `TestAPublishedDeviceListCarriesThisServersOwnUsers` pass across two real servers; whole in-process
 suite green (`tests/api` 145s); go build, go vet, golangci-lint 0 issues, gofmt -s clean.
+
+### Measured in containers, after the outbound work (cc36)
+
+| Test | Before | Now |
+|---|---|---|
+| `TestMessagesOverFederation` | failed at the join | fails **only** in its two `backfill` subtests — the join and both message flows pass between containers |
+| `TestDeviceListUpdates` | all remote subtests fail | unchanged: `m.device_list_updates` EDUs are T712b, the next piece |
+| `TestSync` | pass | pass |
+| `TestSyncTimelineGap`, `TestThreadReceiptsInSyncMSC4102` | fail | fail — the first needs `/state_ids`/`/state` and per-event state (T713), the second receipts over federation (T707) |
+
+The remaining `TestMessagesOverFederation` failure is precise: `Fetched 9 events from the /messages
+endpoint that included events -1 to -1` against `expected 20 events in timeline` — history from *before*
+the join point, which is `GET /_matrix/federation/v1/backfill` (T704), not delivery.
