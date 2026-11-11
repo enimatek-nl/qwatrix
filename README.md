@@ -36,6 +36,26 @@ before exiting with status 0. Both claims are tested (`tests/runtime`).
 curl -s http://127.0.0.1:8008/_matrix/client/versions   # readiness probe
 ```
 
+## Run it in a container
+
+```sh
+podman build -t ghcr.io/enimatek-nl/qwatrix:latest -f deploy/Dockerfile .
+podman run -d --name qwatrix -p 8008:8008 -p 8448:8448 \
+  -v qwatrix-data:/data \
+  -e QWATRIX_SERVER_NAME=example.org \
+  ghcr.io/enimatek-nl/qwatrix:latest
+```
+
+`QWATRIX_SERVER_NAME` (or `-server-name`) is required: it is the identity the server signs
+federation events with, and a server that guesses it signs for a domain it does not own. The image
+listens on `8008` (client) and `8448` (federation), keeps everything under `/data` — which is a
+volume, because that is where the room state, the media and the signing key live — runs as uid
+10001, and leaves registration closed until `QWATRIX_REGISTRATION=true` says otherwise.
+`make image` builds the same image with whichever of podman or docker is configured.
+
+The other image, `deploy/complement/Dockerfile`, is the one the test suite runs: it copies in a
+binary built outside the image, because complement rebuilds the image for every deployment.
+
 ## Register a user
 
 Registration is open by default. User-Interactive Authentication is a conversation, so the first

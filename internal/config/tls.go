@@ -91,15 +91,20 @@ func generateSelfSigned(serverName, dir, certFile, keyFile string) error {
 	if err := writePrivate(keyFile, "EC PRIVATE KEY", keyBytes, 0o600); err != nil {
 		return err
 	}
-	if err := writePrivate(certFile, "CERTIFICATE", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+	if err := writePrivate(certFile, "CERTIFICATE", der, 0o644); err != nil {
 		return err
 	}
 	return nil
 }
 
+// The payload is DER and the file has to be PEM: crypto/tls reads a key with tls.X509KeyPair, which
+// says "failed to find any PEM data in key input" against a binary key — a failure that looks like a
+// corrupt certificate and is really an encoding bug, which is how this one survived until someone
+// started a container that had no certificate to find.
 func writePrivate(path, blockType string, payload []byte, mode os.FileMode) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, payload, mode); err != nil {
+	encoded := pem.EncodeToMemory(&pem.Block{Type: blockType, Bytes: payload})
+	if err := os.WriteFile(tmp, encoded, mode); err != nil {
 		return fmt.Errorf("writing %s: %w", tmp, err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
