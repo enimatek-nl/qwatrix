@@ -11,11 +11,11 @@ server-server API.
 
 | | |
 |---|---|
-| Go files / lines | 118 files, 36 597 lines (23 221 in `internal/`, 12 335 of them tests) |
-| Documented endpoints | 92 rows in `docs/ENDPOINTS.md`, enforced by a test in both directions |
-| In-process tests | 199 `Test…` functions under `tests/` |
-| Tasks | 82 of 101 complete (`.agent-work/TASKS.md`) |
-| Statements covered | 70.1 % of `./internal/...` by `go test -coverpkg=./internal/... -cover ./tests/...` |
+| Go files / lines | 120 files, 37 250 lines (23 843 in `internal/` + `cmd/`, 13 407 of them tests) |
+| Documented endpoints | 100 rows in `docs/ENDPOINTS.md`, with a test asserting no route is undocumented |
+| In-process tests | 204 `Test…` functions under `tests/` |
+| Tasks | 105 rows tracked in `.agent-work/TASKS.md`; the open ones are listed in § 5 |
+| Statements covered | 70.2 % of `./internal/...` by `tests/api` plus 20.6 % by `tests/unit` |
 
 ## 2. What was built
 
@@ -30,6 +30,12 @@ admin endpoint.
 
 **Server-server API** — and the story of this milestone is how much of this only *works* once two real
 servers are involved:
+
+**Late additions worth naming**, because they came from checking claims rather than from a plan:
+remote media fetch-and-cache with the signed federation download (MSC2448) and thumbnails of other
+servers' files, `405` with an `Allow` header where an endpoint exists and the method does not, the
+filename-bearing download forms, and `GET /_matrix/client/v1/room_summary/{room}` including the rooms
+a restricted join admits.
 
 - Signing keys: published, fetched from peers, and verified (`/send`, `/make_join`, `/send_join` all
   require a valid `X-Matrix` signature; refusals name the reason without leaking the signature).
@@ -93,11 +99,13 @@ runs beside the listeners rather than behind them.
 | AC-1 toolchain | `go build ./...`, `go vet ./...`, `gofmt -s -l cmd internal tests`, `golangci-lint run ./...` | all clean; `golangci-lint`: 0 issues |
 | AC-2 test location | `find . -name '*_test.go' -not -path './tests/*' -not -path './.git/*'` | prints nothing |
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0 — `tests/api` 467 s, `tests/unit` 3.9 s, `tests/runtime` (non-race run) 7.3 s |
-| AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.1 % of `./internal/...` statements |
+| AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | see §5 |
+| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 84 of the 95 mandatory tests pass, 11 fail, 0 never ran (§ 5) |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
+| Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
+| Federation TLS | `tests/unit/federationtls_test.go` (3 tests) | pass: the self-signed pair loads in `crypto/tls`, names the server in the SAN, and is reused rather than re-minted |
 | AC-7 persistence | `tests/api/persistence_test.go` (6 tests, real process restart) | pass: rooms/history, sessions and devices, sync progress, client state, uploaded media; plus a test that the replaced server has actually stopped answering, because without it every durability assertion could pass by reading the server that never restarted |
 
 Two audit notes about the tests themselves, because they changed the answers:
@@ -106,62 +114,64 @@ Two audit notes about the tests themselves, because they changed the answers:
   homeserver at error level, and a planted `slog.Info` password leak passed the first version.
 - `README.md`'s registration recipe was run with `curl` against a live server rather than written from
   the code — the first draft was wrong about the User-Interactive Authentication exchange.
+- Three things were **documented as built and were not**: thumbnails (a flag and doc rows, no route),
+  the room hierarchy, and space summaries — the last two had even reached this report's own feature
+  list. A task marked complete from an early milestone was also found claiming thumbnails; the docs
+  and the task table now match the route table, which is what `TestEveryEndpointIsDocumented` checks.
+- The self-signed federation key was written as raw DER into a file named like PEM, so **a server
+  configured to federate could not start**; crypto/tls reported it as "failed to find any PEM data".
+  It survived every test because the complement container mints its certificate with openssl and no
+  test had a TLS federation listener. It was found by running the install command the README gives.
 
 ## 5. Complement: measured compliance
 
-`.agent-work/COMPLEMENT-STATUS.md` keeps the per-run history; `.agent-work/complement-sweep.sh` produces
-the numbers and `.agent-work/ac5-check.py` scores them against the mandatory set parsed out of
-`.agent-work/ACCEPTANCE-CRITERIA.md` itself, so the requirement and the measurement cannot drift apart.
+complement was run in full — **both packages**, in batches, with any test left without a verdict
+re-run in its own process before being called a crash. That last step matters: `TestPushSync` leaks
+a goroutine that panics after its parent has finished, which aborts a Go test binary while still
+printing a tidy summary, so a package of 106 tests can otherwise be reported as having decided 50.
 
-The sweep exists because of two measurement failures that had already happened:
+Run 100, image built from the final commit:
 
-1. Complement's own binaries sometimes panic (a goroutine failing after its parent test finished, or a
-   test indexing into something this server did not provide), which aborts every later test **in that
-   package** while `go test` still prints a summary that reads like a complete run. One sweep reported
-   50 tests for a package holding 106.
-2. Every sweep ran `./tests/csapi` only, because AC-5 states its threshold as "70 of the 107
-   `tests/csapi` tests" — but AC-5's mandatory *named* set draws on both packages, and 15 mandatory
-   tests lived in `./tests` and had never been run. Run 98 was the first sweep of both, with
-   per-test retries: **197 verdicts, none unmeasured.**
-
-`tests/csapi` (run 99, current code): **91 pass, 15 fail**, unchanged from before the outbound-federation
-work — no regressions.
-
-`./tests` (server-server, run 98, before remote media and the 405 fix): 8 pass, 83 fail. That package is
-the federation suite, and it is the honest picture of how much of federation is still missing; its
-failures concentrate on `get_missing_events` edge cases, event-size limits, corrupted auth chains,
-`send_leave`, restricted rooms, and remote media.
-
-### AC-5 mandatory set
-
-Run 98 measured **79 of 95 passing, 16 failing, 0 unmeasured**. Fifteen of the sixteen were then
-diagnosed to a specific missing capability, and four of them (remote media) were fixed afterwards —
-those four plus the 405 rule are being re-measured in run 99.
-
-| Mandatory test | Cause, from its own log line | Status |
+| Package | Pass | Fail |
 |---|---|---|
-| `TestContentMediaV1`, `TestMediaFilenames`, `TestMediaWithoutFileName`, `TestMediaWithoutFileNameCSMediaV1` | `GET /client/v1/media/download/hs1/…` → 404: files hosted elsewhere were never fetched | **fixed after run 98**; re-measured in run 99 |
-| `TestLocalPngThumbnail` | same for `media/thumbnail` — the thumbnail half of MSC2448 is not implemented | open (T719) |
-| `TestEventAuth` | `MustLeaveRoom: send_leave failed` — federated leave is not implemented | open (T720) |
-| `TestUnbanViaInvite` | the invited remote user never appears: invites are not co-signed | open (T714) |
-| `TestSyncTimelineGap` | `MustSendTransaction … contained events the server rejected` — needs outlier events and per-event state snapshots | open (T713) |
-| `TestDeviceListUpdates` | `device_lists.changed` never names a remote user: needs `m.device_list_updates` EDUs, which are the only thing that can carry a key upload across servers | open (T712b) |
-| `TestRoomSummaryAllowedRoomIDs` | `GET /_matrix/client/v1/room_summary/{roomID}` → 404: only `/rooms/{id}/hierarchy` is registered | open (T721) |
-| `TestClientSpacesSummary`, `TestRestrictedRoomsSpacesSummaryLocal`, `TestRestrictedRoomsLocalJoin` | restricted rooms / space-hierarchy join rules | open (T709) |
-| `TestUnknownEndpoints` | 405-vs-404 rule now implemented; the one remaining assertion wants 405 for `PUT /_matrix/key/v2/query`, which this server honestly does not have | partially fixed, residual recorded |
-| `TestJumpToDateEndpoint`, `TestSyncOmitsStateChangeOnFilteredEvents` | complement blueprint construction fails / `POST /join/{roomID}` refused in that fixture | open (T723) |
+| `tests/csapi` (client API) | **91** | 15 |
+| `tests` (server-server) | **14** | 77 |
+| **overall** | **105** | **92** |
 
-`tests/csapi` failures (15) in full, each a named missing feature rather than a crash:
-`TestAsyncUpload`, `TestChangePasswordPushers`, `TestDeviceListUpdates`, `TestE2EKeyBackupReplaceRoomKeyRules`,
-`TestGetRoomMembersAtPoint`, `TestInviteFromIgnoredUsersDoesNotAppearInSync`, `TestMessagesOverFederation`,
-`TestPushRuleRoomUpgrade`, `TestSearch`, `TestServerNotices`, `TestSyncTimelineGap`,
-`TestThreadReceiptsInSyncMSC4102`, `TestThreadsEndpoint`, `TestTxnIdWithRefreshToken`, `TestUrlPreview`.
+The server-server package is where the honest weight sits: most of complement is about federation,
+and this server implements a working subset of it.
 
-`TestMessagesOverFederation` is the clearest single example of what this milestone moved: it used to
-fail at the join. It now fails only in its two `backfill` subtests —
-`Fetched 9 events from the /messages endpoint that included events -1 to -1` against
-`expected 20 events in timeline` — that is history from *before* the join point, which is
-`GET /_matrix/federation/v1/backfill` (T704), not delivery.
+### AC-5, the named mandatory set
+
+`.agent-work/ACCEPTANCE-CRITERIA.md` names 95 tests that must pass. Measured: **84 passing**,
+**11 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is eleven named
+behaviours rather than a broad failure.
+
+AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
+the harder thing — the mandatory set, across both packages.
+
+| Failing mandatory test | The behaviour behind it |
+|---|---|
+| `TestDeviceListUpdates` | needs a **pushed `m.device_list_updates` EDU**: between two syncs the other user only uploads device keys, so no room event crosses the boundary and no amount of event delivery or local announcement can satisfy it (T712b) |
+| `TestSyncTimelineGap` | a gapped timeline needs **outlier events** — persisting an event whose history cannot yet be connected (T713) |
+| `TestUnbanViaInvite` | this server does not **co-sign invites** for remote users, so the remote server refuses the invite (T714) |
+| `TestEventAuth` | fails at `MustLeaveRoom: send_leave failed` — a **federated leave** is not implemented (T720) |
+| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated notary API. Not served, and no decoy route will be registered to change a status code: `404` is the truth (T722) |
+| `TestMediaWithoutFileName` | complement asks for media by its **public container host:port** rather than the Matrix server name; serving that means treating a configured public name as local (T718) |
+| `TestClientSpacesSummary` | `GET /rooms/{roomID}/hierarchy` — a walk over `m.space.child` — is not implemented (T725) |
+| `TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsSpacesSummaryLocal` | a restricted join needs the remote space graph, so both the hierarchy endpoint and remote-room permission evaluation are needed (T709, T725) |
+| `TestJumpToDateEndpoint` | fails inside complement's own blueprint set-up: the scenario's `POST /join` is refused before `/timestamp_to_event` is reached (T723) |
+
+The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
+rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,
+…); `.agent-work/COMPLEMENT-STATUS.md` records them test by test.
+
+### What moved, and what did not
+
+The mandatory set went **79 → 81 → 84** across runs 97, 99 and 100, from the federated-media,
+method-mismatch, thumbnail, room-summary and filename work; the server-server package went from
+8 passing to 14. `tests/csapi` has been **91 pass / 15 fail, identically, for runs 95, 98, 99 and
+100** — the strongest evidence available that none of that work broke a client-API test.
 
 ## 6. Known limitations
 
