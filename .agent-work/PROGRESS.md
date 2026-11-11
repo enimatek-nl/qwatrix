@@ -1251,3 +1251,40 @@ username, password, `auth: {type: m.login.dummy}`, no session. Nothing inside ei
 whether the server has already answered this caller with a challenge. The difference had to be
 remembered rather than inferred, so the session issued for a name under registration is now remembered
 under that name — the only handle the caller repeats.
+
+## M8 stage 11: banning the wrong person, and a queue nobody drained (T736–T743)
+
+Run 104 came in at 87 of 95 with `TestEventAuth` newly passing and `TestArchivedRoomsHistory`
+newly failing — a regression from the previous hour's own commit. Complement's archive test
+spells the rule out: a left room is described by its timeline **or** its state, and putting a
+non-empty state beside a non-empty timeline gives a client two answers to one question. The state
+belongs to the case where the timeline is empty. Reverted, and the two in-process tests that had
+been rewritten to defend the wrong rule were rewritten back; run 105 recovered the test and kept
+the win, landing at **88 of 95**.
+
+`TestUnbanViaInvite` was still failing, and the reason turned out to be worth more than the test.
+Ban, unban, kick and invite all parsed a target user ID down to its localpart and carried on with
+that. Banning `@alice:other.example` therefore wrote a ban for `@alice:this.server` — a different
+account, or nobody — and answered 200 with an event ID, because an event really was created for the
+user that was named.
+
+Fixing that uncovered a second fault sitting underneath it. The delivery queue chooses which servers
+are owed a copy from who is joined, computed *after* the event was applied — and a ban is what
+unmakes a join. The victim's homeserver was therefore always the one dropped from the queue, and a
+banned user's reads of that room are refused from then on, so nothing ever asks and nobody notices.
+The subject of a membership event is owed the event now, invited servers count too, and complement's
+ban step passes while its invite step still does not.
+
+That last step exposed a third fault, this one structural. `outbox.Run` was started only when the
+deployment named a separate federation address, so the default single-listener configuration queued
+every event it owed and never sent one — invisible to complement, which always passes
+`-federation-addr`. And when a peer does refuse one event inside a transaction, it answers 200 with
+the refusals in the body: the sender treats 200 as success, deletes the queued copies and moves on,
+so a refused event is destroyed rather than retried. Both are recorded (T742, T743) rather than
+patched, and `TestAReInviteAfterABanReachesTheVictim` carries the reproduction and skips with both
+named.
+
+Four documents also cited `.agent-work/COMPLEMENT-STATUS.md` as the compliance record. That file has
+never existed; the record is `COMPLEMENT-RESULTS.md`, which now also names the complement checkout
+every run is measured against — and admits that `-tags blacklist_common` does not satisfy
+complement's per-homeserver skip guards, so these counts are conservative rather than flattering.

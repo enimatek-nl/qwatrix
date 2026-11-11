@@ -24,6 +24,37 @@ The tag does **not** satisfy complement's per-homeserver `runtime.SkipIf` guards
 failures, with a warning line in the log saying complement could not tell which homeserver is
 running. The counts below are conservative rather than flattering.
 
+## The runs, most recent first
+
+`<img>` names the commit the container image was built from, which is the only thing a run can
+honestly be attributed to: a run measures the image that exists when its containers start, not the
+commit that was HEAD when somebody typed the command. Run 101 is listed and its number is not used —
+it was measured against a stale image and re-running it was never finished, so its count is discarded
+rather than quoted.
+
+| run | image at | mandatory passing | what the run turned on |
+| --- | --- | --- | --- |
+| 105 | `84246dc` | **88 / 95** | the archive regression gone (left-room state reverted) and `TestEventAuth` kept; the seven left are listed below |
+| 104 | `85069e7` | 87 / 95 | `TestEventAuth` won by the v2 `send_leave` route; `TestArchivedRoomsHistory` **lost** to the same commit, which had started putting state beside every left room's timeline |
+| 103 | `0d29361` | 87 / 95 | the space hierarchy stopped hiding the room its own allow list admits; `TestRestrictedRoomsSpacesSummaryLocal` recovered from its run-102 regression |
+| 102 | `f03e9ec` | 86 / 95 | state-shaped event types allowed on the timeline path (`TestRoomForget`), and the room-version advertisement made honest |
+| 101 | stale | *(discarded)* | measured an image that did not carry the commit under test; see the note above |
+| 100 | pre-hierarchy | 84 / 95 | the last run before the space walk; `tests/csapi` 91 pass / 15 fail, unchanged for runs 95, 98, 99, 100 |
+| 99 | — | 81 / 95 | method-mismatch 405s, filename-bearing media downloads, room summary |
+| 97 | — | 79 / 95 | first sweep that ran **both** packages; before it `COMPLEMENT_PKG` defaulted to `./tests/csapi`, so every earlier count covers less than the suite |
+
+### Still failing at run 105, and what each one needs
+
+| test | the behaviour, not the symptom |
+| --- | --- |
+| `TestUnbanViaInvite` | the victim's server **refuses the re-invite as a bad signature** immediately after fetching the peer's keys successfully — and the sender deletes the queued copy on a 200 envelope, so it is never retried (T742, T743). Not a sync-shape problem: the event never arrives |
+| `TestDeviceListUpdates` | inbound EDUs are parsed by nobody: `handleEDUs` reads nothing, so `m.device_list_update` produces no `device_lists.changed`, and cross-server `POST /keys/query` for remote users is not answered either (T706) |
+| `TestSyncTimelineGap` | needs **outlier events** — persisting an event whose history is not yet connected — before a gapped timeline can be filled (T713) |
+| `TestRestrictedRoomsLocalJoin` | a restricted join needs the server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join event (T709, MSC3083) |
+| `TestJumpToDateEndpoint` | needs `GET /_matrix/client/v1/rooms/{roomID}/timestamp_to_event` and the application-service read that the blueprint's set-up uses |
+| `TestMediaWithoutFileName` | complement names the media origin by its **container host:port** (`host.containers.internal:1024`) while the server's name is `hs1:8008`; no listener of this server carries that host, so the media is not this server's to serve. Deliberately not chased — passing it would mean bending media-origin matching to a container artefact |
+| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated key notary. Passing it means registering a decoy route for an endpoint this server does not implement, which is a test-suite-shaped answer rather than a true one |
+
 ## Run 1 — 2025-11-09 20:16, commit state after M0–M3 (rooms + sync)
 
 `COMPLEMENT_RUN='' make complement` over the whole `./tests/csapi` package.

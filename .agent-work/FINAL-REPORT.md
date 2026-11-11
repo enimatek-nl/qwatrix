@@ -101,7 +101,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
 | AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 84 of the 95 mandatory tests pass, 11 fail, 0 never ran (§ 5) |
+| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 88 of the 95 mandatory tests pass, 7 fail, 0 never ran (§ 5) |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
@@ -143,8 +143,8 @@ and this server implements a working subset of it.
 
 ### AC-5, the named mandatory set
 
-`.agent-work/ACCEPTANCE-CRITERIA.md` names 95 tests that must pass. Measured: **84 passing**,
-**11 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is eleven named
+`.agent-work/ACCEPTANCE-CRITERIA.md` names 95 tests that must pass. Measured at run 105: **88 passing**,
+**7 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is seven named
 behaviours rather than a broad failure.
 
 AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
@@ -152,15 +152,13 @@ the harder thing — the mandatory set, across both packages.
 
 | Failing mandatory test | The behaviour behind it |
 |---|---|
-| `TestDeviceListUpdates` | needs a **pushed `m.device_list_updates` EDU**: between two syncs the other user only uploads device keys, so no room event crosses the boundary and no amount of event delivery or local announcement can satisfy it (T712b) |
-| `TestSyncTimelineGap` | a gapped timeline needs **outlier events** — persisting an event whose history cannot yet be connected (T713) |
-| `TestUnbanViaInvite` | this server does not **co-sign invites** for remote users, so the remote server refuses the invite (T714) |
-| `TestEventAuth` | fails at `MustLeaveRoom: send_leave failed` — a **federated leave** is not implemented (T720) |
-| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated notary API. Not served, and no decoy route will be registered to change a status code: `404` is the truth (T722) |
-| `TestMediaWithoutFileName` | complement asks for media by its **public container host:port** rather than the Matrix server name; serving that means treating a configured public name as local (T718) |
-| `TestClientSpacesSummary` | `GET /rooms/{roomID}/hierarchy` — a walk over `m.space.child` — is not implemented (T725) |
-| `TestRestrictedRoomsLocalJoin`, `TestRestrictedRoomsSpacesSummaryLocal` | a restricted join needs the remote space graph, so both the hierarchy endpoint and remote-room permission evaluation are needed (T709, T725) |
-| `TestJumpToDateEndpoint` | fails inside complement's own blueprint set-up: the scenario's `POST /join` is refused before `/timestamp_to_event` is reached (T723) |
+| `TestUnbanViaInvite` | the victim's server **refuses a re-invite as a bad signature** right after fetching that peer's keys successfully, and the sender clears the queued copy on a 200 envelope, so it is never retried — two faults, T742 and T743, and neither is the sync shape an earlier draft of this report blamed |
+| `TestDeviceListUpdates` | needs a **pushed `m.device_list_update` EDU**: inbound EDUs are parsed by nobody, and cross-server `POST /keys/query` for remote users is unanswered too (T706) |
+| `TestSyncTimelineGap` | a gapped timeline needs **outlier events** — persisting an event whose history is not yet connected (T713) |
+| `TestRestrictedRoomsLocalJoin` | a restricted join needs this server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join (T709, MSC3083) |
+| `TestJumpToDateEndpoint` | needs `GET /rooms/{roomID}/timestamp_to_event`, plus the application-service read that the blueprint's own set-up uses |
+| `TestMediaWithoutFileName` | complement names the media origin by its **container `host:port`**, which is not this server's name and matches no listener of it; deliberately not chased, because passing it means bending media-origin matching to a container artefact |
+| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated key notary; passing it means registering a decoy route for an endpoint this server does not implement — a test-suite-shaped answer rather than a true one |
 
 The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
 rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,
@@ -168,9 +166,12 @@ rules, URL preview, pushers, transactions across refresh, server notices, room m
 
 ### What moved, and what did not
 
-The mandatory set went **79 → 81 → 84** across runs 97, 99 and 100, from the federated-media,
-method-mismatch, thumbnail, room-summary and filename work; the server-server package went from
-8 passing to 14. `tests/csapi` has been **91 pass / 15 fail, identically, for runs 95, 98, 99 and
+The mandatory set went **79 → 81 → 84 → 86 → 87 → 88** across runs 97, 99, 100, 102, 103 and 105,
+from the federated-media, method-mismatch, thumbnail, room-summary, filename, space-hierarchy,
+legacy-federation-endpoint and moderation-target work; the server-server package went from
+8 passing to 14. Run 104 is the honest regression in that line: a change that put state beside every
+left room's timeline broke `TestArchivedRoomsHistory`, and the revert carried by run 105's image took
+it back — which is what the container suite is for. `tests/csapi` has been **91 pass / 15 fail, identically, for runs 95, 98, 99 and
 100** — the strongest evidence available that none of that work broke a client-API test.
 
 ## 6. Known limitations
