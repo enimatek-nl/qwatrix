@@ -319,11 +319,14 @@ func (s *Service) hierarchyRoomAt(ctx context.Context, roomID string, depth, max
 		return links[i].roomID < links[j].roomID
 	})
 
+	// The links are returned at every depth; only the descent stops. "Do not go further" and
+	// "pretend there is nothing further" are different answers, and a client that asked for one
+	// level still wants to draw the arrow out of the deepest room it received — a space showing
+	// "3 more inside" is a navigation affordance, and a space showing nothing reads as empty.
 	children := make([]string, 0, len(links))
-	expanded := depth < maxDepth
 	for _, link := range links {
-		if expanded {
-			entry.ChildrenState = append(entry.ChildrenState, link.child)
+		entry.ChildrenState = append(entry.ChildrenState, link.child)
+		if depth < maxDepth {
 			children = append(children, link.roomID)
 		}
 	}

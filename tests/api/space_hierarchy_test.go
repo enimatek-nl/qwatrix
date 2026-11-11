@@ -223,6 +223,40 @@ func TestTheHierarchyStopsAtTheRequestedDepth(t *testing.T) {
 	}
 }
 
+// TestTheHierarchyReturnsTheChildLinksOfTheDeepestRoom makes the difference between "do not go
+// further" and "pretend there is nothing further" explicit. A client that fetched one level wants to
+// draw the arrow out of the deepest room it got — "3 more inside" — and cannot do that if the link
+// itself was withheld along with the recursion.
+func TestTheHierarchyReturnsTheChildLinksOfTheDeepestRoom(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	via := []string{server.ServerName}
+
+	root := makeSpace(t, alice, server, "Root")
+	subspace := makeSpace(t, alice, server, "Sub-space")
+	underneath := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat", "name": "Underneath"})
+	linkSpace(t, alice, server, root, subspace, map[string]any{"via": via})
+	linkSpace(t, alice, server, subspace, underneath, map[string]any{"via": via})
+
+	page, response := hierarchyOf(t, alice, server, root, "max_depth=1")
+	if page == nil {
+		t.Fatalf("status %d, want 200\nbody: %s", response.StatusCode, response.Body)
+	}
+	index, ok := page.find(subspace)
+	if !ok {
+		t.Fatalf("the space one level down is missing: %v", page.ids())
+	}
+	links := page.Rooms[index].ChildrenState
+	if len(links) != 1 || links[0].StateKey != underneath {
+		t.Errorf("the deepest room returned %d child links, want the one link to %s — "+
+			"stopping the walk is not the same as hiding the arrow out of the room",
+			len(links), underneath)
+	}
+	if _, ok := page.find(underneath); ok {
+		t.Error("max_depth=1 returned the room two levels down")
+	}
+}
+
 // TestTheHierarchyPaginates: `limit` is per page and `next_batch` says there is more.
 //
 // Changing `suggested_only` or `max_depth` between pages is refused rather than silently
