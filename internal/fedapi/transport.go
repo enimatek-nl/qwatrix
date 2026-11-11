@@ -129,6 +129,62 @@ func (p *Peer) GetJSON(ctx context.Context, server spec.ServerName, path string,
 // more than this is either broken or trying to make this server hold a large body in memory.
 const maxPeerKeyResponseBytes = 64 << 10
 
+// maxPeerDocumentBytes bounds a signed JSON answer read from a peer. A device list grows with the
+// number of devices a user has, so it cannot use the key response's ceiling; it is still bounded,
+// because a peer can always answer something enormous.
+const maxPeerDocumentBytes = 4 << 20
+
+// GetSignedJSON asks a peer for a JSON document with this server's signature on the request.
+//
+// [Peer.GetJSON] is the unsigned path and exists for the two questions a server must be able to ask
+// before it trusts anybody: what are your signing keys, and what version are you. Everything else in
+// federation is signed — not because the answers are secret, but because "which devices does
+// `@alice:hs1` have?" is a question worth answering fraudulently, and an unsigned channel lets whoever
+// is in the middle answer it.
+//
+// The caller decodes the body into its own type rather than a library struct, because some federation
+// answers are signed documents whose bytes have to survive the journey: a device key whose
+// `signatures` field was dropped by an intermediate struct is a key no client will accept, and the
+// failure surfaces months later as a conversation that will not decrypt.
+func (p *Peer) GetSignedJSON(ctx context.Context, server spec.ServerName, path string, into any) error {
+	identity, err := signingIdentity(p.opts)
+	if err != nil {
+		return fmt.Errorf("federation: %s", err)
+	}
+	request := fclient.NewFederationRequest(http.MethodGet, p.opts.ServerName, server, path)
+	// Signed before the HTTP request is built, because the signature covers the method and the URI and
+	// the library refuses to modify a request once it has been signed — which is the right rule: the
+	// alternative is a signature that quietly points at different bytes.
+	if err := request.Sign(identity.ServerName, identity.KeyID, identity.PrivateKey); err != nil {
+		return fmt.Errorf("federation: signing the request for %s: %w", server, err)
+	}
+	httpRequest, err := request.HTTPRequest()
+	if err != nil {
+		return fmt.Errorf("federation: building the request for %s: %w", server, err)
+	}
+	httpRequest = httpRequest.WithContext(ctx)
+
+	response, err := p.transport.RoundTrip(httpRequest)
+	if err != nil {
+		return fmt.Errorf("federation: asking %s for %s: %w", server, path, err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4<<10))
+		_ = response.Body.Close()
+	}()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("federation: %s answered %s with %s", server, path, response.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxPeerDocumentBytes))
+	if err != nil {
+		return fmt.Errorf("federation: reading %s's answer from %s: %w", path, server, err)
+	}
+	if err := json.Unmarshal(body, into); err != nil {
+		return fmt.Errorf("federation: %s's answer from %s is not JSON: %w", path, server, err)
+	}
+	return nil
+}
+
 // Signed is the client that signs requests with this server's identity. Every endpoint that asks a
 // peer for something about a room — state, events, a transaction to deliver — goes through this.
 func (p *Peer) Signed() fclient.FederationClient { return p.fed }

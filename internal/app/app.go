@@ -193,7 +193,13 @@ func New(cfg *config.Config) (*App, error) {
 		Version:    "qwatrix/" + cfg.Version,
 		Join:       rooms,
 		Peer:       peer,
+		Devices:    keyService,
 	})
+	// A client asking about a user who lives elsewhere has to be answered by that user's own server,
+	// so the key server is given the transport that can ask. Without it, /keys/query for a remote user
+	// answers "no devices" — which a client reads as a true statement about a stranger rather than as
+	// this server shrugging, and it will not ask again.
+	keyService.WithRemoteKeySource(fedapi.NewRemoteDevices(peer))
 	// Joining a room this server does not hold is the one room operation that cannot be answered
 	// from the local database, so the room server is given the federation transport for it. Left
 	// unset, a room this server has never heard of simply does not exist — which is the correct

@@ -59,6 +59,11 @@ type Options struct {
 	// peer's own server. It may be nil, in which case signed requests are refused rather than
 	// accepted on trust.
 	Peer *Peer
+	// Devices answers a peer's question about the device lists of this server's own users. It may be
+	// nil, in which case the endpoint refuses rather than answering that those users have no devices —
+	// a peer that hears "no devices" stops trying to encrypt to them, which is a quiet way of deleting
+	// somebody's conversations.
+	Devices DeviceListSource
 	// Join accepts federated joins into this server's rooms. It may be nil, in which case the
 	// join handshake answers that this server does not take federated joins — a refusal the
 	// peer can read, rather than a route it has to guess the meaning of.
@@ -104,6 +109,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", h.handleSendJoin(false))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server", h.handleKeys)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server/{keyID}", h.handleKeyByID)
 	h.mux.HandleFunc("/", h.handleUnknown)

@@ -932,3 +932,45 @@ build, go vet, golangci-lint 0 issues, gofmt -s clean. Two mistakes of mine were
 the way: `errors.As` **panicking at runtime** on a `json.InvalidUTF8Error` target (pointer receiver —
 and the type is deprecated anyway, so the branch is gone), and `NewBadJSON`/`NewNotJSON` taking no
 format arguments.
+
+## M8 stage 3: device lists over federation (T712, first half)
+
+`POST /keys/query` for a user who lives on another homeserver answered `{}`. Not an error — an empty
+answer, which a client reads as "this user has no devices", so it sends nothing encryptable and the
+message is unreadable forever, quietly.
+
+Now: the key server splits a query by the domain *in the user ID*, answers its own users from its own
+database, and asks the named server for the rest — over a signed request, verified by that server's
+published key, between two real homeservers.
+
+The two rules that make this safe rather than a feature:
+
+- **A server describes only its own users.** `GET /_matrix/federation/v1/user/devices/{userID}` answers
+  404 `M_NOT_FOUND` for anybody else's, because the answer decides whom a client encrypts to: a server
+  willing to speak for `@alice:other.example` is a server where any peer can mint a device for any user
+  anywhere. Tested from outside, over the federation listener, with a signature the server verified.
+- **A peer's device documents travel unchanged.** The library's own response struct would parse a device
+  into `device_id` + `keys` and drop `signatures`, `algorithms`, `user_id` — producing a key that no
+  client will accept, discovered months later as a conversation that will not decrypt. So the answer is
+  read into raw JSON, and only entries whose `user_id` matches the user asked about are kept: a peer
+  publishing a key for a different user is logged and ignored.
+- A device list is a signed-answer endpoint: unsigned requests are refused (tested), and an unreachable
+  peer yields that user with *no* devices and a log line, not a failed query — a query covers a whole
+  room, and one dead homeserver must not silence every encrypted room its users share.
+
+The field-name trap: the specification calls the array `device_lists`, the Go library's type reads
+`devices`. This server publishes `device_lists` and accepts either.
+
+Found on the way: `Peer.GetJSON` is the unsigned path — it exists for the two questions a server must
+ask before it trusts anybody (keys, version). Using it for `/user/devices` produced a peer that answered
+"Missing Authorization: X-Matrix header". Added `Peer.GetSignedJSON`, which signs the method and URI it
+actually sends.
+
+Measured: four new tests, two of them across two real homeservers; whole in-process suite green
+(`tests/api` 144s); go build, go vet, golangci-lint 0 issues, gofmt -s clean; endpoint table updated so
+the documentation test still holds.
+
+**Not done in T712:** `m.device_list_updates` EDUs, so `/sync`'s `device_lists.changed` still says
+nothing when a remote user's keys move. That is the remaining half of Complement's
+`TestDeviceListUpdates`; the `/keys/query` half this commit closes was not tested there and would have
+shown up as undecryptable messages instead.

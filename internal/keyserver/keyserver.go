@@ -32,6 +32,28 @@ type Service struct {
 	// announce tells a user's room-mates that their device list moved. It is a seam rather than a
 	// dependency on the device-list service so that this package does not have to know who cares.
 	announce func(ctx context.Context, userID string) error
+	// remote obtains the device lists of users this server does not have. It may be nil, in which
+	// case a query for a remote user answers that their devices are unknown rather than pretending
+	// they have none.
+	remote RemoteKeySource
+}
+
+// RemoteKeySource is the outbound half of device-key federation: another homeserver's answer to
+// "what devices does your user have?".
+//
+// It is a seam rather than a federation import because this package's job is the keys themselves —
+// who may read them, how they are stored, what happens when they are stale — and the transport that
+// asks a stranger is somebody else's business. It is also what keeps a homeserver from being able to
+// be told anything about anybody: the caller names the server to ask, so a query for `@alice:hs1`
+// can only ever be answered by `hs1`.
+type RemoteKeySource interface {
+	UserDevices(ctx context.Context, serverName, userID string) ([]json.RawMessage, error)
+}
+
+// WithRemoteKeySource installs the federation source and returns the service for chaining.
+func (s *Service) WithRemoteKeySource(remote RemoteKeySource) *Service {
+	s.remote = remote
+	return s
 }
 
 // WithDeviceListAnnouncer installs the device-list hook and returns the service for chaining.
@@ -55,7 +77,16 @@ func New(st *store.Store, cfg *config.Config, changes *notifier.Notifier) *Servi
 // recourse would be to retry forever.
 func (s *Service) DeviceKeysFor(ctx context.Context, query map[string][]string) (map[string]map[string]json.RawMessage, error) {
 	out := make(map[string]map[string]json.RawMessage, len(query))
+	remote := s.remoteDeviceKeys(ctx, query)
 	for userID, deviceIDs := range query {
+		if keys, askedElsewhere := remote[userID]; askedElsewhere {
+			// A user who lives elsewhere is answered by the server in their user ID. Their own
+			// homeserver is the only one that can say which devices they have, and a server that
+			// answered for somebody else's domain would let any peer mint keys for any user on the
+			// planet — which is the entire security model of Megolm, thrown away.
+			out[userID] = keys
+			continue
+		}
 		entries := map[string]json.RawMessage{}
 		rows, err := s.store.Keys.Devices(ctx, userID, deviceIDs)
 		if err != nil {
@@ -73,6 +104,102 @@ func (s *Service) DeviceKeysFor(ctx context.Context, query map[string][]string) 
 		out[userID] = entries
 	}
 	return out, nil
+}
+
+// remoteDeviceKeys asks other homeservers about the users of theirs that this query names.
+//
+// A failure is not fatal and not silent either: the user comes back with no devices, which a client
+// reads as "cannot start an encrypted session with them yet", and the reason is logged. Answering the
+// whole query with a 500 because one remote server is down would turn one unreachable homeserver into
+// an outage for every participant of a shared room.
+func (s *Service) remoteDeviceKeys(ctx context.Context, query map[string][]string) map[string]map[string]json.RawMessage {
+	if s.remote == nil {
+		return nil
+	}
+	out := map[string]map[string]json.RawMessage{}
+	for userID, deviceIDs := range query {
+		_, domain, err := matrix.ParseUserID(userID, s.cfg.ServerName)
+		if err != nil || domain == s.cfg.ServerName {
+			continue
+		}
+		documents, err := s.remote.UserDevices(ctx, domain, userID)
+		if err != nil {
+			slog.Warn("keyserver: could not ask a peer for a user's devices",
+				"user_id", userID, "server", domain, "error", err)
+			out[userID] = map[string]json.RawMessage{}
+			continue
+		}
+		entries := map[string]json.RawMessage{}
+		for _, document := range documents {
+			// The device ID comes from the document rather than the peer's envelope, because the
+			// document is the signed thing: an entry that disagrees with itself is not a device.
+			var key struct {
+				DeviceID string `json:"device_id"`
+				UserID   string `json:"user_id"`
+			}
+			if err := json.Unmarshal(document, &key); err != nil || key.DeviceID == "" {
+				continue
+			}
+			if key.UserID != userID {
+				// A peer answering for `@alice:hs1` with a key that says `@mallory:hs1` is either
+				// broken or malicious, and either way the key does not belong to the caller's list.
+				slog.Warn("keyserver: a peer published a device key for a different user",
+					"requested", userID, "published", key.UserID, "server", domain)
+				continue
+			}
+			if len(deviceIDs) > 0 && !contains(deviceIDs, key.DeviceID) {
+				continue
+			}
+			entries[key.DeviceID] = document
+		}
+		out[userID] = entries
+	}
+	return out
+}
+
+// contains reports whether a list holds a value.
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+// UserDevices answers a peer's `GET /_matrix/federation/v1/user/devices/{userID}`.
+//
+// Only this server's own users are answered, and that is not a courtesy: the endpoint is how a
+// homeserver learns whom to encrypt to, so one that would speak for another domain hands out the power
+// to insert a device into a user nobody asked it about.
+func (s *Service) UserDevices(ctx context.Context, userID string) (map[string]any, error) {
+	_, domain, err := matrix.ParseUserID(userID, s.cfg.ServerName)
+	if err != nil {
+		return nil, matrix.NewInvalidParam("%q is not a valid user ID", userID)
+	}
+	if domain != s.cfg.ServerName {
+		return nil, matrix.NewNotFound("User %q does not live on this homeserver", userID)
+	}
+	rows, err := s.store.Keys.Devices(ctx, userID, nil)
+	if err != nil {
+		return nil, err
+	}
+	devices := make([]json.RawMessage, 0, len(rows))
+	for i := range rows {
+		if !json.Valid([]byte(rows[i].KeyJSON)) {
+			// Publishing something a client cannot parse is worse than publishing one device fewer:
+			// the client discards the whole response, including the keys that were fine.
+			slog.Warn("keyserver: a stored device key is not valid JSON and is being withheld",
+				"user_id", userID, "device_id", rows[i].DeviceID)
+			continue
+		}
+		devices = append(devices, json.RawMessage(rows[i].KeyJSON))
+	}
+	// `device_lists` is the field name the specification kept from an older shape where it was
+	// per-device deltas; it is a list of device keys, which is what every implementation reads.
+	// Cross-signing keys would appear as `master_key` and `self_signing_key` beside it; this server
+	// does not store cross-signing yet, so they are absent rather than empty.
+	return map[string]any{"user_id": userID, "device_lists": devices}, nil
 }
 
 // UploadRequest is the body of POST /keys/upload.

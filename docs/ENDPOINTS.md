@@ -277,6 +277,7 @@ that arrives unauthenticated is a peer asking who this server is.
 | `PUT` | `/_matrix/federation/v2/send_join/{roomID}/{eventID}` | [Send a join event](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2send_joinroomideventid) |
 | `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) |
 | `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
+| `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
 
 The key response is signed by the key it publishes, so a peer needs to believe only the certificate
 of the connection it opened. An unknown key ID answers `404 M_NOT_FOUND`: "this server never had
@@ -294,7 +295,16 @@ and lookup a peer must believe before anything else, the join handshake — `mak
 unsigned join event, `send_join` accepts the signed result and returns the room's state and
 authentication chain so the peer can check the room for itself — transaction ingest, by which a
 peer delivers events this server then authorises against the room, and the same handshake in the
-outbound direction, by which this server joins one of its users into a room that only a peer holds.
+outbound direction, by which this server joins one of its users into a room that only a peer holds, and
+device-list lookup, by which a client asking about a user who lives elsewhere is answered from that
+user's own homeserver.
+
+A device list is asked for with a signature and answered only for this server's own users. Both halves
+of that matter: the answer decides whom a client encrypts to, so an unsigned question could be answered
+by whoever is watching the connection, and a server willing to describe `@alice:other.example` is a
+server where any peer can mint a device for any user anywhere. A peer that cannot be reached leaves that
+user with no devices in the answer rather than failing the query, because a query usually covers a whole
+room at once and one dead homeserver must not silence every encrypted room its users share.
 
 Ingest answers event by event: a transaction whose third event is bogus keeps the other two and
 reports which one did not land. It is idempotent by transaction ID, because a peer that did not hear
