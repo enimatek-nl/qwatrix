@@ -366,7 +366,13 @@ func (s *Service) build(ctx context.Context, req Request, since int64) (*Respons
 			response.Rooms.Invite[membership.RoomID] = room
 			invitedCount++
 			empty = false
-		case matrix.MembershipLeave:
+		case matrix.MembershipLeave, matrix.MembershipBan:
+			// A ban is a leave the user did not choose, and the specification puts the room under
+			// `leave` for them either way: they are out, and the room is reported to them once, with
+			// the event that ended it. Leaving `ban` out of this switch means a banned user's sync
+			// says nothing about the room at all — no join, no invite, no leave — which leaves a
+			// client holding a room it can neither open nor explain, and leaves the ban itself
+			// unreported: the user finds out because a message stops arriving.
 			room, isEmptyRoom, include, err := s.leftRoom(ctx, req, membership, since, timelineLimit)
 			if err != nil {
 				return nil, false, err
