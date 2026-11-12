@@ -206,30 +206,17 @@ func TestABanFromAnotherServerReachesTheVictim(t *testing.T) {
 
 }
 
-// TestAReInviteAfterABanReachesTheVictim is the second half of a federated ban, and it does not
-// work yet: it is written so that the failure is a named gap rather than a rumour.
+// TestAReInviteAfterABanReachesTheVictim is the second half of a federated ban: throw somebody out,
+// take the ban off them, invite them back, and every one of those steps has to reach the server that
+// holds the victim's account.
 //
-// What complement's TestUnbanViaInvite needs is a ban, an unban and an invite all arriving at the
-// victim's server. The ban arrives (the test above). The unban arrives. The invite does not: the
-// victim's server refuses it with "the event's signature could not be verified" even though it has
-// just fetched the sender's keys successfully and been told by them a moment earlier.
-//
-// Two faults sit on top of that, and each one turns a visible failure into a silent one:
-//
-//   - A transaction is answered 200 even when every event inside it was refused, because the refusals
-//     live in the body. The sending side treats HTTP 200 as success, deletes the queued copies, and
-//     the event is gone: no retry, no log the operator would connect to the room, nothing to heal
-//     from. A queued obligation should be cleared when the peer took the event, not when it read the
-//     envelope.
-//   - The refusal itself is not explainable from the outside: the receiver cannot say whether a key
-//     was missing, stale, or simply did not match, and says nothing to its own operator either.
-//
-// So this test drives the sequence and reports where it stops. It is skipped because a red test that
-// nobody intends to fix in the hour is worse than a gap with a name: see .agent-work/TASKS.md.
+// This is complement's mandatory `TestUnbanViaInvite`, and the sequence that hid three separate
+// faults: moderation aimed at the localpart of a remote user and so banned nobody; the delivery queue
+// choosing its destinations from who is joined, computed after the ban had already unjoined them; and
+// an invitation that cannot be relayed at all, because an invite carries two signatures and this
+// server was supplying one. That last is why the ban arrived while the invitation never did, and why
+// no amount of arranging how /sync *presented* the room ever helped — the event never arrived.
 func TestAReInviteAfterABanReachesTheVictim(t *testing.T) {
-	t.Skip("the victim's server refuses a federated re-invite as a bad signature after a successful key " +
-		"fetch, and the sender drops the queued copy on a 200 envelope: .agent-work/TASKS.md records both")
-
 	hs2 := harness.NewWithRegistration(t,
 		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
 	hs2.FederationServer(t)

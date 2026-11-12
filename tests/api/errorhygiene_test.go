@@ -266,7 +266,16 @@ func TestASyncTokenIsNotLogged(t *testing.T) {
 		"/messages?from="+url.QueryEscape(first.NextBatch)+"&dir=b&limit=5", alice.AccessToken).
 		MustStatus(t, 200)
 
-	if logs := server.Logs(); strings.Contains(logs, first.NextBatch) {
+	// Only this server's own lines count. The logger is process-global and a goroutine outliving its
+	// test logs into whoever holds it, and stream positions are short enough (`s12`) that another
+	// test's position is indistinguishable from a leak of this one's.
+	logs := linesOfTest(server.Logs(), t.Name())
+	if logs == "" {
+		t.Fatalf("no log line was attributed to %q, so this test would pass whatever the server logged; "+
+			"the harness stamps each line with the test that held the logger: %s", t.Name(),
+			firstLine(server.Logs()))
+	}
+	if strings.Contains(logs, first.NextBatch) {
 		t.Errorf("the log contains a sync token: %s", lineContaining(logs, first.NextBatch))
 	}
 }
@@ -283,6 +292,31 @@ func doRawWithError(t *testing.T, server *harness.Server, token string, tc error
 		req.Body = tc.body
 	}
 	return server.Do(t, req)
+}
+
+// lineContaining returns the log lines that mention needle, so a failure names the line to read
+// rather than dumping a whole homeserver's output.
+// linesOfTest keeps the log lines this test's own server wrote. The harness stamps every line with
+// the test that held the process-global logger, which is the only way to tell a line written by this
+// server from one written by a goroutine that outlived the test which started it.
+func linesOfTest(logs, testName string) string {
+	marker := "test=" + testName + " "
+	keep := []string{}
+	for _, line := range strings.Split(logs, "\n") {
+		if strings.Contains(line, marker) || strings.HasSuffix(line, "test="+testName) {
+			keep = append(keep, line)
+		}
+	}
+	return strings.Join(keep, "\n")
+}
+
+// firstLine returns the beginning of a log, for a failure message that has to show what was there.
+func firstLine(logs string) string {
+	line, _, _ := strings.Cut(logs, "\n")
+	if len(line) > 160 {
+		line = line[:160]
+	}
+	return line
 }
 
 // lineContaining returns the log lines that mention needle, so a failure names the line to read

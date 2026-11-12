@@ -9,9 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/enimatek-nl/qwatrix/internal/events"
 	"github.com/enimatek-nl/qwatrix/internal/store"
 	"github.com/matrix-org/gomatrixserverlib"
+	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/tidwall/gjson"
 )
 
 // How hard to try to deliver, and for how long.
@@ -76,8 +79,22 @@ func (o *Outbox) DrainOnce(ctx context.Context) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Invitations travel by their own endpoint, and are handed back co-signed.
+	rows, signed, unsigned, why := o.coSignInvites(ctx, rows)
+	if len(signed) > 0 {
+		if err := o.store.FederationOutbox.Delete(ctx, signed); err != nil {
+			slog.Error("fedapi: could not clear invitations delivered to a peer", "error", err)
+		}
+	}
+	if len(unsigned) > 0 {
+		if err := o.store.FederationOutbox.Deferred(ctx, unsigned,
+			time.Now().Add(outboxBackoff(0)).UnixMilli(), why); err != nil {
+			slog.Error("fedapi: could not defer an invitation that could not be co-signed", "error", err)
+		}
+	}
+	coSignedCount := len(signed)
 	if len(rows) == 0 {
-		return 0, nil
+		return coSignedCount, nil
 	}
 
 	delivered := 0
@@ -94,7 +111,112 @@ func (o *Outbox) DrainOnce(ctx context.Context) (int, error) {
 		}
 		delivered += sent
 	}
-	return delivered, nil
+	return delivered + coSignedCount, nil
+}
+
+// coSignInvites delivers, by the endpoint built for it, every invitation in this pass whose invitee
+// lives at the destination it was queued for, and returns the rows that still need the ordinary
+// transaction path.
+//
+// An invitation cannot be relayed like a message. The specification asks the invited user's own server
+// to sign it — see [events.Service.CoSignEvent] for why — so the copy this server queued at the moment
+// the invite was written is, by construction, a copy nobody will accept. Sending it anyway produces a
+// peer that answers 200 and refuses the event inside, which is the worst possible combination: the
+// obligation is cleared and the invitation is gone.
+//
+// Once the peer has signed, that signature belongs to the event everywhere. The stored event is
+// rewritten, and so are the copies still waiting for other servers, because they are queued as JSON
+// rather than re-read at delivery time, and a stale copy would be refused by the very next peer.
+func (o *Outbox) coSignInvites(ctx context.Context, rows []store.FederationOutbox) (
+	remaining []store.FederationOutbox, delivered, deferred []int64, reason string,
+) {
+	remaining = make([]store.FederationOutbox, 0, len(rows))
+	coSignedByEvent := map[string]string{}
+	for _, row := range rows {
+		if !events.IsInvite([]byte(row.JSON)) || !invitesUserAt(row, o.serverName) {
+			remaining = append(remaining, row)
+			continue
+		}
+		coSigned, err := o.requestInviteSignature(ctx, row)
+		if err != nil {
+			// Retryable: the peer may be unreachable, and an invitation that could not be co-signed
+			// today is still an invitation tomorrow. It is not sent unsigned to anybody in the
+			// meantime, since every copy would be refused for the same reason.
+			deferred = append(deferred, row.ID)
+			if reason == "" {
+				reason = err.Error()
+			}
+			slog.Warn("fedapi: an invitation could not be co-signed by the invitee's server",
+				"room_id", row.RoomID, "event_id", row.EventID, "destination", row.Destination,
+				"error", err)
+			continue
+		}
+		coSignedByEvent[row.EventID] = coSigned
+		delivered = append(delivered, row.ID)
+	}
+	for eventID, coSigned := range coSignedByEvent {
+		if err := o.store.Events.ReplaceJSON(ctx, eventID, coSigned); err != nil {
+			slog.Warn("fedapi: could not store the co-signed copy of an invitation",
+				"event_id", eventID, "error", err)
+		}
+		if _, err := o.store.FederationOutbox.RewriteJSON(ctx, eventID, coSigned); err != nil {
+			slog.Warn("fedapi: could not rewrite the queued copies of a co-signed invitation",
+				"event_id", eventID, "error", err)
+		}
+		// The rows in this pass were read before the rewrite, so they still carry the unsigned bytes.
+		for i, row := range remaining {
+			if row.EventID == eventID {
+				remaining[i].JSON = coSigned
+			}
+		}
+	}
+	return remaining, delivered, deferred, reason
+}
+
+// invitesUserAt reports whether a queued event invites one of the given destination's users — the case
+// where that server is the one whose signature is required. An invitation relayed on behalf of another
+// server is already co-signed by the time it reaches this point, and goes by the ordinary path.
+func invitesUserAt(row store.FederationOutbox, origin spec.ServerName) bool {
+	if gjson.Get(row.JSON, "type").String() != "m.room.member" {
+		return false
+	}
+	stateKey := gjson.Get(row.JSON, "state_key").String()
+	user, err := spec.NewUserID(stateKey, true)
+	if err != nil {
+		return false
+	}
+	return string(user.Domain()) == row.Destination && row.Destination != string(origin)
+}
+
+// requestInviteSignature asks the invitee's server for its signature and returns the event with both.
+func (o *Outbox) requestInviteSignature(ctx context.Context, row store.FederationOutbox) (string, error) {
+	stored, err := o.store.Events.ByEventID(ctx, row.EventID)
+	if err != nil {
+		return "", fmt.Errorf("finding the invitation to co-sign: %w", err)
+	}
+	version, err := gomatrixserverlib.GetRoomVersion(gomatrixserverlib.RoomVersion(stored.RoomVersion))
+	if err != nil {
+		return "", fmt.Errorf("the invitation's room version %q: %w", stored.RoomVersion, err)
+	}
+	event, err := version.NewEventFromTrustedJSON([]byte(row.JSON), false)
+	if err != nil {
+		return "", fmt.Errorf("reading the invitation to co-sign: %w", err)
+	}
+	request, err := fclient.NewInviteV2Request(event, nil)
+	if err != nil {
+		return "", err
+	}
+	answer, err := o.peer.Signed().SendInviteV2(ctx, o.serverName, spec.ServerName(row.Destination), request)
+	if err != nil {
+		return "", fmt.Errorf("asking %s to co-sign an invitation: %w", row.Destination, err)
+	}
+	signed := string(answer.Event)
+	if !gjson.Get(signed, "signatures").Get(gjson.Escape(row.Destination)).Exists() {
+		// The signature is the whole point of the call. An answer without it would be relayed and
+		// refused downstream, which is the failure this path exists to prevent.
+		return "", fmt.Errorf("%s returned an invitation it had not signed", row.Destination)
+	}
+	return signed, nil
 }
 
 // Run drains the ledger until the context ends.

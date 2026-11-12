@@ -198,8 +198,16 @@ func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server 
 
 	// The log handler is process-global, so the most recently started server in this test owns
 	// it; the buffer they all write into is the same object.
+	//
+	// Each line is stamped with the test that owned the logger when it was written, because a
+	// goroutine outliving its own test — a long-poll that has not returned, a delivery still
+	// retried — logs into whoever holds the global logger at the time. Without the stamp, a test
+	// that reads its own log cannot tell its server's lines from another test's, which matters
+	// most for the assertions that look for something absent: a two-character sync token from a
+	// neighbouring test reads exactly like a leak.
 	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: options.LogLevel})))
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: options.LogLevel}))
+	slog.SetDefault(logger.With("test", t.Name()))
 	t.Cleanup(func() { slog.SetDefault(previous) })
 
 	instance, err := app.New(cfg)

@@ -54,6 +54,11 @@ type FederationOutboxRepo interface {
 	Deferred(ctx context.Context, ids []int64, nextMS int64, reason string) error
 	// Delete removes delivered copies.
 	Delete(ctx context.Context, ids []int64) error
+	// RewriteJSON replaces the copy queued for every destination of one event, and reports how many
+	// rows changed. It exists for an event whose bytes change after it was queued: an invite is not
+	// deliverable until the invited user's server has co-signed it, and the copies already waiting for
+	// the rest of the room would otherwise carry the version a peer refuses.
+	RewriteJSON(ctx context.Context, eventID, eventJSON string) (int64, error)
 	// Pending counts what is still waiting, which is the number an operator watches when a peer has
 	// been unreachable: it is how far behind this server is.
 	Pending(ctx context.Context) (int64, error)
@@ -134,6 +139,17 @@ func (r *FederationOutboxRepoImpl) Deferred(ctx context.Context, ids []int64, ne
 }
 
 // Delete implements [FederationOutboxRepo].
+// RewriteJSON implements [FederationOutboxRepo].
+func (r *FederationOutboxRepoImpl) RewriteJSON(ctx context.Context, eventID, eventJSON string) (int64, error) {
+	result := session(ctx, r.db).Model(&FederationOutbox{}).
+		Where("event_id = ?", eventID).
+		Update("json", eventJSON)
+	if result.Error != nil {
+		return 0, fmt.Errorf("rewriting queued federation events: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
+
 func (r *FederationOutboxRepoImpl) Delete(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
