@@ -35,6 +35,7 @@ unstable flag is a promise that the unstable endpoint prefix works, so a flag ap
 | Method | Path | Spec |
 | --- | --- | --- |
 | `GET`, `POST` | `/login` | [Login](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login) |
+| `GET` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3register) — the flows a client builds its registration screen from |
 | `POST` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3register) |
 | `GET` | `/register/available` | [Check username availability](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3registeravailable) |
 | `GET` | `/account/whoami` | [Whoami](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3accountwhoami) |

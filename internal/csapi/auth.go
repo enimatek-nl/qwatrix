@@ -22,6 +22,9 @@ func registerAuthRoutes(mux *httpx.RouteTable, deps Deps) {
 	// Registration, standard client-server flow.
 	for _, path := range versionedPath("register") {
 		mux.HandleFunc("POST "+path, handleRegister(deps))
+		// A client discovers the flow before it attempts it; without this the registration screen
+		// never renders even though the endpoint behind it works.
+		mux.HandleFunc("GET "+path, handleRegisterFlows(deps))
 	}
 	for _, path := range versionedPath("register/available") {
 		mux.HandleFunc("GET "+path, handleRegisterAvailable(deps))
@@ -110,6 +113,46 @@ type registerResponse struct {
 // situation: registration is open, so there is nothing to prove, but the exchange still has
 // to look like an authentication exchange.
 var registrationStages = []string{uia.StageDummy}
+
+// registrationFlowsResponse is the answer to `GET /register`.
+//
+// `params` is required by the specification and matrix-js-sdk reads it without checking, so it is
+// always an object here — an absent field and an empty one are the same idea to a human and not to a
+// client walking the response.
+type registrationFlowsResponse struct {
+	Flows  []registrationFlow `json:"flows"`
+	Params map[string]any     `json:"params"`
+}
+
+type registrationFlow struct {
+	Type string `json:"type"`
+}
+
+// handleRegisterFlows answers `GET /register`: which flows a client could complete here.
+//
+// This is the endpoint a registration screen is built from, so a server that only implements the POST
+// has registration that works and a client that cannot reach it. Answering 405 would be reporting that
+// no method serves this path, which is not true and not what a client should be told.
+//
+// With registration closed the answer is the refusal `POST /register` would give, not an empty flow
+// list: discovery and the door have to agree, and a client that is shown a flow will collect a username
+// and a password for it and hand them to a server that has already said it is not taking them.
+func handleRegisterFlows(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !deps.Config.EnableRegistration {
+			httpx.RespondError(w, r, matrix.NewForbidden("Registration is not enabled on this homeserver"))
+			return
+		}
+		flows := make([]registrationFlow, 0, len(registrationStages))
+		for _, stage := range registrationStages {
+			flows = append(flows, registrationFlow{Type: stage})
+		}
+		httpx.RespondJSON(w, http.StatusOK, registrationFlowsResponse{
+			Flows:  flows,
+			Params: map[string]any{},
+		})
+	}
+}
 
 // handleRegister implements POST /register, including the 401/200 user-interactive dance.
 func handleRegister(deps Deps) http.HandlerFunc {

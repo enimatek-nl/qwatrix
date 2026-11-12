@@ -1090,3 +1090,62 @@ func TestARegistrationSessionCannotBeDroppedOnceItWasIssued(t *testing.T) {
 		t.Errorf("a first-ever registration answered %d, want 200: %s", fresh.StatusCode, fresh.Body)
 	}
 }
+
+// TestRegistrationFlowsAreDiscoverable is the difference between a server that accepts registrations
+// and a client that can find out that it does.
+//
+// `POST /register` is the door, but a client cannot walk into a door it cannot see: Element Web and
+// matrix-js-sdk open their registration screen with `GET /register` and build the screen out of the
+// flows in the answer. Answering 405 there is not a conservative refusal, it is a registration screen
+// that never renders, on a server whose registration works perfectly the moment anyone guesses the
+// method. A 405 is only honest when no answer exists; here one does.
+func TestRegistrationFlowsAreDiscoverable(t *testing.T) {
+	t.Parallel()
+
+	srv := harness.New(t)
+
+	for _, prefix := range []string{"/_matrix/client/v3", "/_matrix/client/r0"} {
+		resp := srv.Get(t, prefix+"/register", "").MustStatus(t, 200)
+		var body struct {
+			Flows  []map[string]any `json:"flows"`
+			Params *map[string]any  `json:"params"`
+		}
+		resp.JSON(t, &body)
+
+		// The specification requires `params` alongside `flows`, and matrix-js-sdk reads it
+		// unconditionally, so an absent field is not the same as an empty object.
+		if body.Params == nil {
+			t.Errorf("%s/register answered without a `params` object: %s", prefix, resp.Body)
+		}
+		var found bool
+		for _, flow := range body.Flows {
+			if flow["type"] == "m.login.dummy" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%s/register advertised %v, which does not include the dummy flow this server's "+
+				"POST /register completes", prefix, body.Flows)
+		}
+	}
+}
+
+// TestClosedRegistrationIsNotAdvertisedAsOpen keeps discovery honest on the other side. A server with
+// registration closed must not answer `GET /register` with the flows it would offer were it open,
+// because a client that is told a flow exists will collect a username and password for it and then be
+// refused — sending credentials to a server that has already said it will not take them.
+func TestClosedRegistrationIsNotAdvertisedAsOpen(t *testing.T) {
+	t.Parallel()
+
+	srv := harness.New(t, harness.WithClosedRegistration())
+
+	get := srv.Get(t, "/_matrix/client/v3/register", "")
+	post := srv.Do(t, harness.Request{Method: http.MethodPost, Path: "/_matrix/client/v3/register", Body: map[string]any{}})
+	if get.StatusCode != post.StatusCode {
+		t.Errorf("discovery said %d where the registration endpoint itself says %d — a client believes the first",
+			get.StatusCode, post.StatusCode)
+	}
+	if get.StatusCode == 200 {
+		t.Errorf("a closed homeserver advertised registration flows: %s", get.Body)
+	}
+}
