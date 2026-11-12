@@ -207,7 +207,7 @@ func New(cfg *config.Config) (*App, error) {
 	if cfg.FederationAddr == "" {
 		rooms.WithoutFederationOutbound()
 	}
-	app.outbox = fedapi.NewOutbox(peer, st, spec.ServerName(cfg.ServerName))
+	app.outbox = fedapi.NewOutbox(peer, st, spec.ServerName(cfg.ServerName)).WithWakeup(app.notifier)
 
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
 		ServerName: spec.ServerName(cfg.ServerName),

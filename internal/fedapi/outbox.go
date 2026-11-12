@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/enimatek-nl/qwatrix/internal/events"
+	"github.com/enimatek-nl/qwatrix/internal/notifier"
 	"github.com/enimatek-nl/qwatrix/internal/store"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
@@ -56,6 +57,21 @@ type Outbox struct {
 	// sequence numbers the transactions, which a peer uses to answer "did you already send me that?".
 	// It only has to be unique per destination, and monotone is enough.
 	sequence atomic.Int64
+	// notify wakes the delivery loop the moment an event is written, so a queued event is on its way
+	// now rather than at the next tick. See [Outbox.WithWakeup].
+	notify *notifier.Notifier
+}
+
+// WithWakeup ties the queue to the server's change notifier, so an event queued for a peer is on its
+// way now rather than at the next tick.
+//
+// The tick stays as the fallback: it is what retries a peer that was away, and what runs a pass when
+// a queued event's own fuse expires. But a tick is a latency floor, and a floor measured in seconds
+// is visible — a client that sends a message and watches a federated room sees the gap, and a peer
+// waiting for one event to finish a handshake can give up inside it.
+func (o *Outbox) WithWakeup(changes *notifier.Notifier) *Outbox {
+	o.notify = changes
+	return o
 }
 
 // NewOutbox builds the delivery worker for one server's own ledger.
@@ -217,24 +233,55 @@ func (o *Outbox) requestInviteSignature(ctx context.Context, row store.Federatio
 }
 
 // Run drains the ledger until the context ends.
+//
+// It runs when something was just written and otherwise once a tick, which is the difference between
+// a federation that looks instantaneous and one that looks like a two-second conversation.
 func (o *Outbox) Run(ctx context.Context) error {
 	ticker := time.NewTicker(outboxTick)
 	defer ticker.Stop()
+	var generation uint64
+	if o.notify != nil {
+		generation = o.notify.Generation()
+	}
 	for {
-		select {
-		case <-ctx.Done():
+		if !o.wait(ctx, ticker, &generation) {
 			return nil
-		case <-ticker.C:
-			// One pass per tick, however much is queued: catching up a peer that was away for a day is
-			// not something to do at full speed on somebody else's bandwidth.
-			if _, err := o.DrainOnce(ctx); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return nil
-				}
-				slog.Warn("fedapi: the federation delivery pass failed", "error", err)
+		}
+		// One pass at a time, however much is queued: catching up a peer that was away for a day is
+		// not something to do at full speed on somebody else's bandwidth.
+		if _, err := o.DrainOnce(ctx); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return nil
 			}
+			slog.Warn("fedapi: the federation delivery pass failed", "error", err)
 		}
 	}
+}
+
+// wait parks the loop until there is a reason to run a pass, and reports whether the loop should
+// continue. A timeout is a reason too: it is how a peer that was away gets retried.
+func (o *Outbox) wait(ctx context.Context, ticker *time.Ticker, generation *uint64) bool {
+	if o.notify == nil {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			return true
+		}
+	}
+	if o.notify.WaitForChange(ctx, *generation, outboxTick) {
+		*generation = o.notify.Generation()
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	// The wait timed out. A tick already waiting is the same reason, so do not run twice for it.
+	select {
+	case <-ticker.C:
+	default:
+	}
+	return true
 }
 
 // outboxBatch is the set of queued events for one peer.
