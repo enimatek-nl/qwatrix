@@ -14,6 +14,7 @@ package devicelists
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sort"
 	"strings"
@@ -25,6 +26,9 @@ import (
 
 // Service is the device-list log.
 type Service struct {
+	// peer is how a change reaches the servers that share rooms with a local user. Nil means this
+	// server is not federating, and a device list is then a purely local fact.
+	peer       DeviceListPeer
 	store      *store.Store
 	notifier   *notifier.Notifier
 	serverName string
@@ -46,6 +50,22 @@ func New(st *store.Store, n *notifier.Notifier, opts Options) *Service {
 // `left` is a different message from `changed`: a client should drop the keys of somebody who left a
 // shared room and re-query the keys of somebody who is still in it. Getting that backwards either
 // keeps trusting a device that is gone or throws away keys still in use.
+// DeviceListPeer carries a change to a local user's devices to the servers that share rooms with them.
+//
+// It is a seam rather than a call into the federation layer for the reason every other seam here
+// exists: a device-list change is a fact about this server's users, and it stays true whether or not
+// anything can be told about it.
+type DeviceListPeer interface {
+	// SendDeviceListUpdate delivers one `m.device_list_update` content to one destination.
+	SendDeviceListUpdate(ctx context.Context, destination string, content json.RawMessage) error
+}
+
+// WithPeer installs the federation transport and returns the service for chaining.
+func (s *Service) WithPeer(peer DeviceListPeer) *Service {
+	s.peer = peer
+	return s
+}
+
 // AnnounceRoom reports a membership change in one named room, which is the scope a membership change
 // actually has.
 //
@@ -74,45 +94,121 @@ func (s *Service) Announce(ctx context.Context, userID string, left bool) error 
 // wherever the subject currently is; a membership change names the room it happened in.
 func (s *Service) announce(ctx context.Context, userID string, left bool, rooms []string) error {
 	key := matrix.MembershipKey(userID, s.serverName)
-	var observers []string
-	var err error
-	if len(rooms) > 0 {
-		observers, err = s.observersIn(ctx, key, rooms)
+	local := !strings.Contains(key, ":")
+	if len(rooms) == 0 {
+		live, err := s.store.Memberships.RoomsForUser(ctx, key, string(matrix.MembershipJoin))
 		if err != nil {
 			return err
 		}
-	} else {
-		live, rerr := s.store.Memberships.RoomsForUser(ctx, key, string(matrix.MembershipJoin))
-		if rerr != nil {
-			return rerr
-		}
-		observers, err = s.observersIn(ctx, key, live)
-		if err != nil {
-			return err
-		}
+		rooms = live
 	}
-	if len(observers) == 0 {
-		return nil
+	observers, err := s.observersIn(ctx, key, rooms)
+	if err != nil {
+		return err
 	}
 	position, err := s.store.Events.MaxPosition(ctx)
 	if err != nil {
 		return err
 	}
 	// One past the tip, so a change made while a sync is in flight still counts as after that
-	// sync's token. Anything less answers a client that is waiting for news of the login it just
-	// performed with "nothing happened".
+	// sync's token. Anything less answers a client that is waiting for the login it just performed
+	// with "nothing happened".
 	position++
-	for _, observer := range observers {
-		change := store.DeviceListChange{UserID: userID, Observer: observer, Left: left, StreamPos: position}
-		if err := s.store.DeviceLists.Append(ctx, &change); err != nil {
-			return err
+	if len(observers) > 0 {
+		for _, observer := range observers {
+			change := store.DeviceListChange{UserID: userID, Observer: observer, Left: left, StreamPos: position}
+			if err := s.store.DeviceLists.Append(ctx, &change); err != nil {
+				return err
+			}
 		}
+	}
+	// The local observers are not the whole audience. A user's own server is the only one allowed to
+	// speak for that user's devices, so the servers down the far end of a shared room have to hear it
+	// from here — and they have to hear it even when this server has nobody local who cares, which is
+	// exactly the shape of a room whose only other members are remote.
+	if local && s.peer != nil {
+		s.tellPeers(ctx, userID, rooms, left, position)
 	}
 	if s.notifier != nil {
 		s.notifier.Publish()
 	}
 	slog.Debug("device lists: announced a change", "user_id", userID, "left", left, "observers", len(observers))
 	return nil
+}
+
+// tellPeers sends this server's users' device-list changes to the servers that share a room with them.
+//
+// Best-effort, and deliberately so: the change is recorded here whatever a peer makes of it, and a
+// server that is unreachable is not a reason to fail the key upload that prompted the announcement.
+// What is lost when a send fails is one notification, and the peer's own next `/keys/query` for this
+// user picks the truth up.
+func (s *Service) tellPeers(ctx context.Context, userID string, rooms []string, left bool, position int64) {
+	destinations, err := s.remoteDestinations(ctx, rooms)
+	if err != nil {
+		slog.Warn("device lists: could not work out which peers care about a device change",
+			"user_id", userID, "error", err)
+		return
+	}
+	if len(destinations) == 0 {
+		return
+	}
+	devices, err := s.store.Devices.List(ctx, userID)
+	if err != nil {
+		slog.Warn("device lists: could not list the devices a change concerns", "user_id", userID, "error", err)
+		return
+	}
+	// One EDU per device, because that is what the update is about: a peer is being told that the
+	// keys of one device moved, and a batch would make it guess which. A deletion is sent even with
+	// no devices left to name — the peer is holding keys for a device that is gone, and that is the
+	// one message it cannot work out for itself.
+	updates := make([]map[string]any, 0, max(len(devices), 1))
+	for _, device := range devices {
+		updates = append(updates, map[string]any{"user_id": userID, "device_id": device.ID})
+	}
+	if len(updates) == 0 {
+		updates = append(updates, map[string]any{"user_id": userID})
+	}
+	for _, update := range updates {
+		update["stream_id"] = position
+		update["origin_server_ts"] = position
+		update["deleted"] = left
+		content, err := json.Marshal(update)
+		if err != nil {
+			slog.Warn("device lists: could not encode an update for a peer", "user_id", userID, "error", err)
+			return
+		}
+		for _, destination := range destinations {
+			if err := s.peer.SendDeviceListUpdate(ctx, destination, content); err != nil {
+				slog.Warn("device lists: a peer could not be told about a device change",
+					"user_id", userID, "destination", destination, "error", err)
+			}
+		}
+	}
+}
+
+// remoteDestinations lists the other homeservers represented in a set of rooms — the servers that have
+// a member in common with the user whose devices changed, and nobody else.
+func (s *Service) remoteDestinations(ctx context.Context, rooms []string) ([]string, error) {
+	seen := map[string]bool{}
+	for _, roomID := range rooms {
+		members, err := s.store.Memberships.List(ctx, roomID, []string{string(matrix.MembershipJoin)}, nil)
+		if err != nil {
+			return nil, err
+		}
+		for _, member := range members {
+			_, domain, err := matrix.ParseUserID(member.UserID, s.serverName)
+			if err != nil || domain == "" || domain == s.serverName {
+				continue
+			}
+			seen[domain] = true
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for domain := range seen {
+		out = append(out, domain)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // Delta returns what an observer has not been told yet, split the way /sync wants it.

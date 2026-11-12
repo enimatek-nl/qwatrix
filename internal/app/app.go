@@ -210,13 +210,18 @@ func New(cfg *config.Config) (*App, error) {
 	app.outbox = fedapi.NewOutbox(peer, st, spec.ServerName(cfg.ServerName)).WithWakeup(app.notifier)
 
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
-		ServerName: spec.ServerName(cfg.ServerName),
-		Version:    "qwatrix/" + cfg.Version,
-		Join:       rooms,
-		Peer:       peer,
-		Devices:    keyService,
-		Media:      mediaService,
+		ServerName:  spec.ServerName(cfg.ServerName),
+		Version:     "qwatrix/" + cfg.Version,
+		Join:        rooms,
+		Peer:        peer,
+		Devices:     keyService,
+		Media:       mediaService,
+		DeviceLists: deviceListService,
 	})
+	// A user's device list is this server's to speak for, so the servers that share a room with that
+	// user hear about a change from here. Best-effort by design: the change is recorded locally either
+	// way, and a peer that cannot be reached catches up on its next key query.
+	deviceListService.WithPeer(app.outbox)
 	// A client asking about a user who lives elsewhere has to be answered by that user's own server,
 	// so the key server is given the transport that can ask. Without it, /keys/query for a remote user
 	// answers "no devices" — which a client reads as a true statement about a stranger rather than as

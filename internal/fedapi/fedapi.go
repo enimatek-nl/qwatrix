@@ -67,6 +67,9 @@ type Options struct {
 	// a peer that hears "no devices" stops trying to encrypt to them, which is a quiet way of deleting
 	// somebody's conversations.
 	Devices DeviceListSource
+	// DeviceLists records that a peer told us one of its users changed their encryption devices. It
+	// may be nil, in which case an incoming device-list update is logged and dropped.
+	DeviceLists DeviceListAnnouncer
 	// Media serves this server's own files to peers. It may be nil, in which case the media endpoint
 	// answers that this server does not serve media over federation — a refusal a peer can read, and
 	// the right answer for a server whose media repository is switched off.
@@ -348,4 +351,10 @@ func (h *Handler) handleKeyQuery(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleUnknown(w http.ResponseWriter, r *http.Request) {
 	slog.Debug("fedapi: unimplemented federation route", "method", r.Method, "path", r.URL.Path)
 	httpx.RespondError(w, r, matrix.NewUnrecognized("this server does not implement %s %s", r.Method, r.URL.Path))
+}
+
+// DeviceListAnnouncer is where an incoming device-list update is recorded, so that local users who
+// share a room with the subject learn that the keys they hold moved or went away.
+type DeviceListAnnouncer interface {
+	Announce(ctx context.Context, userID string, left bool) error
 }

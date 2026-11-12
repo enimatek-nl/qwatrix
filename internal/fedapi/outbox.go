@@ -333,6 +333,42 @@ func withoutPeerPrefix(message string) string {
 	return strings.TrimSpace(message)
 }
 
+// SendDeviceListUpdate delivers one device-list update to one peer as a transaction that carries no
+// events at all.
+//
+// Device lists travel this way because only a user's own server may speak for that user's devices, and
+// the peer cannot ask: it has to be told, at the moment the change happens, or its clients keep
+// encrypting to keys that have moved.
+//
+// Two things this does not do, both recorded rather than quietly skipped. It is not queued — an update
+// that cannot be sent now is superseded by the next one, and a device list is a statement about *now*.
+// And it is not signed by the device it describes, which is what the specification asks for and what a
+// verifying peer checks; doing that means the device's own key, not this server's signing key.
+func (o *Outbox) SendDeviceListUpdate(ctx context.Context, destination string, content json.RawMessage) error {
+	if o == nil || o.peer == nil || destination == "" || destination == string(o.serverName) {
+		return nil
+	}
+	transaction := gomatrixserverlib.Transaction{
+		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
+		Origin:         o.serverName,
+		Destination:    spec.ServerName(destination),
+		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
+		EDUs: []gomatrixserverlib.EDU{{
+			Type:        deviceListUpdateEDU,
+			Origin:      string(o.serverName),
+			Destination: destination,
+			Content:     spec.RawJSON(content),
+		}},
+	}
+	if _, err := o.peer.Signed().SendTransaction(ctx, transaction); err != nil {
+		return fmt.Errorf("sending a device-list update to %s: %w", destination, err)
+	}
+	return nil
+}
+
+// deviceListUpdateEDU is the ephemeral event type that carries a device-list change.
+const deviceListUpdateEDU = "m.device_list_update"
+
 // groupByDestination splits the queue into one batch per peer, in the order the events were queued.
 func groupByDestination(rows []store.FederationOutbox) []outboxBatch {
 	index := map[string]int{}

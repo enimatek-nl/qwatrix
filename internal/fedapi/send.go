@@ -14,6 +14,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	fclient "github.com/matrix-org/gomatrixserverlib/fclient"
+	"github.com/matrix-org/gomatrixserverlib/spec"
 	"github.com/tidwall/gjson"
 )
 
@@ -166,10 +167,51 @@ func (h *Handler) parseRelayedEvent(ctx context.Context, raw json.RawMessage) (g
 // it somewhere else.
 func (h *Handler) handleEDUs(ctx context.Context, transaction gomatrixserverlib.Transaction) {
 	for _, edu := range transaction.EDUs {
-		slog.Debug("fedapi: ignored an ephemeral event this homeserver does not act on",
-			"edu_type", edu.Type, "origin", transaction.Origin)
+		if edu.Type != deviceListUpdateEDU {
+			slog.Debug("fedapi: ignored an ephemeral event this homeserver does not act on",
+				"edu_type", edu.Type, "origin", transaction.Origin)
+			continue
+		}
+		h.applyDeviceListUpdate(ctx, transaction.Origin, edu.Content)
 	}
-	_ = ctx
+}
+
+// applyDeviceListUpdate records that a peer's user has changed their encryption devices, so that the
+// people who share a room with them find out on their next sync.
+//
+// The sender is checked, not believed. A device list belongs to the server that hosts the user, and an
+// update about `@alice:other.example` arriving from anywhere else is either a mistake or an attempt to
+// have this server throw away Alice's keys on somebody's say-so. Note what is *not* checked here: the
+// update is not signed by the device it describes, which is what the specification asks for and what
+// this server does not yet verify because it does not yet send it either (see [Outbox.SendDeviceListUpdate]).
+func (h *Handler) applyDeviceListUpdate(ctx context.Context, origin spec.ServerName, content spec.RawJSON) {
+	if h.opts.DeviceLists == nil || len(content) == 0 {
+		return
+	}
+	userID := gjson.GetBytes(content, "user_id").String()
+	if userID == "" {
+		slog.Debug("fedapi: a device-list update named nobody", "origin", origin)
+		return
+	}
+	_, domain, err := matrix.ParseUserID(userID, string(h.opts.ServerName))
+	if err != nil {
+		slog.Debug("fedapi: a device-list update named an unusable user", "origin", origin, "user_id", userID)
+		return
+	}
+	if string(domain) != string(origin) {
+		// The claim and the identity behind it disagree, and only one of them can be right.
+		slog.Warn("fedapi: a device-list update arrived from a server that does not host the user",
+			"origin", origin, "user_id", userID)
+		return
+	}
+	deleted := gjson.GetBytes(content, "deleted").Bool()
+	if err := h.opts.DeviceLists.Announce(ctx, userID, deleted); err != nil {
+		slog.Warn("fedapi: could not record a device-list update from a peer",
+			"origin", origin, "user_id", userID, "error", err)
+		return
+	}
+	slog.Debug("fedapi: recorded a device-list update from a peer",
+		"origin", origin, "user_id", userID, "deleted", deleted)
 }
 
 // describeForPeer turns an ingest error into what a peer server is told.
