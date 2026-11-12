@@ -1,5 +1,0 @@
-FAIL TestDeviceListUpdates
-FAIL TestMessagesOverFederation
-FAIL TestSyncTimelineGap
-FAIL TestThreadReceiptsInSyncMSC4102
-PASS TestSync
