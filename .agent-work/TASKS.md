@@ -189,7 +189,7 @@ Every `[x]` must have evidence in `PROGRESS.md`.
 | T705b | Forward a peer's events on to the rest of the room (relay, with loop protection) | FR-73 | `[ ]` — until then a three-server room only hears from servers its members are directly joined to |
 | T712b | `m.device_list_updates` EDU in and out, so `/sync device_lists.changed` covers remote users | FR-74 | `[ ]` — **requirement measured in containers (cc37)**: complement's remote subtests have barry on hs2 only *upload device keys* (`uploadNewKeys`, no room event) while alice on hs1 must see him in `device_lists.changed`. No PDU crosses the boundary, so neither event delivery nor a local announcement can satisfy it — only a pushed EDU can. Shape: a `Kind` column on `store.FederationOutbox` so EDUs ride the same ledger, a federation hook in `devicelists` queueing one EDU per server sharing a room with the user, and `fedapi` ingest applying the EDU through the remote-capable announce path from 60a3a72 |
 | T708 | `/query/profile`, `/query/user/info`, `/user/keys/*`, `/backfill`, `/missings` | FR-74 | `[ ]` |
-| T709 | Restricted-rooms/spaces remote joins, `TestRestrictedRoomsRemoteJoin*` | FR-73 | `[ ]` |
+| T709 | Restricted-rooms/spaces remote joins, `TestRestrictedRoomsRemoteJoin*` | FR-73 | `[ ]`; **measured again at run 111 and diagnosed to the line**: a `restricted` join rule degrades to `invite` (safe direction, wrong answer), and fixing it means the authoriser being able to see a membership event from *another* room — a cross-room auth event, selected here and verified against its origin. `tests/api/restricted_join_test.go` carries the four transitions as named skips |
 
 ## M8 — Hardening + reporting
 
