@@ -161,7 +161,9 @@ the harder thing — the mandatory set, across both packages.
 
 The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
 rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,
-…); `.agent-work/COMPLEMENT-RESULTS.md` records them run by run.
+…); `.agent-work/COMPLEMENT-RESULTS.md` records them run by run, and
+`.agent-work/COMPLEMENT-STATUS.md` is the narrative of the earlier rounds, stopping at run 97 — which is
+exactly why it should not be cited for a current count.
 
 ### What moved, and what did not
 

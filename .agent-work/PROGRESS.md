@@ -1284,10 +1284,20 @@ so a refused event is destroyed rather than retried. Both are recorded (T742, T7
 patched, and `TestAReInviteAfterABanReachesTheVictim` carries the reproduction and skips with both
 named.
 
-Four documents also cited `.agent-work/COMPLEMENT-STATUS.md` as the compliance record. That file has
-never existed; the record is `COMPLEMENT-RESULTS.md`, which now also names the complement checkout
-every run is measured against — and admits that `-tags blacklist_common` does not satisfy
-complement's per-homeserver skip guards, so these counts are conservative rather than flattering.
+Four documents also cited `.agent-work/COMPLEMENT-STATUS.md` as the compliance record. It does exist — 332
+lines, tracked since the baseline commit — and the correction I wrote here first time, that the file "has
+never existed", was wrong: I checked the working tree and `HEAD` once, both said nothing, and I treated one
+look as proof of a negative that ended up in six documents. What is actually true is narrower and still
+worth fixing: `COMPLEMENT-STATUS.md` is the *narrative* record and stopped at run 97, while the sweeps
+continued, and citing it for a current count quoted a stale file as though it were the measurement. The
+per-run table is `COMPLEMENT-RESULTS.md`, which now also names the complement checkout every run is measured
+against — and admits that `-tags blacklist_common` does not satisfy complement's per-homeserver skip guards,
+so these counts are conservative rather than flattering.
+
+The workspace oddity behind the bad check is worth knowing: untracked files in this project have gone missing
+and reappeared between commands (`.agent/`, `AGENTS.md`, and this file all read as absent at some point
+today). `git ls-files` and `git show HEAD:<path>` are the reliable question to ask, and a negative answer
+from a single command is not evidence that something never existed.
 
 ## M8 stage 12: the invitation nobody would accept (T743-T745) — 89 of 95
 
