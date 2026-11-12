@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
@@ -202,17 +201,11 @@ func (q restrictedJoinQuerier) RestrictedRoomJoinInfo(ctx context.Context, roomI
 // a failure — "not in the room" is an answer.
 func (q restrictedJoinQuerier) membership(ctx context.Context, roomID string,
 	senderID spec.SenderID) (*store.Membership, error) {
-	id := string(senderID)
-	localpart := id
-	if strings.HasPrefix(id, "@") {
-		parsed, _, err := matrix.ParseUserID(id, string(q.service.cfg.ServerName))
-		if err != nil {
-			// A sender this server cannot parse is not a user it holds memberships for.
-			return nil, nil
-		}
-		localpart = parsed
-	}
-	member, err := q.service.store.Memberships.Get(ctx, roomID, localpart)
+	// The row key is a local part for this server's own users and a whole user ID for anybody
+	// else's — the same rule every other membership read uses, and what stops two homeservers'
+	// "bob" from answering for each other here.
+	member, err := q.service.store.Memberships.Get(ctx, roomID,
+		matrix.MembershipKey(string(senderID), string(q.service.cfg.ServerName)))
 	if err != nil {
 		if store.IsNotFound(err) {
 			return nil, nil
