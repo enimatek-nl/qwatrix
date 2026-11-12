@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -246,6 +247,49 @@ type outboxBatch struct {
 	rows        []store.FederationOutbox
 }
 
+// SplitDelivery reads a peer's answer to a transaction and says which queued copies it may clear.
+//
+// The status line carries no information here: a peer that refused every event inside still answers
+// 200, because the transaction itself was well-formed and each event's fate is reported per event. A
+// sender that clears its queue on the status has therefore deleted events the peer turned away — no
+// retry, no log, and a room on the far side quietly missing whatever it was. An event the peer does not
+// mention at all is treated the same way as one it refused: silence is not delivery.
+func SplitDelivery(rows []store.FederationOutbox, answer fclient.RespSend) (
+	delivered, refused []int64, reason string,
+) {
+	byEvent := make(map[string]fclient.PDUResult, len(answer.PDUs))
+	for eventID, result := range answer.PDUs {
+		byEvent[eventID] = result
+	}
+	for _, row := range rows {
+		result, mentioned := byEvent[row.EventID]
+		if mentioned && result.Error == "" {
+			delivered = append(delivered, row.ID)
+			continue
+		}
+		refused = append(refused, row.ID)
+		if reason == "" {
+			if !mentioned {
+				reason = fmt.Sprintf("%s answered for %s", row.Destination, row.EventID)
+				continue
+			}
+			if why := withoutPeerPrefix(result.Error); why != "" {
+				reason = fmt.Sprintf("%s refused %s: %s", row.Destination, row.EventID, why)
+			}
+		}
+	}
+	return delivered, refused, reason
+}
+
+// withoutPeerPrefix trims the string gomatrixserverlib puts in front of a peer's own refusal, which is
+// otherwise a wall of JSON in the middle of a log line.
+func withoutPeerPrefix(message string) string {
+	if i := strings.Index(message, "}"); i >= 0 && i+2 < len(message) {
+		return strings.TrimSpace(message[i+2:])
+	}
+	return strings.TrimSpace(message)
+}
+
 // groupByDestination splits the queue into one batch per peer, in the order the events were queued.
 func groupByDestination(rows []store.FederationOutbox) []outboxBatch {
 	index := map[string]int{}
@@ -265,6 +309,7 @@ func groupByDestination(rows []store.FederationOutbox) []outboxBatch {
 // deliver sends one peer everything this pass holds for it.
 func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
 	ids := make([]int64, 0, len(batch.rows))
+	sent := make([]store.FederationOutbox, 0, outboxEventsPerTransaction)
 	pdus := make([]json.RawMessage, 0, outboxEventsPerTransaction)
 	for i, row := range batch.rows {
 		if i >= outboxEventsPerTransaction {
@@ -282,6 +327,7 @@ func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
 			continue
 		}
 		ids = append(ids, row.ID)
+		sent = append(sent, row)
 		pdus = append(pdus, json.RawMessage(row.JSON))
 	}
 	if len(pdus) == 0 {
@@ -295,7 +341,8 @@ func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
 		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
 		PDUs:           pdus,
 	}
-	if _, err := o.peer.Signed().SendTransaction(ctx, transaction); err != nil {
+	answer, err := o.peer.Signed().SendTransaction(ctx, transaction)
+	if err != nil {
 		delay := outboxBackoff(batch.rows[0].Attempts)
 		next := time.Now().Add(delay).UnixMilli()
 		if deferErr := o.store.FederationOutbox.Deferred(ctx, ids, next, err.Error()); deferErr != nil {
@@ -304,6 +351,25 @@ func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
 		}
 		return 0, fmt.Errorf("sending a transaction to %s: %w", batch.destination, err)
 	}
+	// The peer answered, which is not the same as the peer taking the events: refusals live in the
+	// body of a 200, so the queue is cleared per event and no further.
+	accepted, rejected, why := SplitDelivery(sent, answer)
+	if len(rejected) > 0 {
+		delay := outboxBackoff(0)
+		if deferErr := o.store.FederationOutbox.Deferred(ctx, rejected,
+			time.Now().Add(delay).UnixMilli(), why); deferErr != nil {
+			slog.Error("fedapi: could not defer events a peer refused", "error", deferErr)
+		}
+		// This is the operator's only notice that a room is missing an event. Before it, the
+		// transaction was logged as delivered and the refusal was discarded with the queue row.
+		slog.Warn("fedapi: a peer refused events inside a transaction it accepted",
+			"destination", batch.destination, "events", len(rejected), "of", len(sent),
+			"reason", why)
+	}
+	if len(accepted) == 0 {
+		return 0, fmt.Errorf("%s refused every event in the transaction: %s", batch.destination, why)
+	}
+	ids = accepted
 	if err := o.store.FederationOutbox.Delete(ctx, ids); err != nil {
 		// The peer has the events. Leaving the rows queued means it is asked again, which is legal —
 		// transactions are idempotent by their ID and events by their event ID — and is the safer way
