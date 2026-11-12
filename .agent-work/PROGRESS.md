@@ -1365,3 +1365,34 @@ free; it is a request, and some peers report requests they cannot serve.
 Four tests remain and each is one unimplemented feature with a task row: inbound EDUs (`T706`),
 outlier events for sync gaps (`T715`), MSC3083 restricted joins (`T709`), and
 `timestamp_to_event` (`T714`).
+
+## M8 stage 14: a membership event is two announcements (T748-T750) — 92 of 95
+
+`TestDeviceListUpdates` had failed in every one of forty-nine runs that reached it, and it turned out
+to be three separate absences wearing one test name.
+
+- **The observer set was wrong** (`2d22829`). A device-list change was fanned out from *every room the
+  user has ever been in*, so a user who left a room kept announcing their new devices to the people who
+  had just been told to forget them. Membership changes now carry the room they happened in
+  (`AnnounceRoom`) — which is also the only scope that survives a leave being written, since asking
+  "which rooms is this user in" at that moment answers "none" and would silently drop the notification
+  that matters most.
+- **Nothing crossed the border** (`807c184`). An incoming transaction logged its ephemeral events and
+  dropped them; this server had no way to say it either. An `m.device_list_update` now goes to every
+  homeserver with a member in a room the local user is in — including when this server has no *local*
+  observer, because a room whose members are all remote is exactly the case where the message matters —
+  and an incoming one is recorded only when the sender hosts the user it names.
+- **Only one direction was announced** (`7851bd5`). A membership event tells a room what to do with the
+  subject's devices. It also has to tell the subject what to do with the room's: `changed` on joining,
+  `left` on leaving. Miss the second half and a client that walked into a room encrypts to an empty
+  device set, every server accepts the result, and the room looks healthy from every seat in it.
+
+Run 111 measures **92 of 95**, with `TestDeviceListUpdates` passing all ten subtests for the first
+time. It went 2 → 6 → 10 across those three commits, which is the clearest evidence yet that a test
+failing for three reasons looks exactly like a test failing for one.
+
+Left, and each is a feature rather than a fault: outlier persistence for sync gaps (`T715`), MSC3083
+restricted joins with the authorising server's signature (`T709`), and `timestamp_to_event` (`T714`).
+One honest gap in the work above is recorded as `T750`: these device-list updates are not signed by the
+device they describe, and this server's library writes the type field as `edu_type` where the ratified
+specification says `type`. Two homeservers built on this library agree; a verifying Synapse would not.
