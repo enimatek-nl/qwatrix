@@ -105,6 +105,17 @@ two differ in the specification and the server does not accept them interchangea
 `/rooms/{roomID}/join` accepts a room ID or a local alias. Who may perform a membership change is decided by the
 room's own events through the authorization rules — never by a special case in a handler.
 
+A `restricted` (MSC3083) room is honoured for a join of a room this server holds: each `allow` entry of the
+ratified type `m.room_membership` names one room — in practice a space — and membership of *that* room is
+what qualifies, so a space owns the doorways of the rooms it contains without any of them repeating a
+membership list. An entry of any other type is ignored, which is the direction that refuses rather than
+the one that admits. The join event then carries `join_authorised_via_users_server`, naming one of this
+server's own users who is joined to **both** rooms and may issue invites: that user is the witness the
+join is checked against, so the joiner cannot be named, and the field is dropped from a client's request
+before the event is built — a client allowed to name its own authoriser could enter any restricted room,
+signed by itself. What is not implemented is authorising *another server's* join: `/make_join` does not
+consult these rules yet, so a remote user who qualifies is refused rather than admitted.
+
 A join for a room this server does not hold is offered to the servers the client named with
 `?server_name=` (or `?via=`) and, failing those, to the room ID's own home server. None of them having
 admitted the user is reported as an error naming the room; it is never answered with a half-built room.
