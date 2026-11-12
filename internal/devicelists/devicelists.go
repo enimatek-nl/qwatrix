@@ -66,6 +66,54 @@ func (s *Service) WithPeer(peer DeviceListPeer) *Service {
 	return s
 }
 
+// RefreshRoom re-weights what one user cares about, after that user's own membership of a room
+// changed: joining makes the room's other members' device lists news, leaving makes them history.
+//
+// This is the direction that is easy to miss, because nothing about the *other* members changed. Carol
+// joins a room Alice and Bob have been talking in, and the set of people Carol must encrypt to moved —
+// without this report her client encrypts to an empty set and the room accepts her messages as if
+// nothing were wrong. Symmetrically, Alice leaving has to tell Alice to drop Bob's keys, or she keeps
+// encrypting for a stranger she no longer speaks to.
+//
+// Only a local user is refreshed: the observers of a remote user's own interest live on their server.
+func (s *Service) RefreshRoom(ctx context.Context, userID, roomID string, joined bool) error {
+	key := matrix.MembershipKey(userID, s.serverName)
+	if strings.Contains(key, ":") {
+		return nil
+	}
+	members, err := s.store.Memberships.List(ctx, roomID, []string{string(matrix.MembershipJoin)}, nil)
+	if err != nil {
+		return err
+	}
+	position, err := s.store.Events.MaxPosition(ctx)
+	if err != nil {
+		return err
+	}
+	position++
+	reported := 0
+	for _, member := range members {
+		if member.UserID == userID || member.UserID == key {
+			continue
+		}
+		change := store.DeviceListChange{
+			UserID:    member.UserID,
+			Observer:  key,
+			Left:      !joined,
+			StreamPos: position,
+		}
+		if err := s.store.DeviceLists.Append(ctx, &change); err != nil {
+			return err
+		}
+		reported++
+	}
+	if reported > 0 && s.notifier != nil {
+		s.notifier.Publish()
+	}
+	slog.Debug("device lists: refreshed what a member cares about in a room",
+		"user_id", userID, "room_id", roomID, "joined", joined, "members", reported)
+	return nil
+}
+
 // AnnounceRoom reports a membership change in one named room, which is the scope a membership change
 // actually has.
 //

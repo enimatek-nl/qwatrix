@@ -1109,6 +1109,9 @@ type DeviceListAnnouncer interface {
 	// event has — and the only scope that still exists once a leave has been written, because the
 	// user who left is then in no rooms at all.
 	AnnounceRoom(ctx context.Context, userID, roomID string, left bool) error
+	// RefreshRoom re-weights the joining or leaving user's own interest in the room's other members,
+	// which is the same event read from the other end.
+	RefreshRoom(ctx context.Context, userID, roomID string, joined bool) error
 }
 
 // WithPresenceObserver installs the presence observer and returns the service for chaining.
@@ -1138,6 +1141,16 @@ func (s *Service) observeMembershipPresence(ctx context.Context, userID, members
 func (s *Service) announceMembership(ctx context.Context, roomID, userID, membership string) {
 	if s.announceDevices == nil {
 		return
+	}
+	// The event is two announcements. Everyone else in the room has to learn what to do with this
+	// user's devices; this user has to learn what to do with everybody else's. Only one of those is
+	// obvious from the event, and a client that is told the first and not the second encrypts to an
+	// empty device set in a room it can see perfectly well.
+	if membership == string(matrix.MembershipJoin) || membership == string(matrix.MembershipLeave) {
+		if err := s.announceDevices.RefreshRoom(ctx, userID, roomID, membership == string(matrix.MembershipJoin)); err != nil {
+			slog.Warn("roomserver: could not refresh a member's device-list interest",
+				"user_id", userID, "room_id", roomID, "membership", membership, "error", err)
+		}
 	}
 	switch membership {
 	case string(matrix.MembershipJoin), string(matrix.MembershipInvite):

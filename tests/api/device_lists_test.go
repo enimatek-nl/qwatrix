@@ -291,3 +291,80 @@ func joinParams(since string) url.Values {
 	}
 	return params
 }
+
+// TestJoiningARoomReportsTheMembersAlreadyInIt covers the direction that only appears once you think
+// about the room instead of the user.
+//
+// Carol joins a room Alice and Bob have been talking in. Nobody's devices changed — but the set of
+// people Carol must encrypt to did, and her client learns that only if the server says "these users'
+// device lists are now yours to care about". Without it Carol sends messages encrypted to nobody, and
+// the room looks like it is accepting her messages perfectly.
+func TestJoiningARoomReportsTheMembersAlreadyInIt(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "hostalice", "pw-hostalice", false)
+	bob := server.Register(t, "memberbob", "pw-memberbob", false)
+	carol := server.Register(t, "latecarol", "pw-latecarol", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, roomID)
+
+	before := carol.MustSync(t, server, url.Values{"timeout": []string{"0"}})
+	carol.MustJoinRoom(t, server, roomID)
+
+	since := before.NextBatch
+	deadline := time.Now().Add(10 * time.Second)
+	seen := map[string]bool{}
+	for len(seen) < 2 && time.Now().Before(deadline) {
+		next := carol.MustSync(t, server, joinParams(since))
+		for _, changed := range next.DeviceLists.Changed {
+			seen[changed] = true
+		}
+		if next.NextBatch != "" {
+			since = next.NextBatch
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	for _, want := range []string{alice.UserID, bob.UserID} {
+		if !seen[want] {
+			t.Errorf("carol joining was never told to care about %s's devices; saw %v", want, seen)
+		}
+	}
+}
+
+// TestLeavingARoomReportsTheMembersItLeavesBehind is the same rule in the other direction, and it is
+// reported to the person who went away.
+//
+// Alice leaves a room. From now on she has no reason to hold Bob's keys, and her client has to be told
+// to drop them by the one server that knows she is gone. A client that keeps them keeps encrypting for
+// a stranger she no longer speaks to.
+func TestLeavingARoomReportsTheMembersItLeavesBehind(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "leaveralice", "pw-leaveralice", false)
+	bob := server.Register(t, "staybob", "pw-staybob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, roomID)
+	alice.MustJoinRoom(t, server, roomID)
+
+	first := alice.MustSync(t, server, url.Values{"timeout": []string{"0"}})
+	server.Do(t, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) + "/leave",
+		Token:  alice.AccessToken,
+	}).MustStatus(t, http.StatusOK)
+
+	since := first.NextBatch
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		next := alice.MustSync(t, server, joinParams(since))
+		if containsString(next.DeviceLists.Left, bob.UserID) {
+			return
+		}
+		if next.NextBatch != "" {
+			since = next.NextBatch
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("alice left the room and was never told to stop caring about bob's devices: %+v",
+				next.DeviceLists)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
