@@ -34,6 +34,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 110 | `2d22829` | **91 / 95** | unchanged at the top level, but `TestDeviceListUpdates/when_local_user_leaves_a_room` began passing once device-list changes stopped reaching people who had stopped sharing a room |
 | 109 | `1bcfefb` | **91 / 95** | `TestUnknownEndpoints` and `TestMediaWithoutFileName` pass: the first needed an endpoint that had never been served, the second needed this server to ask peers by paths peers actually speak |
 | 108 | `2a83604` | **89 / 95** | `TestEventAuth` passes in a sweep for the first time, as does `TestUnbanViaInvite` — the two federation tests that have moved most, both fixed since run 105 |
 | 107 | `6998aca` | **88 / 95** | `TestUnbanViaInvite` **passes**; `TestEventAuth` fails — and passes three times on its own against the same image, a delivery-latency race written up below |
