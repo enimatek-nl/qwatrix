@@ -81,16 +81,10 @@ func (o *Outbox) DrainOnce(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	// Invitations travel by their own endpoint, and are handed back co-signed.
-	rows, signed, unsigned, why := o.coSignInvites(ctx, rows)
+	rows, signed := o.coSignInvites(ctx, rows)
 	if len(signed) > 0 {
 		if err := o.store.FederationOutbox.Delete(ctx, signed); err != nil {
 			slog.Error("fedapi: could not clear invitations delivered to a peer", "error", err)
-		}
-	}
-	if len(unsigned) > 0 {
-		if err := o.store.FederationOutbox.Deferred(ctx, unsigned,
-			time.Now().Add(outboxBackoff(0)).UnixMilli(), why); err != nil {
-			slog.Error("fedapi: could not defer an invitation that could not be co-signed", "error", err)
 		}
 	}
 	coSignedCount := len(signed)
@@ -129,8 +123,9 @@ func (o *Outbox) DrainOnce(ctx context.Context) (int, error) {
 // rewritten, and so are the copies still waiting for other servers, because they are queued as JSON
 // rather than re-read at delivery time, and a stale copy would be refused by the very next peer.
 func (o *Outbox) coSignInvites(ctx context.Context, rows []store.FederationOutbox) (
-	remaining []store.FederationOutbox, delivered, deferred []int64, reason string,
+	remaining []store.FederationOutbox, delivered []int64,
 ) {
+
 	remaining = make([]store.FederationOutbox, 0, len(rows))
 	coSignedByEvent := map[string]string{}
 	for _, row := range rows {
@@ -140,14 +135,15 @@ func (o *Outbox) coSignInvites(ctx context.Context, rows []store.FederationOutbo
 		}
 		coSigned, err := o.requestInviteSignature(ctx, row)
 		if err != nil {
-			// Retryable: the peer may be unreachable, and an invitation that could not be co-signed
-			// today is still an invitation tomorrow. It is not sent unsigned to anybody in the
-			// meantime, since every copy would be refused for the same reason.
-			deferred = append(deferred, row.ID)
-			if reason == "" {
-				reason = err.Error()
-			}
-			slog.Warn("fedapi: an invitation could not be co-signed by the invitee's server",
+			// The peer may be unreachable, may not implement this endpoint at all, or may simply
+			// refuse to sign. None of those is a reason to stop inviting: the invitation is kept
+			// queued and goes out by the ordinary path as well, unsigned, which is what a peer
+			// without this endpoint expects and what every homeserver did before the second
+			// signature was asked for. A peer that *does* verify will refuse the unsigned copy, and
+			// that refusal is now reported per event rather than swallowed, so the invitation stays
+			// in the queue with the reason beside it instead of vanishing.
+			remaining = append(remaining, row)
+			slog.Warn("fedapi: the invitee's server did not co-sign an invitation; sending it unsigned",
 				"room_id", row.RoomID, "event_id", row.EventID, "destination", row.Destination,
 				"error", err)
 			continue
@@ -171,7 +167,7 @@ func (o *Outbox) coSignInvites(ctx context.Context, rows []store.FederationOutbo
 			}
 		}
 	}
-	return remaining, delivered, deferred, reason
+	return remaining, delivered
 }
 
 // invitesUserAt reports whether a queued event invites one of the given destination's users — the case
