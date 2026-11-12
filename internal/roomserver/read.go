@@ -343,6 +343,61 @@ func (s *Service) checkReadable(ctx context.Context, roomID string, opts RenderO
 	}
 }
 
+// TimestampRequest asks where a room's history was at a given moment.
+type TimestampRequest struct {
+	RoomID string
+	// Timestamp is milliseconds since the Unix epoch — the same clock an event's own
+	// `origin_server_ts` is written in, which is what makes the comparison meaningful.
+	Timestamp int64
+	// Forward asks for the earliest event at or after the moment. Backward asks for the latest one at
+	// or before it. These are different questions and, in a room whose events share a millisecond,
+	// they have different answers.
+	Forward bool
+	Reader  RenderOptions
+}
+
+// TimestampResponse is the event found, with the stamp it actually carries: a client jumps on from
+// here, and an answer whose timestamp disagrees with the event it names sends the client somewhere it
+// did not ask to go.
+type TimestampResponse struct {
+	OriginServerTS int64  `json:"origin_server_ts"`
+	EventID        string `json:"event_id"`
+}
+
+// EventAtTimestamp answers "what was happening at this moment?".
+//
+// Two decisions in here are the whole feature. Nothing is invented at the ends: a search that runs past
+// the newest event, or back before the room existed, has no answer and says so, because clamping would
+// turn "the room knows nothing about 1970" into a confident claim about its first message. And the reader
+// is held to the room's history rule rather than to a rule invented for this endpoint — it is a read of
+// history, so `/messages` and this cannot disagree about who may see the room's past.
+func (s *Service) EventAtTimestamp(ctx context.Context, req TimestampRequest) (*TimestampResponse, error) {
+	if err := s.checkReadable(ctx, req.RoomID, req.Reader); err != nil {
+		// The same answer `/messages` gives a stranger, for the same reason: a 404 here is an
+		// existence oracle over a room ID nobody may read.
+		if apiErr, ok := matrix.AsAPIError(err); ok && apiErr.Status == http.StatusNotFound {
+			return nil, matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+				"You are not permitted to read the history of this room")
+		}
+		return nil, err
+	}
+	// A former member's question is answered inside the stretch of history they may still read; the
+	// ceiling is what keeps the answer from naming an event their own client would then be refused.
+	row, err := s.store.Events.NearestByTimestamp(ctx, req.RoomID, req.Timestamp, req.Forward,
+		s.readCutoff(req.Reader))
+	if err != nil {
+		if store.IsNotFound(err) {
+			direction := "before"
+			if req.Forward {
+				direction = "after"
+			}
+			return nil, matrix.NewNotFound("this room has no event %s timestamp %d", direction, req.Timestamp)
+		}
+		return nil, err
+	}
+	return &TimestampResponse{OriginServerTS: row.OriginServerTS, EventID: row.EventID}, nil
+}
+
 // StateEventRows returns a room's current state as rows.
 func (s *Service) StateEventRows(ctx context.Context, roomID string, opts RenderOptions) ([]json.RawMessage, error) {
 	if err := s.checkReadable(ctx, roomID, opts); err != nil {

@@ -125,6 +125,17 @@ type EventRepo interface {
 	ByEventIDs(ctx context.Context, eventIDs []string) ([]EventRow, error)
 	// Range returns events matching q in stream order.
 	Range(ctx context.Context, q EventQuery) ([]EventRow, error)
+	// NearestByTimestamp finds the event closest to a moment in a room's history.
+	//
+	// Forward asks for the earliest event stamped at or after the moment; backward asks for the latest
+	// one at or before it. Those are two questions, and a room whose events share a millisecond has two
+	// different right answers — so the tie is broken by insertion order, oldest first going forward and
+	// newest first going back, rather than by whatever the index happens to yield.
+	//
+	// maxPosition, when positive, is a ceiling on the row's stream position: a former member's view of a
+	// room ends where their membership did, and a lookup that walked past it would answer a question
+	// about history that reader cannot have.
+	NearestByTimestamp(ctx context.Context, roomID string, ts int64, forward bool, maxPosition int64) (*EventRow, error)
 	// Count returns how many events match q.
 	Count(ctx context.Context, q EventQuery) (int64, error)
 	// MaxPosition returns the highest stream position in the database, or 0 when empty.
@@ -257,6 +268,34 @@ func (r *EventRepoImpl) Range(ctx context.Context, q EventQuery) ([]EventRow, er
 		return nil, fmt.Errorf("ranging events: %w", err)
 	}
 	return rows, nil
+}
+
+// NearestByTimestamp implements [EventRepo].
+func (r *EventRepoImpl) NearestByTimestamp(ctx context.Context, roomID string, ts int64,
+	forward bool, maxPosition int64) (*EventRow, error) {
+	db := session(ctx, r.db).Model(&EventRow{}).
+		Where("room_id = ?", roomID).
+		// The same two exclusions every history read makes: an event this server does not accept is
+		// not history, and a state snapshot written for a left room is a bookkeeping copy of state,
+		// not something that happened.
+		Where("state_snapshot_only = ?", false).
+		Where("rejected_reason = '' OR rejected_reason IS NULL")
+	if forward {
+		db = db.Where("origin_server_ts >= ?", ts).Order("origin_server_ts ASC, id ASC")
+	} else {
+		db = db.Where("origin_server_ts <= ?", ts).Order("origin_server_ts DESC, id DESC")
+	}
+	if maxPosition > 0 {
+		db = db.Where("id <= ?", maxPosition)
+	}
+	var rows []EventRow
+	if err := db.Limit(1).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("looking for an event near timestamp %d in %q: %w", ts, roomID, err)
+	}
+	if len(rows) == 0 {
+		return nil, fmt.Errorf("event near timestamp %d in %q: %w", ts, roomID, ErrNotFound)
+	}
+	return &rows[0], nil
 }
 
 // Count implements [EventRepo].

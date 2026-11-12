@@ -342,6 +342,51 @@ func handleMessages(deps Deps) http.HandlerFunc {
 	}
 }
 
+// handleTimestampToEvent answers "where was this room at this moment?", which is how a client jumps
+// into the middle of a history it has never paged.
+//
+// Both parameters are demanded rather than guessed. The direction has exactly two values and they are
+// opposite searches — in a room whose events share a millisecond they find different events — and a
+// timestamp without a unit or a value is not a question. Guessing either would answer something the
+// client did not ask.
+func handleTimestampToEvent(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		roomID := r.PathValue("roomID")
+		query := r.URL.Query()
+
+		direction := query.Get("dir")
+		if direction != "f" && direction != "b" {
+			httpx.RespondError(w, r, matrix.NewInvalidParam(`dir must be "f" or "b"`))
+			return
+		}
+		raw, timestamp, err := readInt64(query.Get("ts"))
+		if raw == "" || err != nil {
+			httpx.RespondError(w, r, matrix.NewInvalidParam(
+				"ts must be an integer number of milliseconds since the Unix epoch"))
+			return
+		}
+		response, err := deps.Rooms.EventAtTimestamp(r.Context(), roomserver.TimestampRequest{
+			RoomID:    roomID,
+			Timestamp: timestamp,
+			Forward:   direction == "f",
+			Reader:    dReader(deps, r, roomID, session),
+		})
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, response)
+	}
+}
+
+// readInt64 reads a query parameter as an integer, keeping the raw text so a caller can tell "absent"
+// from "zero" without a second lookup.
+func readInt64(raw string) (string, int64, error) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	return raw, value, err
+}
+
 func handleMembers(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session := httpx.MustSession(r)

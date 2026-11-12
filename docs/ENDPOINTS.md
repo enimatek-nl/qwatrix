@@ -78,6 +78,7 @@ against a server that has deliberately not enabled it.
 | `GET` | `/rooms/{roomID}/state` | [Full state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstate) |
 | `GET` | `/rooms/{roomID}/event/{eventID}` | [Getting an event](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomideventeventid) |
 | `GET` | `/rooms/{roomID}/messages` | [Message pagination](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmessages) |
+| `GET` | `/rooms/{roomID}/timestamp_to_event` | [Get the event at a point in time](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event) |
 | `POST` | `/rooms/{roomID}/redact/{eventID}` | [Redaction](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidredacteventid) |
 | `PUT` | `/rooms/{roomID}/redact/{eventID}/{txnID}` | the transaction-scoped form of the row above |
 | `GET` | `/rooms/{roomID}/aliases` | [Room aliases](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidualiases) |
@@ -119,6 +120,14 @@ consult these rules yet, so a remote user who qualifies is refused rather than a
 A join for a room this server does not hold is offered to the servers the client named with
 `?server_name=` (or `?via=`) and, failing those, to the room ID's own home server. None of them having
 admitted the user is reported as an error naming the room; it is never answered with a half-built room.
+
+`/rooms/{roomID}/timestamp_to_event?ts=&dir=` searches the room's history for a moment: `dir=f` finds the
+earliest event stamped at or after it, `dir=b` the latest at or before. The direction is required because
+they are opposite questions, and in a room whose events share a millisecond they find different events —
+ties are broken by the order the events were written, oldest going forward and newest going back. Running
+past either end finds nothing (`M_NOT_FOUND`) rather than clamping to the nearest event, and the reader is
+held to the room's history rule exactly as `/messages` holds it, so the two can never disagree about who
+may see the room's past.
 
 `/rooms/{roomID}/state/{eventType}` with no state key is the empty state key, which is a real
 tuple rather than an absent one; the trailing-slash spelling and a state key containing a
