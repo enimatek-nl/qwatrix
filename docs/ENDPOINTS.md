@@ -60,8 +60,8 @@ the only stage offered is `m.login.dummy`, and a failed `m.login.password` answe
 | `GET` | `/_synapse/admin/v1/register` (exact) | not in the Matrix spec — the de-facto admin API Complement drives |
 | `POST` | `/_synapse/admin/v1/register` (exact) | as above |
 
-This is not standardised, so it is documented in [docs/SYNAPSE-COMPATIBILITY.md](SYNAPSE-COMPATIBILITY.md): the
-`GET` answers a single-use nonce, and the `POST` requires the HMAC-SHA1 `mac` over
+This is not standardised, so it is documented here rather than linked away to a document that would only ever
+duplicate this paragraph: the `GET` answers a single-use nonce, and the `POST` requires the HMAC-SHA1 `mac` over
 `nonce NUL username NUL password NUL ("admin"|"notadmin")` keyed with the registration secret. When no secret is
 configured both answer `404 M_UNRECOGNIZED`, which is what makes a test that needs this endpoint skip rather than fail
 against a server that has deliberately not enabled it.
