@@ -1335,3 +1335,33 @@ need: inbound EDUs (`T706`), MSC3030 gaps (`T715`), MSC4006 media (`T719`), MSC3
 The measuring is also better than the diagnosing this time: `tests/unit/federation_delivery_answer_test.go`
 pins that a transaction answer clears only the events it answered for, and `tests/api/syncban_test.go`
 carries the whole ban-unban-invite sequence as a passing test rather than a skipping one.
+
+## M8 stage 13: two endpoints that were never there (T722b, T746, T747) — 91 of 95
+
+`TestUnknownEndpoints` had failed every run since it was first measured, and it was named for the
+wrong thing: it asks whether a wrong method on a real endpoint says 405, and `PUT /_matrix/key/v2/query`
+said 404 because **the endpoint had never been served**. A 404 is not a conservative answer here — the
+server-key API is in the specification, so 404 was a claim this server does not speak the key API,
+which is false.
+
+- `c289142` serves `POST /_matrix/key/v2/query`. It answers for one server name, this one's, because
+  those are the keys this server holds; other names are left out of the result, which the specification
+  allows explicitly (an unknown server is omitted, and an empty result is a correct answer, not an
+  error). Refusing the whole batch because one name was unknown would have cost a peer the keys it
+  *could* have had. Being a notary for other servers means fetching, caching and signing their key
+  documents — a cache with a trust decision in it, recorded as T747 rather than improvised.
+- `564aab0` + `1bcfefb` fix remote media, which had never worked against anybody but this server: it
+  asked peers by `/_matrix/federation/v1/media/download/{mediaID}`, its own draft shape, while every
+  other implementation answers `/_matrix/media/v3/download/{origin}/{mediaId}` or the ratified
+  `/_matrix/federation/v1/download/{serverName}/{mediaId}`. A media ID is a pointer into somebody
+  else's storage, so a wrong guess is a broken image forever.
+
+Run 109 measures **91 of 95**. The order of those three paths is worth keeping as a fact rather than a
+preference: the legacy unauthenticated path goes first because **every** implementation answers it, and
+the first measurement of the "correct" order — ratified path first — was paid for by complement's mock
+recording an unexpected request as a fault against us. Asking a peer by a route it does not have is not
+free; it is a request, and some peers report requests they cannot serve.
+
+Four tests remain and each is one unimplemented feature with a task row: inbound EDUs (`T706`),
+outlier events for sync gaps (`T715`), MSC3083 restricted joins (`T709`), and
+`timestamp_to_event` (`T714`).

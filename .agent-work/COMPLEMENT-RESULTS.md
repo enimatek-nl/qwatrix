@@ -34,6 +34,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 109 | `1bcfefb` | **91 / 95** | `TestUnknownEndpoints` and `TestMediaWithoutFileName` pass: the first needed an endpoint that had never been served, the second needed this server to ask peers by paths peers actually speak |
 | 108 | `2a83604` | **89 / 95** | `TestEventAuth` passes in a sweep for the first time, as does `TestUnbanViaInvite` — the two federation tests that have moved most, both fixed since run 105 |
 | 107 | `6998aca` | **88 / 95** | `TestUnbanViaInvite` **passes**; `TestEventAuth` fails — and passes three times on its own against the same image, a delivery-latency race written up below |
 | 106 | `4671516` | **88 / 95** | `TestUnbanViaInvite` **passes for the first time** (invitations are co-signed by the invited user's server). `TestEventAuth` falls back: complement's mock peer has no invite endpoint, so the first co-signing commit stranded every invitation aimed at it, and `6998aca` sends those unsigned rather than never |
@@ -72,7 +73,7 @@ every run above — which is exactly why the fault survived all of them. It matt
 single-listener deployment, not to this suite. Quote 88 / 95 as the current number, and re-sweep
 before attributing any change to that commit.
 
-### Still failing at run 108, and what each one needs
+### Still failing at run 109, and what each one needs
 
 | test | the behaviour, not the symptom |
 | --- | --- |
@@ -80,8 +81,6 @@ before attributing any change to that commit.
 | `TestSyncTimelineGap` | needs **outlier events** — persisting an event whose history is not yet connected — before a gapped timeline can be filled (T713) |
 | `TestRestrictedRoomsLocalJoin` | a restricted join needs the server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join event (T709, MSC3083) |
 | `TestJumpToDateEndpoint` | needs `GET /_matrix/client/v1/rooms/{roomID}/timestamp_to_event` and the application-service read that the blueprint's set-up uses |
-| `TestMediaWithoutFileName` | complement names the media origin by its **container host:port** (`host.containers.internal:1024`) while the server's name is `hs1:8008`; no listener of this server carries that host, so the media is not this server's to serve. Deliberately not chased — passing it would mean bending media-origin matching to a container artefact |
-| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated key notary. Passing it means registering a decoy route for an endpoint this server does not implement, which is a test-suite-shaped answer rather than a true one |
 
 ## Run 1 — 2025-11-09 20:16, commit state after M0–M3 (rooms + sync)
 
