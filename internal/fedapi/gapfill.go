@@ -17,8 +17,24 @@ import (
 // server fetch history forever on its own bandwidth for events nobody asked about. The ceiling is what
 // turns "the peer is telling the truth" into an assumption that costs something bounded when it is not.
 const (
-	// gapFillRounds is how many requests to the peer one refused event may cause.
-	gapFillRounds = 5
+	// gapFillRequests is how many requests to one peer one refused event may cause.
+	//
+	// The bound is on the work, not on the number of tries, and the difference matters. A peer asked for
+	// a gap may answer with a window of it — complement's own federation mock answers with the last ten
+	// events regardless of how deep the gap is, which is a defensible thing for a homeserver to do too.
+	// Each further event then costs one more request, so a ceiling of a few tries refuses a gap of twelve
+	// events that could be bridged honestly, and two servers that both hold all of a room end up
+	// permanently split over it. Forty capped requests are a bounded amount of bandwidth and latency
+	// spent on one event a peer chose to send. A hundred is the point at which the walk stops being a
+	// way to keep up with a busy room and starts being a way to spend an afternoon on one peer's word:
+	// it is also how many events the largest legitimate gap-filling answer can hold, so the ceiling says
+	// "one room-sized surprise", not "one request".
+	//
+	// A gap deeper than this is not answered by a bigger number. It is answered by the room's state
+	// arriving whole — a backfill, or the outlier handling that stores an event with the state its peer
+	// vouches for — and a server that walked a thousand events one by one would have spent a thousand
+	// round trips saying no.
+	gapFillRequests = 100
 	// gapFillEvents is how many events one request may bring back. The specification caps the
 	// endpoint at 100; asking for the cap means a peer holding a long run of history can bridge a
 	// long gap in one round trip instead of one event per request.
@@ -40,37 +56,125 @@ const (
 // can take the whole run. It also needs something this server holds to start from, which is why
 // roomserver.MissingPredecessorError carries the predecessors it does have.
 //
-// `GET /event/{eventID}` asks for one event. Slower, and the fallback for a peer that serves only that.
+// `GET /event/{eventID}` asks for one event. Slower per event, and the fallback for a peer that serves
+// only that — which is also the only question that makes progress when the bulk endpoint answers with a
+// window of the gap instead of all of it.
 //
 // The loop is a loop and not recursion because a peer can describe a cycle: A follows B, B follows A.
-// Each round fetches what the room server just said it needs and retries the event the peer actually
-// sent, so progress is visible in the log and the bound is a real stop.
+// Each step fetches what the room server just said it needs and retries the event the peer actually
+// sent, so progress is visible in the log and the request budget is a stop rather than a suggestion.
 func (h *Handler) admitWithGapFill(ctx context.Context, origin, roomID string, event gomatrixserverlib.PDU) error {
-	err := h.opts.Join.AcceptFederationEvent(ctx, roomID, event)
-	var gap *roomserver.MissingPredecessorError
-	for round := 0; ; round++ {
+	walker := &gapWalker{handler: h, ctx: ctx, origin: origin, roomID: roomID, latest: event.EventID(),
+		fetched: map[string]bool{event.EventID(): true}, attempted: map[string]bool{},
+		held: map[string]gomatrixserverlib.PDU{}}
+
+	for {
+		err := h.opts.Join.AcceptFederationEvent(ctx, roomID, event)
 		if err == nil {
 			return nil
 		}
+		var gap *roomserver.MissingPredecessorError
 		if !errors.As(err, &gap) {
 			return err
 		}
-		if round >= gapFillRounds {
-			slog.Warn("fedapi: gave up filling a gap in a federated room",
-				"room_id", roomID, "missing_event_id", gap.EventID, "rounds", round)
+		if !walker.placeGap(gap) {
+			// The walk ran out of road — the peer could not supply an event, or the events it supplies
+			// do not reach back to anything this server holds. The refusal the room server gave is the
+			// true answer, and it names what is still missing.
+			if walker.outOfBudget() {
+				slog.Warn("fedapi: gave up filling a gap in a federated room",
+					"room_id", roomID, "missing_event_id", gap.EventID, "requests", walker.requests)
+			}
 			return err
 		}
-		if !h.fetchMissingEvents(ctx, origin, roomID, event.EventID(), gap) {
-			// The bulk endpoint answered nothing this server could use — a peer that does not serve
-			// it, or one that claims to have nothing between the two points. Ask for the one event
-			// the room server named, which is the question the oldest peers can still answer.
-			if !h.fetchEvent(ctx, origin, roomID, gap.EventID) {
-				// Nothing could be fetched, so the original refusal is the answer to give back: it is
-				// the true one, and it names what is missing.
-				return err
+	}
+}
+
+// gapWalker is the state of one gap-filling walk: how much of the peer's bandwidth has been spent, what
+// has been asked for, what has been tried, and what arrived but cannot be placed yet.
+//
+// The last of those is the reason this is a type and not a loop. An event fetched from a peer is not
+// storable just because it arrived: it follows an event this server also does not have. Storing it would
+// be the detached fragment this package exists to prevent, and refusing it loses a piece of a gap the
+// server is halfway across. So a fetched event is *held*, the walk moves to the event before it, and the
+// held ones get their turn once the ground under them appears.
+//
+// `fetched` and `attempted` are what make the walk terminate. A peer can describe a cycle — A follows B,
+// B follows A — and a walker with no memory of where it has been follows it forever.
+type gapWalker struct {
+	handler *Handler
+	ctx     context.Context
+	origin  string
+	roomID  string
+	// latest is the event the peer actually sent: the far end of the gap, and the point the bulk
+	// endpoint is asked to fill up to.
+	latest   string
+	requests int
+	// bulkAsked records that the bulk endpoint has been given its one chance. Its answer is a function
+	// of the two points named in the request, and those do not move while a gap is being filled: the
+	// anchors are the predecessors this server holds and the room's tip, and neither changes by storing
+	// events in the middle. Asking twice buys a round trip to be handed a window already declined.
+	bulkAsked bool
+	fetched   map[string]bool
+	attempted map[string]bool
+	held      map[string]gomatrixserverlib.PDU
+}
+
+func (w *gapWalker) outOfBudget() bool { return w.requests >= gapFillRequests }
+
+// placeGap puts one named missing event where it belongs, walking further back into the gap as needed.
+// It reports whether anything was stored, which is the only signal the caller has that the walk is
+// approaching the room rather than treading water.
+func (w *gapWalker) placeGap(gap *roomserver.MissingPredecessorError) bool {
+	for {
+		if w.requests >= gapFillRequests {
+			return false
+		}
+		if !w.bulkAsked {
+			w.bulkAsked = true
+			if len(gap.Anchors) > 0 {
+				w.requests++
+				w.handler.fetchMissingEvents(w.ctx, w.origin, w.roomID, w.latest, gap, w.held)
+				return true
 			}
 		}
-		err = h.opts.Join.AcceptFederationEvent(ctx, roomID, event)
+		if !w.fetched[gap.EventID] {
+			w.fetched[gap.EventID] = true
+			w.requests++
+			for _, candidate := range w.handler.requestEvent(w.ctx, w.origin, w.roomID, gap.EventID) {
+				w.held[candidate.EventID()] = candidate
+			}
+			if _, ok := w.held[gap.EventID]; !ok {
+				// The peer was asked and did not produce the event. Every other question it can answer
+				// has been answered; this one is why the gap is a gap.
+				return false
+			}
+		}
+		candidate, ok := w.held[gap.EventID]
+		if !ok || w.attempted[gap.EventID] {
+			// Either nothing ever arrived under that name, or placing it was already tried and the event
+			// before it has still not appeared. Both are the end of this walk.
+			return false
+		}
+		w.attempted[gap.EventID] = true
+		err := w.handler.opts.Join.AcceptFederationEvent(w.ctx, w.roomID, candidate)
+		if err == nil {
+			delete(w.held, candidate.EventID())
+			// Storing this event changes what every other held event was waiting for, so the record of
+			// which ones could not be placed is dropped rather than kept: it describes a room that no
+			// longer looks like this one. Cleared only on a store, which is what keeps a cycle of held
+			// events — A follows B, B follows A — from restarting the walk forever.
+			w.attempted = map[string]bool{}
+			return true
+		}
+		var deeper *roomserver.MissingPredecessorError
+		if !errors.As(err, &deeper) {
+			slog.Debug("fedapi: refused a fetched gap-fill event",
+				"room_id", w.roomID, "event_id", gap.EventID, "error", err)
+			return false
+		}
+		// The event arrived and still cannot be placed: the ground under it is missing too. Walk on.
+		gap = deeper
 	}
 }
 
@@ -80,7 +184,8 @@ func (h *Handler) admitWithGapFill(ctx context.Context, origin, roomID string, e
 // It reports whether anything was admitted. A refusal to admit one event of a batch is not a refusal of
 // the batch: a peer returning fifty events this server cannot authenticate should still have its honest
 // events stored, and the room server decides event by event exactly as it does for a transaction.
-func (h *Handler) fetchMissingEvents(ctx context.Context, origin, roomID, latest string, gap *roomserver.MissingPredecessorError) bool {
+func (h *Handler) fetchMissingEvents(ctx context.Context, origin, roomID, latest string,
+	gap *roomserver.MissingPredecessorError, keep map[string]gomatrixserverlib.PDU) bool {
 	if h.opts.Peer == nil || len(gap.Anchors) == 0 {
 		// No anchor to ask from. "Everything this room has, please" is not a request to make of a peer
 		// and not one this server would survive answering.
@@ -127,13 +232,20 @@ func (h *Handler) fetchMissingEvents(ctx context.Context, origin, roomID, latest
 	for pass := 0; pass < 2 && len(pending) > 0; pass++ {
 		remaining := make([]gomatrixserverlib.PDU, 0, len(pending))
 		for _, candidate := range pending {
-			if err := h.opts.Join.AcceptFederationEvent(ctx, roomID, candidate); err != nil {
+			if err := h.opts.Join.AcceptFederationEvent(ctx, roomID, candidate); err == nil {
+				admitted = true
+				continue
+			} else {
 				slog.Debug("fedapi: could not store a gap-fill event",
 					"event_id", candidate.EventID(), "error", err)
-				remaining = append(remaining, candidate)
-				continue
 			}
-			admitted = true
+			// The window arrived and cannot be placed yet because the event before the oldest of them is
+			// still missing. Keeping it costs a little memory and saves the walk a request per event it
+			// would otherwise have to ask for again one at a time.
+			if keep != nil {
+				keep[candidate.EventID()] = candidate
+			}
+			remaining = append(remaining, candidate)
 		}
 		pending = remaining
 	}
@@ -150,9 +262,20 @@ func (h *Handler) fetchMissingEvents(ctx context.Context, origin, roomID, latest
 //
 // It reports whether anything was admitted, so the caller retries on true and refuses on false. A peer
 // that answers with garbage then costs a refusal rather than a hang.
-func (h *Handler) fetchEvent(ctx context.Context, origin, roomID, eventID string) bool {
+// requestEvent asks the peer for one event it has not sent and returns what it gave back, verified and
+// stored nowhere.
+//
+// Not storing is the point. A fetched event usually follows another fetched event, and the walk has to
+// be allowed to keep going back before any of them can be placed; a caller that stores as it goes either
+// refuses honest events for the wrong reason or stores ones that do not attach to anything.
+//
+// Each event is verified exactly as one delivered in a transaction is — same room version, same signature
+// check against the sender's key — because a `/event` response is a body a peer chose to send, not
+// evidence. It must also belong to the room whose gap is being filled: without that restriction, filling
+// a gap in one room is a way to write into another.
+func (h *Handler) requestEvent(ctx context.Context, origin, roomID, eventID string) []gomatrixserverlib.PDU {
 	if h.opts.Peer == nil {
-		return false
+		return nil
 	}
 	// The library names the *requesting* server "origin" and the peer second, which is the opposite of
 	// how this file reads from the peer's side everywhere else. Swapping them produces
@@ -161,26 +284,21 @@ func (h *Handler) fetchEvent(ctx context.Context, origin, roomID, eventID string
 	if err != nil {
 		slog.Debug("fedapi: a peer could not supply a missing event",
 			"origin", origin, "event_id", eventID, "error", err)
-		return false
+		return nil
 	}
-
-	admitted := false
+	var fetched []gomatrixserverlib.PDU
 	for _, raw := range transaction.PDUs {
 		event, reason := h.parseRelayedEvent(ctx, raw)
 		if reason != "" {
 			slog.Debug("fedapi: refused a fetched event", "event_id", eventID, "reason", reason)
 			continue
 		}
-		if fetched := event.RoomID().String(); fetched != roomID {
+		if from := event.RoomID().String(); from != roomID {
 			slog.Warn("fedapi: a peer supplied an event from another room while filling a gap",
-				"origin", origin, "room_id", roomID, "supplied_room_id", fetched)
+				"origin", origin, "room_id", roomID, "supplied_room_id", from)
 			continue
 		}
-		if err := h.opts.Join.AcceptFederationEvent(ctx, roomID, event); err != nil {
-			slog.Debug("fedapi: could not store a fetched event", "event_id", eventID, "error", err)
-			continue
-		}
-		admitted = true
+		fetched = append(fetched, event)
 	}
-	return admitted
+	return fetched
 }

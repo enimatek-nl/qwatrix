@@ -371,3 +371,177 @@ func TestAGapThePeerCanOnlyPartlyBridgeIsStillRefused(t *testing.T) {
 		}
 	}
 }
+
+// TestAGapWiderThanOneAnswerIsFilledFromThePeer is the case a peer that truncates its own answers
+// creates, and the reason gap filling is a loop with a budget rather than a fixed number of tries.
+//
+// A peer asked for a gap answers with what it can carry — complement's own federation mock answers
+// with the last ten events of the run it was asked about, which is a reasonable thing for a homeserver
+// to do too. The gap is twenty-five events deep, so one round cannot close it, and neither can a fixed
+// five: what matters is that every round that stores something keeps going, and that a round which
+// stores nothing is where the loop stops. Bounding the *number* of rounds instead of the work done is
+// how a server ends up refusing a gap it could have filled with two more requests.
+//
+// The `/event` fallback carries this scenario: after the bulk window is exhausted the room server names
+// one missing event, the transport asks for exactly that one, and the walk continues.
+func TestAGapWiderThanOneAnswerIsFilledFromThePeer(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "host", "pw-host", false)
+	peer := newFakePeer(t)
+	roomID, join, version := joinedRoom(t, server, alice, peer, "public_chat")
+
+	remote := "@charlie:" + string(peer.serverNo)
+	state := remoteStateEventIDs(t, server, alice, roomID)
+	auth := []string{
+		state["m.room.create\x00"],
+		state["m.room.power_levels\x00"],
+		join.EventID(),
+	}
+
+	const hiddenCount = 25
+	var hidden []gomatrixserverlib.PDU
+	previous := join.EventID()
+	depth := join.Depth()
+	for i := 0; i < hiddenCount; i++ {
+		depth++
+		event := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+			RoomID:     roomID,
+			SenderID:   remote,
+			Type:       "m.room.message",
+			Depth:      depth,
+			PrevEvents: []string{previous},
+			AuthEvents: auth,
+			Content: spec.RawJSON(mustMarshal(t, map[string]any{
+				"msgtype": "m.text", "body": harness.Nonce("hidden"),
+			})),
+		})
+		hidden = append(hidden, event)
+		previous = event.EventID()
+	}
+	// The event that is actually sent: it follows the last hidden one, so this server cannot place it
+	// until the whole run in front of it has been fetched.
+	last := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   remote,
+		Type:       "m.room.message",
+		Depth:      depth + 1,
+		PrevEvents: []string{previous},
+		AuthEvents: auth,
+		Content:    spec.RawJSON(mustMarshal(t, map[string]any{"msgtype": "m.text", "body": "the event that was sent"})),
+	})
+
+	var bulkAsked, singleAsked atomic.Int64
+	peer.serves = func(w http.ResponseWriter, r *http.Request) bool {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/_matrix/federation/v1/get_missing_events/"):
+			bulkAsked.Add(1)
+			// The last ten, whatever was asked for — a window, not an answer.
+			window := hidden
+			if len(window) > 10 {
+				window = window[len(window)-10:]
+			}
+			raw, err := json.Marshal(map[string]any{"events": reversedJSON(window)})
+			if err != nil {
+				t.Fatalf("encoding the window: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(raw)
+			return true
+		case strings.HasPrefix(r.URL.Path, "/_matrix/federation/v1/event/"):
+			singleAsked.Add(1)
+			want, err := url.PathUnescape(strings.TrimPrefix(r.URL.Path, "/_matrix/federation/v1/event/"))
+			if err != nil {
+				return false
+			}
+			for _, event := range hidden {
+				if event.EventID() != want {
+					continue
+				}
+				raw, err := json.Marshal(map[string]any{
+					"origin": string(peer.serverNo),
+					"pdus":   []json.RawMessage{json.RawMessage(event.JSON())},
+				})
+				if err != nil {
+					t.Fatalf("encoding the fetched event: %v", err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(raw)
+				return true
+			}
+			return false
+		}
+		return false
+	}
+
+	results, raw := sendTransaction(t, server, peer,
+		[]json.RawMessage{json.RawMessage(last.JSON())}, harness.Nonce("long-gap"))
+	if result, ok := results[last.EventID()]; !ok {
+		t.Fatalf("the answer says nothing about the event it was sent (%s)", raw)
+	} else if result.Error != "" {
+		t.Fatalf("a %d-event gap was refused that the peer could bridge a little at a time: %s",
+			hiddenCount, result.Error)
+	}
+
+	// Every hidden event has to be readable, or the gap has only been leapt over rather than filled:
+	// a client paginating back from the newest event would still fall through the hole.
+	held := pagedEventIDs(t, server, alice, roomID)
+	for i, event := range hidden {
+		if !held[event.EventID()] {
+			t.Fatalf("hidden event %d of %d (%s) is not readable in the room's history",
+				i+1, hiddenCount, event.EventID())
+		}
+	}
+	if !held[last.EventID()] {
+		t.Fatalf("the event that was actually sent is not readable in the room's history")
+	}
+
+	// Bounded work: fetching every event one at a time is legitimate, fetching forever is not. The
+	// ceiling is loose on purpose — it is here to catch a loop that lost its stop condition, not to
+	// tune a policy.
+	if asked := bulkAsked.Load() + singleAsked.Load(); asked > 60 {
+		t.Fatalf("filling a %d-event gap took %d requests to the peer, which is not bounded work",
+			hiddenCount, asked)
+	}
+}
+
+// pagedEventIDs walks a room's whole history the way a client does — `/messages` from the start of the
+// room, forward, page by page — and returns the event IDs it found. Reading history rather than the
+// latest sync batch is what makes this a test of the stored graph: a gap that exists in the room would
+// show up as events nobody can reach.
+func pagedEventIDs(t *testing.T, server *harness.Server, alice *harness.Account, roomID string) map[string]bool {
+	t.Helper()
+	escaped := harness.PathEscape(roomID)
+	found := map[string]bool{}
+	// Walking backwards from the tip is what a client does with no token at all: an absent `from`
+	// means "from where the room is now", and each page's `end` is the next question.
+	from := ""
+	for page := 0; page < 20; page++ {
+		var batch struct {
+			Chunk []struct {
+				EventID string `json:"event_id"`
+			} `json:"chunk"`
+			End string `json:"end"`
+		}
+		path := "/_matrix/client/v3/rooms/" + escaped + "/messages?dir=b&limit=50"
+		if from != "" {
+			path += "&from=" + from
+		} else {
+			path += "&from=-1"
+		}
+		response := alice.Do(t, server, harness.Request{Method: http.MethodGet, Path: path})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("reading history from %s: %d %s", from, response.StatusCode, response.Body)
+		}
+		if err := json.Unmarshal([]byte(response.Body), &batch); err != nil {
+			t.Fatalf("reading history: %v (%s)", err, response.Body)
+		}
+		for _, event := range batch.Chunk {
+			found[event.EventID] = true
+		}
+		if batch.End == "" || batch.End == from || len(batch.Chunk) == 0 {
+			return found
+		}
+		from = batch.End
+	}
+	return found
+}
