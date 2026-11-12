@@ -35,6 +35,14 @@ const (
 	// vouches for — and a server that walked a thousand events one by one would have spent a thousand
 	// round trips saying no.
 	gapFillRequests = 100
+	// gapFillTransactionRequests is the ceiling for a whole transaction rather than one event in it.
+	//
+	// A per-event bound is not enough on its own, because a transaction carries many events: a peer can
+	// put fifty events that each need a walk into one request, and a peer that grows impatient and sends
+	// the same transaction again has handed itself an amplifier and taken one out of this server with it.
+	// Two hundred is the one-event ceiling plus a second walk's worth, which is what a transaction with
+	// more than one gap in it realistically means.
+	gapFillTransactionRequests = 200
 	// gapFillEvents is how many events one request may bring back. The specification caps the
 	// endpoint at 100; asking for the cap means a peer holding a long run of history can bridge a
 	// long gap in one round trip instead of one event per request.
@@ -63,8 +71,10 @@ const (
 // The loop is a loop and not recursion because a peer can describe a cycle: A follows B, B follows A.
 // Each step fetches what the room server just said it needs and retries the event the peer actually
 // sent, so progress is visible in the log and the request budget is a stop rather than a suggestion.
-func (h *Handler) admitWithGapFill(ctx context.Context, origin, roomID string, event gomatrixserverlib.PDU) error {
+func (h *Handler) admitWithGapFill(ctx context.Context, budget *int, origin, roomID string,
+	event gomatrixserverlib.PDU) error {
 	walker := &gapWalker{handler: h, ctx: ctx, origin: origin, roomID: roomID, latest: event.EventID(),
+		shared:  budget,
 		fetched: map[string]bool{event.EventID(): true}, attempted: map[string]bool{},
 		held: map[string]gomatrixserverlib.PDU{}}
 
@@ -110,6 +120,9 @@ type gapWalker struct {
 	// endpoint is asked to fill up to.
 	latest   string
 	requests int
+	// shared is the transaction's counter, or nil when this walk answers only for itself. Every request
+	// the walk makes is charged to it as well as to the walk's own count.
+	shared *int
 	// bulkAsked records that the bulk endpoint has been given its one chance. Its answer is a function
 	// of the two points named in the request, and those do not move while a gap is being filled: the
 	// anchors are the predecessors this server holds and the room's tip, and neither changes by storing
@@ -120,27 +133,43 @@ type gapWalker struct {
 	held      map[string]gomatrixserverlib.PDU
 }
 
-func (w *gapWalker) outOfBudget() bool { return w.requests >= gapFillRequests }
+// canSpend reports whether the walk may make one more request to the peer. Both ceilings are the walk's
+// concern: the event's bound limits what one peer's word can cost this server, and the transaction's
+// limits what a transaction full of such words can cost.
+func (w *gapWalker) canSpend() bool {
+	return w.requests < gapFillRequests &&
+		(w.shared == nil || *w.shared < gapFillTransactionRequests)
+}
+
+// spend charges the walk for one request made.
+func (w *gapWalker) spend() {
+	w.requests++
+	if w.shared != nil {
+		*w.shared++
+	}
+}
+
+func (w *gapWalker) outOfBudget() bool { return !w.canSpend() }
 
 // placeGap puts one named missing event where it belongs, walking further back into the gap as needed.
 // It reports whether anything was stored, which is the only signal the caller has that the walk is
 // approaching the room rather than treading water.
 func (w *gapWalker) placeGap(gap *roomserver.MissingPredecessorError) bool {
 	for {
-		if w.requests >= gapFillRequests {
+		if !w.canSpend() {
 			return false
 		}
 		if !w.bulkAsked {
 			w.bulkAsked = true
 			if len(gap.Anchors) > 0 {
-				w.requests++
+				w.spend()
 				w.handler.fetchMissingEvents(w.ctx, w.origin, w.roomID, w.latest, gap, w.held)
 				return true
 			}
 		}
 		if !w.fetched[gap.EventID] {
 			w.fetched[gap.EventID] = true
-			w.requests++
+			w.spend()
 			for _, candidate := range w.handler.requestEvent(w.ctx, w.origin, w.roomID, gap.EventID) {
 				w.held[candidate.EventID()] = candidate
 			}

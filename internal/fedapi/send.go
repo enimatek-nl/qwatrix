@@ -90,6 +90,8 @@ func (h *Handler) handleSendTransaction(w http.ResponseWriter, r *http.Request) 
 
 // ingestPDUs admits each event of a transaction separately, which is what the answer reports.
 func (h *Handler) ingestPDUs(ctx context.Context, origin string, transaction gomatrixserverlib.Transaction) fclient.RespSend {
+	// gapRequests counts the requests this transaction has spent fetching history it was not sent.
+	gapRequests := 0
 	result := fclient.RespSend{PDUs: make(map[string]fclient.PDUResult, len(transaction.PDUs))}
 	for _, raw := range transaction.PDUs {
 		event, reason := h.parseRelayedEvent(ctx, raw)
@@ -99,8 +101,9 @@ func (h *Handler) ingestPDUs(ctx context.Context, origin string, transaction gom
 		}
 		roomID := event.RoomID().String()
 		// Gap filling first: an event that follows history this server has never been told about is
-		// worth one bounded round of fetching before it is refused.
-		if err := h.admitWithGapFill(ctx, origin, roomID, event); err != nil {
+		// worth fetching before it is refused. The budget is the transaction's rather than the event's,
+		// because this loop can be pointed at fifty events that each need a walk.
+		if err := h.admitWithGapFill(ctx, &gapRequests, origin, roomID, event); err != nil {
 			slog.Debug("fedapi: refused a federated event",
 				"room_id", roomID, "event_id", event.EventID(),
 				"origin", origin, "error", err)

@@ -83,7 +83,9 @@ func (h *Handler) handleSendLeave(w http.ResponseWriter, r *http.Request) {
 	// The same admission a relayed event goes through, gaps and all: a leave that arrives before
 	// the join it follows is still a leave the room needs, and refusing it for a missing
 	// predecessor is how two servers stay out of step forever.
-	if err := h.admitWithGapFill(r.Context(), origin, roomID, event); err != nil {
+	// A nil budget: this is one event per request, so the request and the transaction are the same
+	// thing and the walk's own ceiling is the only one that can be reached.
+	if err := h.admitWithGapFill(r.Context(), nil, origin, roomID, event); err != nil {
 		httpx.RespondError(w, r, matrix.NewForbidden("%s", describeForPeer(err)))
 		return
 	}
