@@ -160,7 +160,7 @@ func (h *Handler) parseRelayedEvent(ctx context.Context, raw json.RawMessage) (g
 //
 // None of them are applied by this server yet. Every one is parsed — a transaction containing a
 // malformed EDU must still deliver its events — and every one is dropped with a debug log naming its
-// type, and the work is tracked as .agent-work/TASKS.md T706. What must not happen is the silence:
+// type, and the work is tracked as task T706. What must not happen is the silence:
 // a peer cannot be told an ephemeral event failed, so a server that quietly discards typing
 // indicators looks, from the other side, like a server where nobody is ever typing. A debug line
 // naming the type is the only trace that this server chose not to act rather than acting and losing

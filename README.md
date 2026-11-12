@@ -9,7 +9,7 @@ sync with long-polling, filters, read markers, receipts, typing, presence, to-de
 end-to-end encryption key management, push rules, media including generated thumbnails, account
 data, relations/threads, search, and room summaries) and a working subset of the server-server API.
 `docs/ENDPOINTS.md` lists every endpoint with its status, and a test asserts that no route is
-undocumented; `.agent-work/FINAL-REPORT.md` records what was verified and what is knowingly
+undocumented; [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) records what was verified and what is knowingly
 incomplete.
 
 ## Run it
@@ -140,14 +140,14 @@ against a real image:
 make complement-smoke   # this repo's own container contract (ports, PKI, registration, 2 servers)
 make complement         # complement's tests/csapi suite
 make complement COMPLEMENT_PKG=./tests           # complement's server-server package
-.agent-work/complement-sweep.sh                  # every package, panic-proof, + AC-5 score
+scripts/complement-sweep.sh                     # every package, panic-proof, + AC-5 score
 ```
 
 The sweep script exists because complement's own test binaries sometimes panic (a panic aborts
 everything after it in that package while `go test` still prints a summary that looks complete),
 and because AC-5's mandatory test list draws on **both** packages. It enumerates each package with
 `-list`, runs chunks in separate processes, retries anything left undecided on its own, and scores
-the result against `.agent-work/ACCEPTANCE-CRITERIA.md`.
+the result against [`docs/ACCEPTANCE-CRITERIA.md`](docs/ACCEPTANCE-CRITERIA.md).
 
 Set `COMPLEMENT` to point at your complement checkout (default `~/complement`), and
 `COMPLEMENT_BASE_IMAGE` for the image (default `localhost/qwatrix-complement:latest`).
@@ -211,5 +211,5 @@ docs/ENDPOINTS.md    every endpoint and its status; enforced by a test
 Room upgrades, the room hierarchy (so space summaries are not served), URL preview, refresh tokens
 (MSC2918), the threads timeline endpoint, key backup and cross-signing, knocking, server ACLs, push
 gateway delivery, and sliding sync are not implemented, and a handful of complement tests covering
-them fail. `.agent-work/FINAL-REPORT.md` lists them with the measured
-complement results, and `.agent-work/TASKS.md` tracks each one.
+them fail. [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) lists them with the measured
+complement results.

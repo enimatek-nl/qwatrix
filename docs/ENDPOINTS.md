@@ -410,4 +410,4 @@ here.
 
 Deliberately out of scope for the foreseeable future: application services, OIDC/SSO, third-party
 invites, `/search`, sliding sync, and room version 12's state-DAG variant — the reasoning is in
-[.agent-work/REQUIREMENTS.md](../.agent-work/REQUIREMENTS.md).
+[REQUIREMENTS.md](REQUIREMENTS.md).

@@ -11,3 +11,9 @@
 *.pem
 *.key
 signing.json
+
+# Working records of the development process: the task list, progress log, per-run
+# complement tallies, sweep scripts and raw run output. They are how this workspace keeps
+# track of what was measured, but they are notes about the code rather than part of it, and
+# the raw logs change on every run.
+/.agent-work/
