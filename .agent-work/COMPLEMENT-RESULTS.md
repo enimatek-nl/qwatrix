@@ -34,6 +34,9 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 108 | `2a83604` | **89 / 95** | `TestEventAuth` passes in a sweep for the first time, as does `TestUnbanViaInvite` — the two federation tests that have moved most, both fixed since run 105 |
+| 107 | `6998aca` | **88 / 95** | `TestUnbanViaInvite` **passes**; `TestEventAuth` fails — and passes three times on its own against the same image, a delivery-latency race written up below |
+| 106 | `4671516` | **88 / 95** | `TestUnbanViaInvite` **passes for the first time** (invitations are co-signed by the invited user's server). `TestEventAuth` falls back: complement's mock peer has no invite endpoint, so the first co-signing commit stranded every invitation aimed at it, and `6998aca` sends those unsigned rather than never |
 | 105 | `84246dc` | **88 / 95** | the archive regression gone (left-room state reverted) and `TestEventAuth` kept; the seven left are listed below |
 | 104 | `85069e7` | 87 / 95 | `TestEventAuth` won by the v2 `send_leave` route; `TestArchivedRoomsHistory` **lost** to the same commit, which had started putting state beside every left room's timeline |
 | 103 | `0d29361` | 87 / 95 | the space hierarchy stopped hiding the room its own allow list admits; `TestRestrictedRoomsSpacesSummaryLocal` recovered from its run-102 regression |
@@ -43,7 +46,24 @@ rather than quoted.
 | 99 | — | 81 / 95 | method-mismatch 405s, filename-bearing media downloads, room summary |
 | 97 | — | 79 / 95 | first sweep that ran **both** packages; before it `COMPLEMENT_PKG` defaulted to `./tests/csapi`, so every earlier count covers less than the suite |
 
-### Not yet measured
+### Delivery latency, measured twice one way and once another
+
+`TestEventAuth` failed both sweeps above and passed three runs in a row when run on its own against
+the same image. The difference is timing, not behaviour: the test gives one state event **one
+second** to reach the peer, and this server consulted its federation queue **every two seconds**.
+The event was always delivered, often one tick too late — and a sweep is a busier machine than a
+single test, which is the only reason it ever passed.
+
+`2a83604` wakes the queue when an event is written instead, keeping the tick as the retry clock.
+Runs 106 and 107 are the before picture for that test; run 108 is the check.
+
+### What each run's image carried
+
+Runs up to 105 predate `ef4d6b0` (delivery no longer requiring a separate federation address);
+complement passes `-federation-addr :8448`, so that commit was never expected to move a complement
+number and runs 106-108 confirm it did not. Run 106 is the first image with invite co-signing, 107 the
+first that also sends an invitation unsigned to a peer that cannot co-sign, and 108 the first that
+delivers when an event is written rather than when the clock says so.
 
 `ef4d6b0` (the delivery loop no longer requires a separate federation address) is in the tree after
 run 105's image and is **unmeasured**. It is expected to move no container number, because
@@ -52,11 +72,10 @@ every run above — which is exactly why the fault survived all of them. It matt
 single-listener deployment, not to this suite. Quote 88 / 95 as the current number, and re-sweep
 before attributing any change to that commit.
 
-### Still failing at run 105, and what each one needs
+### Still failing at run 108, and what each one needs
 
 | test | the behaviour, not the symptom |
 | --- | --- |
-| `TestUnbanViaInvite` | the victim's server **refuses the re-invite as a bad signature** immediately after fetching the peer's keys successfully — and the sender deletes the queued copy on a 200 envelope, so it is never retried (T742, T743). Not a sync-shape problem: the event never arrives |
 | `TestDeviceListUpdates` | inbound EDUs are parsed by nobody: `handleEDUs` reads nothing, so `m.device_list_update` produces no `device_lists.changed`, and cross-server `POST /keys/query` for remote users is not answered either (T706) |
 | `TestSyncTimelineGap` | needs **outlier events** — persisting an event whose history is not yet connected — before a gapped timeline can be filled (T713) |
 | `TestRestrictedRoomsLocalJoin` | a restricted join needs the server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join event (T709, MSC3083) |

@@ -101,7 +101,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
 | AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 88 of the 95 mandatory tests pass, 7 fail, 0 never ran (§ 5) |
+| AC-5 upstream suite | `.agent-work/complement-sweep.sh` (both packages, per-test retries) | **not met**: 89 of the 95 mandatory tests pass, 6 fail, 0 never ran (§ 5) |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
@@ -143,8 +143,8 @@ and this server implements a working subset of it.
 
 ### AC-5, the named mandatory set
 
-`.agent-work/ACCEPTANCE-CRITERIA.md` names 95 tests that must pass. Measured at run 105: **88 passing**,
-**7 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is seven named
+`.agent-work/ACCEPTANCE-CRITERIA.md` names 95 tests that must pass. Measured at run 108: **89 passing**,
+**6 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is six named
 behaviours rather than a broad failure.
 
 AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
@@ -152,7 +152,6 @@ the harder thing — the mandatory set, across both packages.
 
 | Failing mandatory test | The behaviour behind it |
 |---|---|
-| `TestUnbanViaInvite` | the victim's server **refuses a re-invite as a bad signature** right after fetching that peer's keys successfully, and the sender clears the queued copy on a 200 envelope, so it is never retried — two faults, T742 and T743, and neither is the sync shape an earlier draft of this report blamed |
 | `TestDeviceListUpdates` | needs a **pushed `m.device_list_update` EDU**: inbound EDUs are parsed by nobody, and cross-server `POST /keys/query` for remote users is unanswered too (T706) |
 | `TestSyncTimelineGap` | a gapped timeline needs **outlier events** — persisting an event whose history is not yet connected (T713) |
 | `TestRestrictedRoomsLocalJoin` | a restricted join needs this server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join (T709, MSC3083) |
@@ -166,7 +165,7 @@ rules, URL preview, pushers, transactions across refresh, server notices, room m
 
 ### What moved, and what did not
 
-The mandatory set went **79 → 81 → 84 → 86 → 87 → 88** across runs 97, 99, 100, 102, 103 and 105,
+The mandatory set went **79 → 81 → 84 → 86 → 87 → 88 → 89** across runs 97, 99, 100, 102, 103, 105 and 108,
 from the federated-media, method-mismatch, thumbnail, room-summary, filename, space-hierarchy,
 legacy-federation-endpoint and moderation-target work; the server-server package went from
 8 passing to 14. Run 104 is the honest regression in that line: a change that put state beside every

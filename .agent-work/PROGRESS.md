@@ -1288,3 +1288,40 @@ Four documents also cited `.agent-work/COMPLEMENT-STATUS.md` as the compliance r
 never existed; the record is `COMPLEMENT-RESULTS.md`, which now also names the complement checkout
 every run is measured against — and admits that `-tags blacklist_common` does not satisfy
 complement's per-homeserver skip guards, so these counts are conservative rather than flattering.
+
+## M8 stage 12: the invitation nobody would accept (T743-T745) — 89 of 95
+
+`TestUnbanViaInvite` had resisted four rounds of diagnosis, and the reason it resisted is the useful
+part: every explanation we had written down was an effect. The last one — a signing key fetched
+successfully and then refused — was looking for a key that had never existed. An invitation is signed
+by **two** servers: the inviter's signature says the invitation was issued, and the invited user's own
+server signs to say the person in it is somebody it looks after. The library enforces that on receipt,
+and this server neither produced the second signature for invites it sent nor provided the endpoint to
+get one for invites it received.
+
+- **The endpoint** (`e825cf0`): `PUT /_matrix/federation/v{1,2}/invite/{roomID}/{eventID}` signs an
+  invitation for one of our own users — after checking that the inviter signed first, that the state
+  key really is a local user, and that the room version being signed under is the room's own. Signing
+  somebody else's user is the refusal worth having here: any peer could otherwise buy our signature for
+  a user we do not look after.
+- **The sending half** (same commit): an invitation is no longer relayed like a message. The delivery
+  pass recognises one, sends it to the endpoint, and then rewrites the stored event *and every copy
+  still queued for another server* — the queued copy is produced the moment the invite is written, so
+  it is unsigned by construction and every downstream peer would refuse it.
+- **The fallback** (`6998aca`), learned from run 106: complement's federation peer is a mock with no
+  invite endpoint, and my first version treated "cannot co-sign" as "must not send", stranding eight
+  rooms' invitations in one sweep. A peer that cannot sign is not a reason to stop inviting, so those
+  invitations go out unsigned as well — and because of `4671516`, a peer that *does* check now reports
+  the refusal per event instead of letting the queue be cleared as though it had accepted.
+- **The latency** (`2a83604`): `TestEventAuth` had been failing in sweeps and passing when run alone
+  for a while, and the reason was a two-second delivery tick against a test that allows one second. The
+  queue now shares the `/sync` change notifier, so writing an event is the reason to deliver it.
+
+Run 108 measures **89 of 95**, with both `TestEventAuth` and `TestUnbanViaInvite` passing in a sweep
+for the first time. The six left are one feature each, and all six are written down with what they
+need: inbound EDUs (`T706`), MSC3030 gaps (`T715`), MSC4006 media (`T719`), MSC3083 restricted joins
+(`T709`), MSC4222 unknown endpoints (`T722`) and MSC3059 `timestamp_to_event` (`T714`).
+
+The measuring is also better than the diagnosing this time: `tests/unit/federation_delivery_answer_test.go`
+pins that a transaction answer clears only the events it answered for, and `tests/api/syncban_test.go`
+carries the whole ban-unban-invite sequence as a passing test rather than a skipping one.
