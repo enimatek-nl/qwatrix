@@ -27,6 +27,9 @@ func TestAKnownEndpointRefusesTheWrongMethod(t *testing.T) {
 		// The version string is public information about this server, so it is answered on this
 		// listener too — and a wrong method against it is a wrong method, not a missing endpoint.
 		{http.MethodPut, "/_matrix/federation/v1/version", "GET,HEAD"},
+		// The key query endpoint is a server-server endpoint served on this listener as well, and it
+		// is a POST: a wrong method against it is the same distinction as anywhere else.
+		{http.MethodPut, "/_matrix/key/v2/query", "POST"},
 	} {
 		response := server.Do(t, harness.Request{Method: wrong.method, Path: wrong.path})
 		if response.StatusCode != http.StatusMethodNotAllowed {

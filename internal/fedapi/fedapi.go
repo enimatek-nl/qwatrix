@@ -14,6 +14,7 @@ package fedapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -123,6 +124,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/media/download/{mediaID}", h.handleFederationMedia)
+	h.mux.HandleFunc("POST /_matrix/key/v2/query", h.handleKeyQuery)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server", h.handleKeys)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server/{keyID}", h.handleKeyByID)
 	h.mux.HandleFunc("/", h.handleUnknown)
@@ -265,27 +267,78 @@ func (h *Handler) handleKeyByID(w http.ResponseWriter, r *http.Request) {
 // the signature fields empty, which is what the verifier undoes: it removes `signatures` and
 // `unsigned` and canonicalises what is left.
 func (h *Handler) respondKeys(w http.ResponseWriter) {
-	body, err := h.keys()
+	signed, err := h.signedKeyDocument()
 	if err != nil {
-		slog.Error("fedapi: building the server-key response", "error", err)
+		slog.Error("fedapi: could not publish the signing key", "error", err)
 		httpx.RespondError(w, nil, matrix.NewUnknown("could not publish the signing key"))
 		return
 	}
+	httpx.RespondRawJSON(w, http.StatusOK, signed)
+}
+
+// signedKeyDocument is this server's published key document, signed by the key it publishes. Both key
+// endpoints answer with it: publishing and answering a query about yourself are the same fact, and two
+// implementations of it would eventually disagree about who this server is.
+func (h *Handler) signedKeyDocument() (json.RawMessage, error) {
+	body, err := h.keys()
+	if err != nil {
+		return nil, fmt.Errorf("building the server-key response: %w", err)
+	}
 	unsigned, err := json.Marshal(body)
 	if err != nil {
-		slog.Error("fedapi: encoding the server-key response", "error", err)
-		httpx.RespondError(w, nil, matrix.NewUnknown("could not publish the signing key"))
-		return
+		return nil, fmt.Errorf("encoding the server-key response: %w", err)
 	}
 	signed, err := h.identity.SignJSON(unsigned)
 	if err != nil {
 		// A server that cannot sign its own key has a broken identity file, and saying so
 		// is better than publishing an unsigned document a peer would reject anyway.
-		slog.Error("fedapi: signing the server-key response", "error", err)
-		httpx.RespondError(w, nil, matrix.NewUnknown("could not sign the published key"))
+		return nil, fmt.Errorf("signing the published key: %w", err)
+	}
+	return signed, nil
+}
+
+// handleKeyQuery answers `POST /_matrix/key/v2/query`, the batched form of "whose key is this?", in
+// which the responder signs the key document it returns so the asker need not reach the origin.
+//
+// This server is a notary for one server name: its own. The keys it could sign are the keys it holds,
+// and it holds nobody else's — relaying another server's document would mean fetching and caching it,
+// which is a cache with a security boundary in it and is not this. The specification fits that shape
+// exactly: a server whose keys are not known is left out of the result, and an empty result is a
+// correct answer rather than an error, because the asker is expected to go and ask somebody else.
+//
+// Refusing the whole batch over one unknown name would be worse than silence in a different way: a
+// peer usually asks for several servers at once, and one stranger would cost it the keys it could
+// have had.
+func (h *Handler) handleKeyQuery(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		ServerKeys map[string]map[string]json.RawMessage `json:"server_keys"`
+	}
+	if err := httpx.DecodeJSON(r, &request); err != nil {
+		httpx.RespondError(w, r, err)
 		return
 	}
-	httpx.RespondRawJSON(w, http.StatusOK, signed)
+	documents := []json.RawMessage{}
+	if _, asked := request.ServerKeys[string(h.opts.ServerName)]; asked {
+		signed, err := h.signedKeyDocument()
+		if err != nil {
+			slog.Error("fedapi: could not answer a key query about ourselves", "error", err)
+			httpx.RespondError(w, r, matrix.NewUnknown("could not publish the signing key"))
+			return
+		}
+		documents = append(documents, signed)
+	}
+	if len(request.ServerKeys) > len(documents) {
+		// Not a warning: this is the ordinary case for a peer that has been introduced to more
+		// of the federation than we have.
+		slog.Debug("fedapi: a key query asked about servers this one holds no keys for",
+			"asked_for", len(request.ServerKeys), "answered", len(documents))
+	}
+	body, err := json.Marshal(map[string]any{"server_keys": documents})
+	if err != nil {
+		httpx.RespondError(w, r, matrix.NewUnknown("could not answer the key query"))
+		return
+	}
+	httpx.RespondRawJSON(w, http.StatusOK, body)
 }
 
 // handleUnknown answers the routes this stage has not implemented yet. The reply is a Matrix

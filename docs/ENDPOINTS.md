@@ -279,6 +279,7 @@ that arrives unauthenticated is a peer asking who this server is.
 | Method | Path | Spec |
 | --- | --- | --- |
 | `GET` | `/_matrix/federation/v1/version` | [GET federation version](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1version) |
+| `POST` | `/_matrix/key/v2/query` | [Query keys in a batch](https://spec.matrix.org/latest/server-server-api/#post_matrixkeyv2query) — served for this server's own name; other names are left out of the result, as the specification allows, because holding another server's keys is a notary cache this server does not have |
 | `GET` | `/_matrix/key/v2/server` | [Get server keys](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2server) |
 | `GET` | `/_matrix/key/v2/server/{keyID}` | [Get specific server key](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2serverkeyid) |
 | `GET` | `/_matrix/federation/v1/make_join/{roomID}/{userID}` | [Make a join event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1make_joinroomiduserid) |

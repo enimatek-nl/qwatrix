@@ -114,6 +114,7 @@ func NewMux(deps Deps) http.Handler {
 	if deps.PublicFederation != nil {
 		servePublic := func(w http.ResponseWriter, r *http.Request) { deps.PublicFederation(w, r) }
 		routes.HandleFunc("GET /_matrix/federation/v1/version", servePublic)
+		routes.HandleFunc("POST /_matrix/key/v2/query", servePublic)
 		routes.HandleFunc("GET /_matrix/key/v2/server", servePublic)
 		routes.HandleFunc("GET /_matrix/key/v2/server/{keyID}", servePublic)
 	}
