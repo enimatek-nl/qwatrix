@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
@@ -35,15 +36,34 @@ type MediaSource interface {
 // through the same writer an authenticated client download uses, so the three headers that make an
 // uploaded file safe to view are not a rule this endpoint can step around.
 func (h *Handler) handleFederationMedia(w http.ResponseWriter, r *http.Request) {
+	h.serveOriginFile(w, r, r.PathValue("mediaID"), "")
+}
+
+// handleFederationMediaByServerName answers the specified form of the same question,
+// GET /_matrix/federation/v1/download/{serverName}/{mediaID}, which names the origin in the path.
+//
+// A peer asks this server for `this.example`'s file, so a request naming anybody else is a question
+// this server cannot answer honestly: it does not have those bytes, and its cached copies of other
+// servers' files are deliberately not served here (see [Handler.serveOriginFile) — serving them would
+// turn every media ID in the federation into a way to read them from anybody who once saw them.
+func (h *Handler) handleFederationMediaByServerName(w http.ResponseWriter, r *http.Request) {
+	h.serveOriginFile(w, r, r.PathValue("mediaID"), r.PathValue("serverName"))
+}
+
+// serveOriginFile is the one implementation behind both spellings of the federation download.
+func (h *Handler) serveOriginFile(w http.ResponseWriter, r *http.Request, mediaID, serverName string) {
 	origin := h.authenticatePeer(w, r)
 	if origin == nil {
+		return
+	}
+	if serverName != "" && !strings.EqualFold(serverName, string(h.opts.ServerName)) {
+		httpx.RespondError(w, r, matrix.NewNotFound("This homeserver does not serve media for %q", serverName))
 		return
 	}
 	if h.opts.Media == nil {
 		httpx.RespondError(w, r, matrix.NewNotFound("This homeserver does not serve media over federation"))
 		return
 	}
-	mediaID := r.PathValue("mediaID")
 	row, body, err := h.opts.Media.OriginFile(r.Context(), mediaID)
 	if err != nil {
 		httpx.RespondError(w, r, err)

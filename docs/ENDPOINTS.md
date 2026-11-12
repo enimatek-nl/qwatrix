@@ -295,6 +295,7 @@ that arrives unauthenticated is a peer asking who this server is.
 | `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
 | `GET` | `/_matrix/federation/v1/media/download/{mediaID}` | [MSC2448](https://github.com/matrix-org/matrix-spec-proposals/pull/2448) — signed; files this server originates only |
+| `GET` | `/_matrix/federation/v1/download/{serverName}/{mediaID}` | [Download media from its origin](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1downloadservernamemediaid) — signed, and only for this server's own files; it is also the first path this server tries when fetching somebody else's, before the legacy `/_matrix/media/v3/download/...` and the MSC2448 draft it also serves |
 
 The version string and the published signing keys are also answered on the **client** listener. They
 are public facts about this server rather than something a caller earns by being a peer, and a

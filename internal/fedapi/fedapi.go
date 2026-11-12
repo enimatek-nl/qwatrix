@@ -123,6 +123,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/download/{serverName}/{mediaID}", h.handleFederationMediaByServerName)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/media/download/{mediaID}", h.handleFederationMedia)
 	h.mux.HandleFunc("POST /_matrix/key/v2/query", h.handleKeyQuery)
 	h.mux.HandleFunc("GET /_matrix/key/v2/server", h.handleKeys)

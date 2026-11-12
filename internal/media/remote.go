@@ -64,10 +64,27 @@ func (s *Service) WithRemoteFetcher(fetcher RemoteFetcher) *Service {
 	return s
 }
 
-// remoteMediaPath is the federation resource the origin serves. Spelled here so the media repository
-// asks for a specified resource rather than for a URL somebody handed it.
-func remoteMediaPath(mediaID string) string {
-	return "/_matrix/federation/v1/media/download/" + url.PathEscape(mediaID)
+// remoteMediaPaths are the resources an origin might serve this file from, in the order they should be
+// asked for.
+//
+// Three spellings exist because the endpoint has been redrawn twice in the open. The current
+// specification's is the authenticated `/_matrix/federation/v1/download/{serverName}/{mediaId}` and it
+// goes first: it is the one that says who is asking, and it is the only one a new implementation is
+// obliged to speak. Behind it comes the older unauthenticated `/_matrix/media/v3/download/...`, which
+// deployments and reference implementations still rely on for federation because it predates the
+// redraw. Last is the draft `/_matrix/federation/v1/media/download/{mediaId}` — the shape this server
+// grew first, and the one another of this server's own deployments will still be serving.
+//
+// Asking in order rather than guessing once is the difference between a media ID that works across the
+// federation and a broken image in a room on whichever side happened to be newer.
+func remoteMediaPaths(origin, mediaID string) []string {
+	escapedServer := url.PathEscape(origin)
+	escapedMedia := url.PathEscape(mediaID)
+	return []string{
+		"/_matrix/federation/v1/download/" + escapedServer + "/" + escapedMedia,
+		"/_matrix/media/v3/download/" + escapedServer + "/" + escapedMedia,
+		"/_matrix/federation/v1/media/download/" + escapedMedia,
+	}
 }
 
 // fetchRemote asks the origin for a file and keeps a copy of it.
@@ -90,7 +107,24 @@ func (s *Service) fetchRemote(ctx context.Context, origin, mediaID string) (*sto
 	if s.remote == nil {
 		return nil, nil, matrix.NewNotFound("Media %q:%q was not found on this homeserver", origin, mediaID)
 	}
-	fetched, err := s.remote.FetchMedia(ctx, origin, remoteMediaPath(mediaID))
+	paths := remoteMediaPaths(origin, mediaID)
+	var fetched *RemoteMedia
+	var err error
+	for i, path := range paths {
+		fetched, err = s.remote.FetchMedia(ctx, origin, path)
+		if err == nil && fetched != nil && fetched.Body != nil {
+			break
+		}
+		if err == nil {
+			err = io.ErrNoProgress
+		}
+		// A peer that has never heard of a route says the same thing as a peer that has never
+		// heard of this file, so every spelling gets its turn before this server concludes the
+		// origin does not have it.
+		slog.Debug("media: this path did not yield the file from its origin",
+			"origin", origin, "media_id", loggableID(mediaID), "path", path,
+			"attempt", i+1, "of", len(paths), "error", err)
+	}
 	if err != nil {
 		// Logged with the origin, because "that server refused" and "that server does not exist"
 		// look identical to the user and completely different to an operator.
