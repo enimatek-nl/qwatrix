@@ -34,7 +34,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
-| 112 | `ff4a3b0` | **93 / 95** | `TestRestrictedRoomsLocalJoin` passes — a `restricted` room now admits the members its `allow` entry names, on the strength of an authorisation this server signs. It had failed in every run since the suite was first run | **92 / 95** | `TestDeviceListUpdates` passes outright — all ten subtests, first time. It needed device-list changes to cross the border in both directions, and a membership event to be read as two announcements instead of one |
+| 113 | `2796643` | **94 / 95** | `TestSyncTimelineGap` passes, both subtests — a fifty-event gap is now bridged by walking it from its far end. One mandatory test remains, and it waits behind a feature the criteria defer (see below) | **93 / 95** | `TestRestrictedRoomsLocalJoin` passes — a `restricted` room now admits the members its `allow` entry names, on the strength of an authorisation this server signs. It had failed in every run since the suite was first run | **92 / 95** | `TestDeviceListUpdates` passes outright — all ten subtests, first time. It needed device-list changes to cross the border in both directions, and a membership event to be read as two announcements instead of one |
 | 110 | `2d22829` | **91 / 95** | unchanged at the top level, but `TestDeviceListUpdates/when_local_user_leaves_a_room` began passing once device-list changes stopped reaching people who had stopped sharing a room |
 | 109 | `1bcfefb` | **91 / 95** | `TestUnknownEndpoints` and `TestMediaWithoutFileName` pass: the first needed an endpoint that had never been served, the second needed this server to ask peers by paths peers actually speak |
 | 108 | `2a83604` | **89 / 95** | `TestEventAuth` passes in a sweep for the first time, as does `TestUnbanViaInvite` — the two federation tests that have moved most, both fixed since run 105 |
@@ -75,11 +75,10 @@ every run above — which is exactly why the fault survived all of them. It matt
 single-listener deployment, not to this suite. Quote 88 / 95 as the current number, and re-sweep
 before attributing any change to that commit.
 
-### Still failing at run 112, and what each one needs
+### Still failing at run 113, and what each one needs
 
 | test | the behaviour, not the symptom |
 | --- | --- |
-| `TestSyncTimelineGap` | needs **outlier events** — persisting an event whose history is not yet connected — before a gapped timeline can be filled (T713) |
 | `TestJumpToDateEndpoint` | needs `GET /_matrix/client/v1/rooms/{roomID}/timestamp_to_event` and the application-service read that the blueprint's set-up uses |
 
 ## Run 1 — 2025-11-09 20:16, commit state after M0–M3 (rooms + sync)

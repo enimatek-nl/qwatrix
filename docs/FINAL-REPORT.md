@@ -101,7 +101,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
 | AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **not met**: 93 of the 95 mandatory tests pass, 2 fail, 0 never ran (§ 5) |
+| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **not met**: 94 of the 95 mandatory tests pass, 1 fails, 0 never ran (§ 5) |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
@@ -143,8 +143,8 @@ and this server implements a working subset of it.
 
 ### AC-5, the named mandatory set
 
-[`ACCEPTANCE-CRITERIA.md`](ACCEPTANCE-CRITERIA.md) names 95 tests that must pass. Measured at run 112: **93 passing**,
-**2 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is two named
+[`ACCEPTANCE-CRITERIA.md`](ACCEPTANCE-CRITERIA.md) names 95 tests that must pass. Measured at run 113: **94 passing**,
+**1 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is one named
 behaviours rather than a broad failure.
 
 AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
@@ -152,12 +152,10 @@ the harder thing — the mandatory set, across both packages.
 
 | Failing mandatory test | The behaviour behind it |
 |---|---|
-| `TestDeviceListUpdates` | needs a **pushed `m.device_list_update` EDU**: inbound EDUs are parsed by nobody, and cross-server `POST /keys/query` for remote users is unanswered too (T706) |
-| `TestSyncTimelineGap` | a gapped timeline needs **outlier events** — persisting an event whose history is not yet connected (T713) |
-| `TestRestrictedRoomsLocalJoin` | a restricted join needs this server to evaluate the `m.room.join_rules` allow list and stamp `join_authorised_via_users_server` on the join (T709, MSC3083) |
-| `TestJumpToDateEndpoint` | needs `GET /rooms/{roomID}/timestamp_to_event`, plus the application-service read that the blueprint's own set-up uses |
-| `TestMediaWithoutFileName` | complement names the media origin by its **container `host:port`**, which is not this server's name and matches no listener of it; deliberately not chased, because passing it means bending media-origin matching to a container artefact |
-| `TestUnknownEndpoints` | wants `405` at `PUT /_matrix/key/v2/query`, the deprecated key notary; passing it means registering a decoy route for an endpoint this server does not implement — a test-suite-shaped answer rather than a true one |
+| `TestJumpToDateEndpoint` | needs `GET /rooms/{roomID}/timestamp_to_event` and `GET /rooms/{roomID}/context/{eventID}`, both served locally and over federation — and, for three of its subtests, **application services**, because only an application service may send an event with a chosen `?ts=` and the test uses that to place events at exact milliseconds. Application services are listed as deferred below, so this test cannot pass without either taking them on or exempting it: a conflict between two parts of the criteria, recorded rather than quietly resolved. |
+
+Every other test the criteria name passes at run 113. Each was closed by a change with a behavioural test
+of its own, and the runs are listed in [COMPLEMENT-RESULTS.md](COMPLEMENT-RESULTS.md).
 
 The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
 rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,
@@ -167,7 +165,7 @@ exactly why it should not be cited for a current count.
 
 ### What moved, and what did not
 
-The mandatory set went **79 → 81 → 84 → 86 → 87 → 88 → 89 → 91 → 92 → 93** across runs 97, 99, 100, 102, 103, 105, 108, 109, 111 and 112,
+The mandatory set went **79 → 81 → 84 → 86 → 87 → 88 → 89 → 91 → 92 → 93 → 94** across runs 97, 99, 100, 102, 103, 105, 108, 109, 111, 112 and 113,
 from the federated-media, method-mismatch, thumbnail, room-summary, filename, space-hierarchy,
 legacy-federation-endpoint and moderation-target work; the server-server package went from
 8 passing to 14. Run 104 is the honest regression in that line: a change that put state beside every
