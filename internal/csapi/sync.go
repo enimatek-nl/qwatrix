@@ -178,6 +178,9 @@ func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 	}
 	// The moment-in-history lookup and its companion, the context of one event. Both read history and
 	// are held to the room's own history rule, so they live beside /messages rather than somewhere new.
+	for _, path := range versionedPath("rooms/{roomID}/context/{eventID}") {
+		mux.HandleFunc("GET "+path, deps.requireAuth(handleRoomContext(deps)))
+	}
 	for _, path := range versionedPath("rooms/{roomID}/timestamp_to_event") {
 		mux.HandleFunc("GET "+path, deps.requireAuth(handleTimestampToEvent(deps)))
 	}

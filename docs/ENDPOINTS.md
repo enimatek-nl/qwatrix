@@ -78,6 +78,7 @@ against a server that has deliberately not enabled it.
 | `GET` | `/rooms/{roomID}/state` | [Full state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstate) |
 | `GET` | `/rooms/{roomID}/event/{eventID}` | [Getting an event](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomideventeventid) |
 | `GET` | `/rooms/{roomID}/messages` | [Message pagination](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmessages) |
+| `GET` | `/rooms/{roomID}/context/{eventID}` | [Event context](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidcontexteventid) |
 | `GET` | `/rooms/{roomID}/timestamp_to_event` | [Get the event at a point in time](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event) |
 | `POST` | `/rooms/{roomID}/redact/{eventID}` | [Redaction](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidredacteventid) |
 | `PUT` | `/rooms/{roomID}/redact/{eventID}/{txnID}` | the transaction-scoped form of the row above |
@@ -128,6 +129,13 @@ ties are broken by the order the events were written, oldest going forward and n
 past either end finds nothing (`M_NOT_FOUND`) rather than clamping to the nearest event, and the reader is
 held to the room's history rule exactly as `/messages` holds it, so the two can never disagree about who
 may see the room's past.
+
+`/rooms/{roomID}/context/{eventID}?limit=` returns one event with its neighbours: `events_before` newest-first
+and `events_after` oldest-first, each array ordered away from the centre because that is the direction a
+client draws, plus the room's state as it stood at the centre so a client that jumped here can render what
+it was given. The `limit` covers the two arrays together, and the event itself is always returned, even at
+`limit=0`. `start` and `end` name the boundary the response reached rather than the events it carried, so
+paging on in either direction continues with the next event instead of repeating the last one.
 
 `/rooms/{roomID}/state/{eventType}` with no state key is the empty state key, which is a real
 tuple rather than an absent one; the trailing-slash spelling and a state key containing a

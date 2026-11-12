@@ -343,6 +343,145 @@ func (s *Service) checkReadable(ctx context.Context, roomID string, opts RenderO
 	}
 }
 
+// ContextRequest asks for the neighbourhood of one event: what it was, what happened just before and
+// just after it, and the tokens to keep walking in either direction.
+type ContextRequest struct {
+	RoomID  string
+	EventID string
+	// Limit is the ceiling on the two arrays together, not on each: a client that asked for ten events
+	// does not want twenty-one, and a client that asked for none still wants the event it named.
+	Limit  int
+	Reader RenderOptions
+}
+
+// ContextResponse is the event, its neighbours, and the state a client needs to render them.
+//
+// `events_before` runs newest-first and `events_after` oldest-first — each array ordered away from the
+// centre, because that is the direction the client is drawing. The tokens are the other half of the
+// response: an event with no way to walk on from it is a dead end, which is what the client had before it
+// asked.
+type ContextResponse struct {
+	Event        json.RawMessage   `json:"event"`
+	EventsBefore []json.RawMessage `json:"events_before"`
+	EventsAfter  []json.RawMessage `json:"events_after"`
+	Start        string            `json:"start"`
+	End          string            `json:"end"`
+	State        []json.RawMessage `json:"state"`
+}
+
+// EventContext answers "what was around this event?", which is what a client asks after it has landed on
+// an event from anywhere at all: a search result, a notification, a reply, a timestamp lookup.
+//
+// The centre is read through the same single-event read the client would have used, so the two endpoints
+// cannot disagree about whether the event exists for this reader: if it may not see the event, it
+// certainly may not see its neighbours, and an answer that carried the surroundings but not the event
+// would be a leak dressed as a partial failure.
+func (s *Service) EventContext(ctx context.Context, req ContextRequest) (*ContextResponse, error) {
+	if req.Limit < 0 {
+		return nil, matrix.NewInvalidParam("limit must not be negative")
+	}
+	// The room's history rule first, answered the way every other history read answers it: a stranger is
+	// told they may not read this room's past, which is a fact about the reader, and only then is an event
+	// looked up at all. `/messages` and `/timestamp_to_event` say the same thing the same way, and three
+	// doors into the same history must not offer three dialects.
+	if err := s.checkReadable(ctx, req.RoomID, req.Reader); err != nil {
+		if apiErr, ok := matrix.AsAPIError(err); ok && apiErr.Status == http.StatusNotFound {
+			return nil, matrix.NewAPIError(http.StatusForbidden, matrix.ErrForbidden,
+				"You are not permitted to read the history of this room")
+		}
+		return nil, err
+	}
+	event, err := s.EventInRoom(ctx, req.RoomID, req.EventID, req.Reader)
+	if err != nil {
+		return nil, err
+	}
+	row, err := s.store.Events.ByEventID(ctx, req.EventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewNotFound("Event %q does not exist", req.EventID)
+		}
+		return nil, err
+	}
+
+	// The limit covers both arrays, so each side gets half. Rounding the earlier side up means a reader
+	// walking back from an event sees at least as much as one walking on.
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	beforeLimit := (limit + 1) / 2
+	afterLimit := limit / 2
+
+	// Both reads are bounded by the room, so an event that has drifted out of it (or never belonged to
+	// it) cannot drag another room's history into the answer.
+	before, err := s.store.Events.Range(ctx, store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: beforeLimit, Before: row.ID, OrderDesc: true})
+	if err != nil {
+		return nil, err
+	}
+	after, err := s.store.Events.Range(ctx, store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: afterLimit, After: row.ID})
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ContextResponse{
+		Event:        event,
+		EventsBefore: []json.RawMessage{},
+		EventsAfter:  []json.RawMessage{},
+	}
+	// `events_before` comes back newest-first from a descending read, which is the order the response
+	// wants; `events_after` comes back oldest-first from an ascending one. Neither is reversed, which is
+	// how "away from the centre" survives into the answer.
+	for i := range before {
+		rendered, err := s.Render(ctx, &before[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		response.EventsBefore = append(response.EventsBefore, rendered)
+	}
+	for i := range after {
+		rendered, err := s.Render(ctx, &after[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		response.EventsAfter = append(response.EventsAfter, rendered)
+	}
+
+	// The tokens name the boundary this response reached, not the events it carried: a client that paged
+	// on from here continues with the next event rather than the last one it already has. When a side was
+	// empty the boundary is the event itself, which is where a reader with nothing to work from has to
+	// start.
+	response.Start = formatStreamToken(row.ID)
+	if len(before) > 0 {
+		response.Start = formatStreamToken(before[len(before)-1].ID - 1)
+	}
+	response.End = formatStreamToken(row.ID)
+	if len(after) > 0 {
+		response.End = formatStreamToken(after[len(after)-1].ID)
+	}
+
+	// The state as it stood at the centre of the response. A client that jumped here has no other way to
+	// know who was in the room or what it was called when these messages were written, and rendering
+	// them with today's state would show it a room that never existed.
+	stateRows, err := s.store.Events.StateSnapshot(ctx, req.RoomID, row.ID)
+	if err != nil || len(stateRows) == 0 {
+		// A room keeps snapshots for the points where a reader stopped reading; the current state is the
+		// answer for a point that never needed one.
+		stateRows, err = s.stateRowsFor(ctx, req.RoomID, req.Reader)
+		if err != nil {
+			return nil, err
+		}
+	}
+	response.State = []json.RawMessage{}
+	for i := range stateRows {
+		rendered, err := s.Render(ctx, &stateRows[i], req.Reader)
+		if err != nil {
+			return nil, err
+		}
+		response.State = append(response.State, rendered)
+	}
+	return response, nil
+}
+
 // TimestampRequest asks where a room's history was at a given moment.
 type TimestampRequest struct {
 	RoomID string

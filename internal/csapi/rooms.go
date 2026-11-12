@@ -387,6 +387,35 @@ func readInt64(raw string) (string, int64, error) {
 	return raw, value, err
 }
 
+// handleRoomContext answers "what was around this event?" — the read a client reaches for after it has
+// landed on an event from anywhere: a search result, a notification, a reply chain, a timestamp lookup.
+func handleRoomContext(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		roomID := r.PathValue("roomID")
+		limit := 10
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil {
+				httpx.RespondError(w, r, matrix.NewInvalidParam("limit must be an integer"))
+				return
+			}
+			limit = parsed
+		}
+		response, err := deps.Rooms.EventContext(r.Context(), roomserver.ContextRequest{
+			RoomID:  roomID,
+			EventID: r.PathValue("eventID"),
+			Limit:   limit,
+			Reader:  dReader(deps, r, roomID, session),
+		})
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, response)
+	}
+}
+
 func handleMembers(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session := httpx.MustSession(r)
