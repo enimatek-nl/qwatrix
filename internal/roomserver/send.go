@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -229,6 +230,25 @@ func (s *Service) UpdateMembership(ctx context.Context, req MembershipRequest) (
 		} else if isLocalLocalpart(target) {
 			return "", matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
 				"User %q does not exist on this homeserver", matrix.UserID(target, s.cfg.ServerName))
+		}
+	}
+
+	// A restricted room is entered on the strength of a membership in *another* room, and the join
+	// event has to name the local user that authorises it. This field is the server's to write and
+	// never the client's: whatever arrives in the request is discarded first, because a client that
+	// could name its own authoriser could walk into any restricted room by naming somebody entitled
+	// to admit them — and the forgery would carry the signature of the person making it.
+	if req.Membership == matrix.MembershipJoin {
+		delete(content, authorisedViaKey)
+		via, err := s.AuthorisedViaForJoin(ctx, req.RoomID, req.Sender.UserID)
+		if err != nil {
+			// Not being able to decide is not a reason to let the join through, and not one to
+			// refuse it either: the event authoriser applies the rule with better information.
+			slog.Warn("roomserver: could not decide whether this server authorises a restricted join",
+				"room_id", req.RoomID, "user_id", req.Sender.UserID, "error", err)
+		}
+		if via != "" {
+			content[authorisedViaKey] = via
 		}
 	}
 

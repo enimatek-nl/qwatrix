@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"testing"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/enimatek-nl/qwatrix/tests/harness"
 )
 
@@ -22,7 +24,9 @@ func createRestrictedRoom(t *testing.T, account *harness.Account, server *harnes
 			"content": map[string]any{
 				"join_rule": "restricted",
 				"allow": []map[string]any{{
-					"type":    "m.room",
+					// The ratified entry type. An entry of any other type is ignored, which is
+					// the safe direction and is pinned by its own test below.
+					"type":    "m.room_membership",
 					"room_id": allowRoomID,
 					"via":     []string{string(server.ServerName)},
 				}},
@@ -39,17 +43,6 @@ func createRestrictedRoom(t *testing.T, account *harness.Account, server *harnes
 // nobody makes a room unjoinable by the people its owner pointed at; and admitting somebody who left
 // the room that justified the join keeps the door open after the reason has closed.
 func TestARestrictedRoomAdmitsTheMembersOfTheRoomItPointsAt(t *testing.T) {
-	// Open, and precisely: MSC3083 is not implemented. A `restricted` join rule currently degrades to
-	// `invite` — the answer is wrong in the safe direction, but it is wrong, and a room owner who wrote
-	// "you may join if you are in that room" has a door that does not open.
-	//
-	// What it takes, and why this is not a condition to bolt on: a restricted join is authorised by a
-	// membership event in *another room*, so the authoriser has to be able to see, and be shown, an
-	// event outside the room being joined — a cross-room auth event, selected by this server and
-	// verified against the room it came from. The join path today only ever authorises from the room's
-	// own state, and widening the thing that decides who gets in is not a change to be rushed.
-	t.Skip("T709: `restricted` degrades to `invite`; a restricted join needs a cross-room auth event, " +
-		"which the authoriser cannot express yet")
 	server := harness.NewWithRegistration(t)
 	alice := server.Register(t, "restrictor", "pw-restrictor", false)
 	bob := server.Register(t, "restrictedbob", "pw-restrictedbob", false)
@@ -108,11 +101,6 @@ func TestARestrictedRoomAdmitsTheMembersOfTheRoomItPointsAt(t *testing.T) {
 // honest outcomes — refuse the write, or refuse every join — and one dishonest one: read it as an empty
 // list and let the restriction quietly turn into nothing.
 func TestARestrictedRoomRefusesToBeWonByBadJoinRules(t *testing.T) {
-	// Skipped with the one above rather than left to pass by accident: today the join is refused because
-	// every restricted join is refused, which would still be true if `allow: "potato"` had been read as
-	// an empty list — the honest outcome this test wants, for the wrong reason.
-	t.Skip("T709: meaningless while no restricted join is admitted, so it cannot tell an empty allow list " +
-		"from a refused one")
 	server := harness.NewWithRegistration(t)
 	alice := server.Register(t, "fumbled", "pw-fumbled", false)
 	bob := server.Register(t, "opportunist", "pw-opportunist", false)
@@ -133,5 +121,37 @@ func TestARestrictedRoomRefusesToBeWonByBadJoinRules(t *testing.T) {
 	})
 	if response.StatusCode == http.StatusOK {
 		t.Errorf("a join rule this server cannot read admitted %s anyway: %s", bob.UserID, response.Body)
+	}
+}
+
+// TestAJoiningClientCannotAuthoriseItsOwnJoin is about who owns one field of a membership event.
+//
+// `join_authorised_via_users_server` names the user whose membership in another room authorised this
+// join — the credential a restricted room accepts in place of an invite. Copying it from the request
+// would let anybody walk into any restricted room by naming somebody who is entitled to admit them, and
+// the forgery would be signed by the person using it. So the server decides that field or leaves it
+// out; the value a client sends is dropped before the event is built, in every room, including the
+// ordinary ones where the field means nothing at all.
+func TestAJoiningClientCannotAuthoriseItsOwnJoin(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "powerfulalice", "pw-powerfulalice", false)
+	bob := server.Register(t, "claimingbob", "pw-claimingbob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+
+	response := bob.Do(t, server, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/join/" + url.PathEscape(roomID),
+		Body: map[string]any{
+			"join_authorised_via_users_server": alice.UserID,
+		},
+	})
+	if code := response.StatusCode; code != http.StatusOK {
+		t.Fatalf("joining a public room failed: status %d\nbody: %s", code, response.Body)
+	}
+
+	member := bob.MustGet(t, server, "/_matrix/client/v3/rooms/"+url.PathEscape(roomID)+
+		"/state/m.room.member/"+url.QueryEscape(bob.UserID))
+	if claimed := gjson.GetBytes(member.Body, "content.join_authorised_via_users_server"); claimed.Exists() {
+		t.Errorf("the server wrote a client's own authorisation claim into the join event: %q", claimed.Str)
 	}
 }
