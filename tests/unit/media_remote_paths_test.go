@@ -51,10 +51,10 @@ func TestAMediaFetchTriesEveryPathAnOriginMightServe(t *testing.T) {
 	}
 }
 
-// The order matters: the specified, authenticated path goes out first. The others are compatibility,
-// and a server that leads with an unauthenticated legacy route is asking a stranger for a file it could
-// have asked for properly.
-func TestAMediaFetchAsksTheSpecifiedPathFirst(t *testing.T) {
+// The order is by what implementations answer, not by which endpoint is newest: asking a route a peer
+// does not have is not free, because the peer sees the request — some of them treat an unknown request
+// as an error and say so loudly.
+func TestAMediaFetchAsksThePathImplementationsServeFirst(t *testing.T) {
 	var asked []string
 	service := newMediaServiceWithFetch(t, func(origin, path string) (*media.RemoteMedia, error) {
 		asked = append(asked, path)
@@ -65,8 +65,8 @@ func TestAMediaFetchAsksTheSpecifiedPathFirst(t *testing.T) {
 		t.Fatal("an origin that serves nothing should not satisfy a download")
 	}
 	want := []string{
-		"/_matrix/federation/v1/download/origin.example/the-file",
 		"/_matrix/media/v3/download/origin.example/the-file",
+		"/_matrix/federation/v1/download/origin.example/the-file",
 		"/_matrix/federation/v1/media/download/the-file",
 	}
 	if strings.Join(asked, " ") != strings.Join(want, " ") {

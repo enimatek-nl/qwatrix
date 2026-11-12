@@ -64,16 +64,20 @@ func (s *Service) WithRemoteFetcher(fetcher RemoteFetcher) *Service {
 	return s
 }
 
-// remoteMediaPaths are the resources an origin might serve this file from, in the order they should be
-// asked for.
+// remoteMediaPaths are the resources an origin might serve this file from, in the order they are asked
+// for.
 //
-// Three spellings exist because the endpoint has been redrawn twice in the open. The current
-// specification's is the authenticated `/_matrix/federation/v1/download/{serverName}/{mediaId}` and it
-// goes first: it is the one that says who is asking, and it is the only one a new implementation is
-// obliged to speak. Behind it comes the older unauthenticated `/_matrix/media/v3/download/...`, which
-// deployments and reference implementations still rely on for federation because it predates the
-// redraw. Last is the draft `/_matrix/federation/v1/media/download/{mediaId}` — the shape this server
-// grew first, and the one another of this server's own deployments will still be serving.
+// Three spellings exist because the endpoint has been redrawn twice in the open:
+//
+//  1. `/_matrix/media/v3/download/{origin}/{mediaId}` goes first because it is the one every deployment
+//     answers — it predates the redraws, and servers kept it because federation traffic was already
+//     using it. Asking for what the whole federation serves is what makes the first request succeed;
+//     a probe of a route a peer does not have is not free, since the peer sees it as a request.
+//  2. `/_matrix/federation/v1/download/{serverName}/{mediaId}`, the current specification's
+//     authenticated endpoint, is next: newer implementations answer it and it is the one that says who
+//     is asking.
+//  3. `/_matrix/federation/v1/media/download/{mediaId}`, MSC2448's draft, is last — the shape this
+//     server grew first, and therefore the one another of this server's own deployments still serves.
 //
 // Asking in order rather than guessing once is the difference between a media ID that works across the
 // federation and a broken image in a room on whichever side happened to be newer.
@@ -81,8 +85,8 @@ func remoteMediaPaths(origin, mediaID string) []string {
 	escapedServer := url.PathEscape(origin)
 	escapedMedia := url.PathEscape(mediaID)
 	return []string{
-		"/_matrix/federation/v1/download/" + escapedServer + "/" + escapedMedia,
 		"/_matrix/media/v3/download/" + escapedServer + "/" + escapedMedia,
+		"/_matrix/federation/v1/download/" + escapedServer + "/" + escapedMedia,
 		"/_matrix/federation/v1/media/download/" + escapedMedia,
 	}
 }

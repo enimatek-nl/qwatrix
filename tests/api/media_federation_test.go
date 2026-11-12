@@ -140,3 +140,51 @@ func TestAFederatedMediaRequestServesThisServersOwnFile(t *testing.T) {
 		t.Errorf("the served bytes are %q, want %q", body, payload)
 	}
 }
+
+// TestAPeerAsksForMediaByTheSpecifiedPath is the ratified spelling of the same question —
+// GET /_matrix/federation/v1/download/{serverName}/{mediaID} — which names the origin in the path.
+//
+// Serving only the draft shape is the mistake this pins: this server grew the draft, so its own fetches
+// worked against itself, and every other implementation in the federation was asking a question this
+// server answered with a 404.
+func TestAPeerAsksForMediaByTheSpecifiedPath(t *testing.T) {
+	hs1 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs1.FederationServer(t)
+	alice := hs1.Register(t, "alice", "pw-alice", false)
+	payload := []byte("bytes asked for the specified way")
+	mxc := uploadFile(t, alice, hs1, "specified.txt", "text/plain", payload)
+	_, mediaID := splitMXC(t, mxc)
+
+	peer := newFakePeer(t)
+	path := "/_matrix/federation/v1/download/" + url.PathEscape(string(hs1.ServerName)) + "/" +
+		url.PathEscape(mediaID)
+	status, body := federationGetSigned(t, hs1, peer, path)
+	if status != http.StatusOK {
+		t.Fatalf("a peer asking by the specified path: status %d, want 200\nbody: %s\nHS1 LOG:\n%s",
+			status, body, hs1.Logs())
+	}
+	if string(body) != string(payload) {
+		t.Errorf("the served bytes are %q, want %q", body, payload)
+	}
+}
+
+// Naming somebody else's server in that path is a question this server must not answer from its cache.
+// It holds copies of other servers' files — that is what caching media means — and serving them here
+// would let anybody who once saw a media ID read it from a server that was never supposed to have it.
+func TestThisServerDoesNotServeAnotherServersMedia(t *testing.T) {
+	hs1 := harness.NewWithRegistration(t,
+		harness.WithServerName(dialableServerName(t)), harness.WithFederationInsecureTLS())
+	hs1.FederationServer(t)
+
+	peer := newFakePeer(t)
+	path := "/_matrix/federation/v1/download/" + url.PathEscape("somewhere.else.example") + "/" +
+		url.PathEscape("some-media-id")
+	status, _ := federationGetSigned(t, hs1, peer, path)
+	if status == http.StatusOK {
+		t.Fatal("this server served a file for another server's name")
+	}
+	if status != http.StatusNotFound {
+		t.Errorf("status %d for another server's media, want 404 (a question this server cannot answer)", status)
+	}
+}
