@@ -757,7 +757,7 @@ func (s *Service) applyStateSideEffects(ctx context.Context, tx store.Tx, room *
 		// which rooms this user is in, and a join announced before the join is recorded has no
 		// room to find — so the one event that most needs announcing, a new member whose keys
 		// everybody in the room must start trusting, would announce to nobody.
-		s.announceMembership(ctx, req.stateKey, membership)
+		s.announceMembership(ctx, req.roomID, req.stateKey, membership)
 		s.observeMembershipPresence(ctx, req.stateKey, membership)
 
 	case matrix.EventTypeName:
@@ -1105,6 +1105,10 @@ type PresenceObserver interface {
 // notification about it.
 type DeviceListAnnouncer interface {
 	Announce(ctx context.Context, userID string, left bool) error
+	// AnnounceRoom reports the change to the members of one room, which is the scope a membership
+	// event has — and the only scope that still exists once a leave has been written, because the
+	// user who left is then in no rooms at all.
+	AnnounceRoom(ctx context.Context, userID, roomID string, left bool) error
 }
 
 // WithPresenceObserver installs the presence observer and returns the service for chaining.
@@ -1131,7 +1135,7 @@ func (s *Service) observeMembershipPresence(ctx context.Context, userID, members
 	s.observePresence.ObserveUser(ctx, userID)
 }
 
-func (s *Service) announceMembership(ctx context.Context, userID, membership string) {
+func (s *Service) announceMembership(ctx context.Context, roomID, userID, membership string) {
 	if s.announceDevices == nil {
 		return
 	}
@@ -1140,7 +1144,7 @@ func (s *Service) announceMembership(ctx context.Context, userID, membership str
 		// A fall-through to the announce below.
 	case string(matrix.MembershipLeave), string(matrix.MembershipBan), string(matrix.MembershipKnock):
 		left := membership != string(matrix.MembershipKnock)
-		if err := s.announceDevices.Announce(ctx, userID, left); err != nil {
+		if err := s.announceDevices.AnnounceRoom(ctx, userID, roomID, left); err != nil {
 			slog.Warn("roomserver: could not announce a device-list change",
 				"user_id", userID, "membership", membership, "error", err)
 		}
@@ -1148,7 +1152,7 @@ func (s *Service) announceMembership(ctx context.Context, userID, membership str
 	default:
 		return
 	}
-	if err := s.announceDevices.Announce(ctx, userID, false); err != nil {
+	if err := s.announceDevices.AnnounceRoom(ctx, userID, roomID, false); err != nil {
 		slog.Warn("roomserver: could not announce a device-list change",
 			"user_id", userID, "membership", membership, "error", err)
 	}

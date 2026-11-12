@@ -46,16 +46,50 @@ func New(st *store.Store, n *notifier.Notifier, opts Options) *Service {
 // `left` is a different message from `changed`: a client should drop the keys of somebody who left a
 // shared room and re-query the keys of somebody who is still in it. Getting that backwards either
 // keeps trusting a device that is gone or throws away keys still in use.
+// AnnounceRoom reports a membership change in one named room, which is the scope a membership change
+// actually has.
+//
+// The room is not a convenience. The people who need to hear that Bob's device list went out of scope
+// are the people he left behind in that room, and after the leave is written Bob is in no rooms at all
+// — so asking "which rooms is he in" at that moment answers the wrong question, finds none, and the one
+// notification that must be delivered is silently dropped.
+func (s *Service) AnnounceRoom(ctx context.Context, userID, roomID string, left bool) error {
+	return s.announce(ctx, userID, left, []string{roomID})
+}
+
+// Announce reports a change to a user's devices — a new login, a key upload — to the people who share
+// a room with them.
+//
+// The subject is named the way the membership table names it, and that matters in both
+// directions. A remote user's join has to be announceable at all — a client that is never told
+// about a member it has just acquired quietly stops being able to encrypt to them — and it must
+// not be announced under a bare local part, because "@alice:remote.example" and the local
+// "@alice" would then be the same announcement: bob would be told to re-fetch somebody else's
+// keys and would encrypt to the wrong device.
 func (s *Service) Announce(ctx context.Context, userID string, left bool) error {
-	// The subject is named the way the membership table names it, and that matters in both
-	// directions. A remote user's join has to be announceable at all — a client that is never told
-	// about a member it has just acquired quietly stops being able to encrypt to them — and it must
-	// not be announced under a bare local part, because "@alice:remote.example" and the local
-	// "@alice" would then be the same announcement: bob would be told to re-fetch somebody else's
-	// keys and would encrypt to the wrong device.
-	observers, err := s.observers(ctx, matrix.MembershipKey(userID, s.serverName))
-	if err != nil {
-		return err
+	return s.announce(ctx, userID, left, nil)
+}
+
+// announce records a change for every observer of the subject. With no rooms given, the scope is
+// wherever the subject currently is; a membership change names the room it happened in.
+func (s *Service) announce(ctx context.Context, userID string, left bool, rooms []string) error {
+	key := matrix.MembershipKey(userID, s.serverName)
+	var observers []string
+	var err error
+	if len(rooms) > 0 {
+		observers, err = s.observersIn(ctx, key, rooms)
+		if err != nil {
+			return err
+		}
+	} else {
+		live, rerr := s.store.Memberships.RoomsForUser(ctx, key, string(matrix.MembershipJoin))
+		if rerr != nil {
+			return rerr
+		}
+		observers, err = s.observersIn(ctx, key, live)
+		if err != nil {
+			return err
+		}
 	}
 	if len(observers) == 0 {
 		return nil
@@ -120,12 +154,8 @@ func (s *Service) Changes(ctx context.Context, observer, from, to string) (chang
 //
 // Only local users are returned: a change is something a /sync reads, and a remote user never syncs
 // here, so recording changes for them would be rows nobody will ever ask for.
-func (s *Service) observers(ctx context.Context, localpart string) ([]string, error) {
+func (s *Service) observersIn(ctx context.Context, localpart string, rooms []string) ([]string, error) {
 	seen := map[string]bool{localpart: true}
-	rooms, err := s.store.Memberships.RoomsForUser(ctx, localpart)
-	if err != nil {
-		return nil, err
-	}
 	for _, roomID := range rooms {
 		members, err := s.store.Memberships.List(ctx, roomID, []string{string(matrix.MembershipJoin)}, nil)
 		if err != nil {

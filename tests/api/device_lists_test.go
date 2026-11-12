@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,4 +155,139 @@ func TestJoiningAnnouncesTheNewMember(t *testing.T) {
 	if len(changes.Changed) != 1 || changes.Changed[0] != bob.UserID {
 		t.Errorf("GET /keys/changes reports %v, want exactly %s", changes.Changed, bob.UserID)
 	}
+}
+
+// TestARoommateLeavingIsReportedAsLeaving covers the local half of what complement asks of a device
+// list: two people on one server, one of them leaves the room they shared, and the other has to be told
+// that the keys she holds for that person stopped mattering.
+//
+// It is the same report as a new device, in the other direction, and it is just as silent when it goes
+// missing: a client that never hears `left` keeps encrypting for devices it was told to forget.
+func TestARoommateLeavingIsReportedAsLeaving(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "stayeralice", "pw-stayeralice", false)
+	bob := server.Register(t, "goerbob", "pw-goerbob", false)
+	// Joinable without an invite: this test is about what a roommate's departure reports, not about
+	// who may enter.
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, roomID)
+
+	first := alice.MustSync(t, server, url.Values{"timeout": []string{"0"}})
+	if first.NextBatch == "" {
+		t.Fatal("the first sync returned no position to continue from")
+	}
+
+	server.Do(t, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) + "/leave",
+		Token:  bob.AccessToken,
+	}).MustStatus(t, http.StatusOK)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		next := alice.MustSync(t, server, url.Values{"since": []string{first.NextBatch}, "timeout": []string{"0"}})
+		if containsString(next.DeviceLists.Left, bob.UserID) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bob leaving the room he shared with alice never appeared in device_lists.left: %+v",
+				next.DeviceLists)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
+func containsString(haystack []string, needle string) bool {
+	for _, straw := range haystack {
+		if straw == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAFormerRoommatesDeviceUpdatesAreNotReported is the other half of the rule that a device list is
+// a promise about somebody you can still reach.
+//
+// Bob leaves the room he shared with Alice and then turns encryption on for a new phone. Alice's
+// server is not owed that update and must not deliver it: it no longer has a reason to hold Bob's
+// devices, and reporting them would have it encrypt for a stranger's new device long after the reason
+// for trusting it went away. A server that keeps announcing a departed user's devices is also a server
+// whose clients see endless "so-and-so added a device" notices for people they no longer talk to.
+func TestAFormerRoommatesDeviceUpdatesAreNotReported(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "remainingalice", "pw-remainingalice", false)
+	bob := server.Register(t, "departingbob", "pw-departingbob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	uploadDeviceKeys(t, bob, server)
+	bob.MustJoinRoom(t, server, roomID)
+
+	since := ""
+	if !advanceUntil(t, server, alice, &since, func(next harness.SyncResponse) bool {
+		return strings.Contains(string(mustMarshal(t, next.Rooms.Join)), bob.UserID)
+	}) {
+		t.Fatal("alice never saw bob join the room she created")
+	}
+
+	server.Do(t, harness.Request{
+		Method: http.MethodPost,
+		Path:   "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) + "/leave",
+		Token:  bob.AccessToken,
+	}).MustStatus(t, http.StatusOK)
+
+	if !advanceUntil(t, server, alice, &since, func(next harness.SyncResponse) bool {
+		return containsString(next.DeviceLists.Left, bob.UserID)
+	}) {
+		t.Fatalf("alice was never told bob left, in device_lists.left: %+v", since)
+	}
+
+	// Bob changes his device keys after leaving. Alice must hear nothing about it.
+	uploadDeviceKeys(t, bob, server)
+	for attempt := 0; attempt < 3; attempt++ {
+		next := alice.MustSync(t, server, joinParams(since))
+		if containsString(next.DeviceLists.Changed, bob.UserID) {
+			t.Fatalf("alice was told about a device update from %s, who no longer shares a room with her: %+v",
+				bob.UserID, next.DeviceLists)
+		}
+		if next.NextBatch != "" {
+			since = next.NextBatch
+		}
+	}
+}
+
+// advanceUntil keeps taking incremental syncs until one satisfies `wanted`, leaving `since` at the
+// position just past it.
+//
+// The checking and the advancing have to be the same call: a sync is consumption, and a helper that
+// syncs to look and then syncs again to move on reads every update twice and finds the interesting one
+// in neither.
+func advanceUntil(t *testing.T, server *harness.Server, account *harness.Account, since *string, wanted func(harness.SyncResponse) bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		next := account.MustSync(t, server, joinParams(*since))
+		if wanted(next) {
+			if next.NextBatch != "" {
+				*since = next.NextBatch
+			}
+			return true
+		}
+		if next.NextBatch != "" {
+			*since = next.NextBatch
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
+// joinParams is an incremental sync; no position asks for the first one, which is the only difference
+// between "what is happening now" and "what happened while I was away".
+func joinParams(since string) url.Values {
+	params := url.Values{"timeout": []string{"0"}}
+	if since != "" {
+		params.Set("since", since)
+	}
+	return params
 }
