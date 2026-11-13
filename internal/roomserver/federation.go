@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -817,11 +818,16 @@ func (s *Service) FederatedBackfill(ctx context.Context, origin, roomID, since s
 	if err != nil {
 		return nil, err
 	}
+	// Including detached history means a peer backfilling from this server is not told the room began
+	// wherever this server happened to have joined it. What this server fetched, it can also hand on:
+	// the asking peer verifies every event it receives anyway, which is the only reason handing it
+	// unverified-by-us history is honest.
 	rows, err := s.store.Events.Range(ctx, store.EventQuery{
-		RoomIDs:   []string{roomID},
-		Before:    position,
-		Limit:     limit,
-		OrderDesc: true,
+		RoomIDs:         []string{roomID},
+		Before:          position,
+		Limit:           limit,
+		OrderDesc:       true,
+		IncludeDetached: true,
 	})
 	if err != nil {
 		return nil, err
@@ -926,6 +932,110 @@ func (s *Service) FederatedEventAtTimestamp(ctx context.Context, origin, roomID 
 		return nil, 0, err
 	}
 	return json.RawMessage(row.JSON), row.OriginServerTS, nil
+}
+
+// StoreDetachedEvents keeps events that this server has verified but cannot place.
+//
+// "Verified" is the transport's job and a precondition here: the room server does not re-check
+// signatures, it trusts that whoever handed it the event checked them, exactly as it does for events
+// arriving in a transaction. What it will not do is treat them as ordinary events.
+//
+// Three things are deliberately not done, and each is the invariant it protects:
+//
+//   - the room's state is not touched, because a fetched state event says what a room was like at a
+//     moment this server has no way to place, and applying it would silently rewrite the room it is
+//     serving now;
+//   - no membership row is written, for the same reason one row further down — a fetched
+//     "charlie joined" from last year does not mean charlie is in the room today;
+//   - nothing is published to the notifier, because a detached event is not news, and waking every
+//     long-polling client in the deployment to deliver last year is how a backfill becomes an outage.
+//
+// An event already held is skipped rather than rewritten: the copy this server received in the ordinary
+// course of federation is the one whose place in the graph it knows.
+func (s *Service) StoreDetachedEvents(ctx context.Context, events []gomatrixserverlib.PDU) (int, error) {
+	if len(events) == 0 {
+		return 0, nil
+	}
+	roomID := events[0].RoomID().String()
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return 0, matrix.NewNotFound("Room %q does not exist on this homeserver", roomID)
+		}
+		return 0, err
+	}
+	kept := 0
+	err = s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
+		for _, event := range events {
+			if event.RoomID().String() != roomID {
+				// One window, one room. A peer that mixed rooms into one answer is answered by dropping
+				// what does not belong rather than by writing into a room nobody asked about.
+				continue
+			}
+			if _, err := s.store.Events.ByEventID(ctx, event.EventID()); err == nil {
+				continue
+			} else if !store.IsNotFound(err) {
+				return err
+			}
+			row := &store.EventRow{
+				EventID:        event.EventID(),
+				RoomID:         roomID,
+				Type:           event.Type(),
+				StateKey:       event.StateKey(),
+				JSON:           string(event.JSON()),
+				RoomVersion:    room.Version,
+				Depth:          event.Depth(),
+				OriginServerTS: int64(event.OriginServerTS()),
+				ReceivedMS:     time.Now().UnixMilli(),
+				Sender:         string(event.SenderID()),
+				Detached:       true,
+			}
+			if raw, err := json.Marshal(event.PrevEventIDs()); err == nil {
+				row.PrevEvents = string(raw)
+			}
+			if raw, err := json.Marshal(event.AuthEventIDs()); err == nil {
+				row.AuthEvents = string(raw)
+			}
+			if _, err := s.store.Events.Insert(ctx, tx, row); err != nil {
+				if store.IsAlreadyExists(err) {
+					continue
+				}
+				return err
+			}
+			kept++
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	if kept > 0 {
+		slog.Debug("kept fetched history without placing it", "room_id", roomID, "events", kept)
+	}
+	return kept, nil
+}
+
+// ParsedEvents reads raw events as this room's version, for callers that have verified their signatures
+// and need them as events rather than as bytes. An event that cannot be read is reported rather than
+// dropped quietly: a caller that asked for ten events and silently got nine would store an incomplete
+// window and believe it was the room's whole past.
+func (s *Service) ParsedEvents(ctx context.Context, roomID string, raw []json.RawMessage) ([]gomatrixserverlib.PDU, error) {
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewNotFound("Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, err
+	}
+	events := make([]gomatrixserverlib.PDU, 0, len(raw))
+	for _, body := range raw {
+		event, err := s.Events().ParseRoomVersioned(room.Version, body)
+		if err != nil {
+			return nil, matrix.NewBadJSON(fmt.Sprintf("a peer supplied an event that could not be read: %v", err))
+		}
+		events = append(events, event)
+	}
+	return events, nil
 }
 
 // peerMayReadRoom is the rule every federation read shares: a server may read a room's contents if it

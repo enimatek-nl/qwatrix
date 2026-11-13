@@ -68,6 +68,10 @@ type Service struct {
 	// asking a peer for a room this server does not hold. Nil means a room this server does not
 	// hold does not exist, which is the correct answer for a homeserver that does not federate.
 	federationJoiner FederationJoiner
+	// remoteHistory asks a peer about history this server does not hold. Nil in a deployment with no
+	// outbound federation, where the answer to "where was this room last March" is honestly "this server
+	// does not know".
+	remoteHistory RemoteHistory
 	// federatesOutbound decides whether a locally originated event creates an obligation to tell
 	// other homeservers about it. On by default, because a homeserver that does not send events to
 	// peers is not federating, and the honest failure of a deployment that turns it off is a queue it
@@ -1124,6 +1128,13 @@ type DeviceListAnnouncer interface {
 // WithPresenceObserver installs the presence observer and returns the service for chaining.
 func (s *Service) WithPresenceObserver(observer PresenceObserver) *Service {
 	s.observePresence = observer
+	return s
+}
+
+// WithRemoteHistory installs the peer-facing reader of unfetched history and returns the service for
+// chaining.
+func (s *Service) WithRemoteHistory(history RemoteHistory) *Service {
+	s.remoteHistory = history
 	return s
 }
 

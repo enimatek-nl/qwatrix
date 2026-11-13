@@ -145,14 +145,14 @@ and this server implements a working subset of it.
 
 [`ACCEPTANCE-CRITERIA.md`](ACCEPTANCE-CRITERIA.md) names 95 tests that must pass. Measured at run 113: **94 passing**,
 **1 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is one named
-behaviours rather than a broad failure.
+behaviour rather than a broad failure.
 
 AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
 the harder thing — the mandatory set, across both packages.
 
 | Failing mandatory test | The behaviour behind it |
 |---|---|
-| `TestJumpToDateEndpoint` | needs `GET /rooms/{roomID}/timestamp_to_event` and `GET /rooms/{roomID}/context/{eventID}`, both served locally and over federation — and, for three of its subtests, **application services**, because only an application service may send an event with a chosen `?ts=` and the test uses that to place events at exact milliseconds. Application services are listed as deferred below, so this test cannot pass without either taking them on or exempting it: a conflict between two parts of the criteria, recorded rather than quietly resolved. |
+| `TestJumpToDateEndpoint` | its five remaining subtests jump to a moment in a room hosted on **another** server, which needs this server to answer `GET /rooms/{roomID}/timestamp_to_event` for a past it was never told about — asking a resident peer, keeping what it says, and then paging through it. Measured at run 115 (pending): application services landed, `?ts=` event import works, and both endpoints are served locally and over federation; what remains is the fetching-and-keeping half (T753). |
 
 Every other test the criteria name passes at run 113. Each was closed by a change with a behavioural test
 of its own, and the runs are listed in [COMPLEMENT-RESULTS.md](COMPLEMENT-RESULTS.md).
@@ -181,14 +181,21 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   `/media/thumbnail` are not implemented** (T704, T719, T721). `/state_ids` honestly needs per-event
   state snapshots, which the current schema does not keep: `RoomState` is keyed by
   `(room_id, type, state_key)` and overwritten in place.
-- **No outlier events.** An event whose history cannot be connected is refused rather than persisted,
-  which is the correct safety property (a partial bridge would split the room's history) and the reason
-  `TestSyncTimelineGap` fails (T713).
+- **No outlier events in the graph.** An event whose history cannot be connected is refused rather than
+  joined into the room's DAG, which is the correct safety property: a partial bridge would split the
+  room's history in two. Events fetched from a peer to answer a question about the past are stored
+  *detached* — readable and pageable, but moving no state, opening no branch, and never delivered as news.
+  A fetched event is therefore never answered for by `/send`, and never appears in a `/sync` batch.
 - **`m.device_list_updates` EDUs are not sent**, so a key upload on one server is invisible to peers
   until a room event follows (T712b).
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
   search, URL preview, key backup and cross-signing verification flows, pushers and push gateway
-  delivery, knocking, server ACLs, sliding sync, OIDC/SSO, application services.
+  delivery, knocking, server ACLs, sliding sync, OIDC/SSO.
+- **Application services are supported on the receiving side**: registration files, `as_token`
+  authentication, virtual users, acting as a namespaced user (`?user_id=`), and MSC3316 event import with a
+  chosen `?ts=`. What is not implemented is the *outbound* half — no events or ephemeral data are pushed to
+  a service's configured `url`, so a real bridge would be told nothing. The `rooms` and `aliases` namespaces
+  are parsed and reported but not enforced, since nothing acts on them yet.
 - Federation over TLS: a deployment without a certificate pair generates a self-signed one, and a peer
   will not trust it — which is the right outcome, and `-federation-insecure-skip-tls-verify` exists for
   test networks and logs a `Warn` naming the security boundary it removes.

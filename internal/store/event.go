@@ -77,6 +77,21 @@ type EventRow struct {
 	StateSnapshotOnly bool `gorm:"index" json:"-"`
 	// Redacted records that this row's JSON is already the redacted form.
 	Redacted bool `json:"redacted"`
+	// Detached marks an event this server was told about without being told how it connects to the
+	// room: history fetched from a peer in answer to "where was this room last March", or a window handed
+	// to it by /backfill. Other homeservers call these outliers.
+	//
+	// They are stored because the alternative is worse twice over: refetching the same history on every
+	// question, and answering "I have never heard of that event" about an event the server is holding.
+	// They are marked because three things would be untrue if they were stored as ordinary events — that
+	// this server judged them against the room's rules (it had no state at that point to judge them
+	// with), that they lead up to wherever the room is now, and that a client watching for new activity
+	// should be woken by news from last year.
+	//
+	// So the queries divide by this flag: the ones that page around a room's history include detached
+	// events (that is why they were fetched), and the ones that decide what is new, what the room's state
+	// is, and where its DAG ends do not.
+	Detached bool `gorm:"index;column:detached" json:"-"`
 }
 
 // TableName pins the table name.
@@ -109,6 +124,11 @@ type EventQuery struct {
 	// default; the flag exists for /redact, which must see the event it redacts even if
 	// already redacted).
 	IncludeStateSnapshotOnly bool
+	// IncludeDetached asks for history this server fetched rather than received: /messages, /context and
+	// a peer's /backfill want it, and /sync and unread badges must not treat it as news. Left false,
+	// because a query that has not thought about detached events should tell a client nothing new rather
+	// than wake it with last year.
+	IncludeDetached bool
 	// OrderDesc returns newest first instead of oldest first.
 	OrderDesc bool
 }
@@ -250,6 +270,9 @@ func (q EventQuery) apply(db *gorm.DB) *gorm.DB {
 	if !q.IncludeStateSnapshotOnly {
 		db = db.Where("state_snapshot_only = ?", false)
 	}
+	if !q.IncludeDetached {
+		db = db.Where("detached = ?", false)
+	}
 	// Rejected events are invisible: they were received but never accepted.
 	db = db.Where("rejected_reason = '' OR rejected_reason IS NULL")
 	if q.Limit > 0 {
@@ -271,6 +294,10 @@ func (r *EventRepoImpl) Range(ctx context.Context, q EventQuery) ([]EventRow, er
 }
 
 // NearestByTimestamp implements [EventRepo].
+// A search that reaches a detached event has reached history some peer handed over rather than history
+// this server witnessed. That is the right answer to a question about the past, and it is why this query
+// is the one place the flag is not consulted: a server that fetched an event to answer "where was this
+// room then" has to be able to find it again when the question is asked twice.
 func (r *EventRepoImpl) NearestByTimestamp(ctx context.Context, roomID string, ts int64,
 	forward bool, maxPosition int64) (*EventRow, error) {
 	db := session(ctx, r.db).Model(&EventRow{}).
@@ -350,7 +377,7 @@ func (r *EventRepoImpl) MaxPositionInRoom(ctx context.Context, roomID string) (i
 func (r *EventRepoImpl) Tip(ctx context.Context, roomID string) (*EventRow, error) {
 	var row EventRow
 	err := session(ctx, r.db).
-		Where("room_id = ? AND (rejected_reason = '' OR rejected_reason IS NULL)", roomID).
+		Where("room_id = ? AND (rejected_reason = '' OR rejected_reason IS NULL) AND detached = ?", roomID, false).
 		Order("depth DESC, id DESC").
 		First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {

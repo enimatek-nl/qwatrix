@@ -274,6 +274,17 @@ func New(cfg *config.Config) (*App, error) {
 		Events:     eventService,
 		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
 	}))
+	// A user who asks where a joined room was last March cannot be answered from the local database,
+	// because joining a room buys its current state and none of its past. This gives the room server the
+	// same transport, for the read half: ask a resident peer, verify what it says, and keep it detached.
+	rooms.WithRemoteHistory(fedapi.NewRemoteHistory(fedapi.RemoteHistoryOptions{
+		ServerName: spec.ServerName(cfg.ServerName),
+		Peer:       peer,
+		Events:     eventService,
+		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
+		Store:      rooms,
+		Versions:   rooms,
+	}))
 	return app, nil
 }
 

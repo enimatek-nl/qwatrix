@@ -122,6 +122,13 @@ A join for a room this server does not hold is offered to the servers the client
 `?server_name=` (or `?via=`) and, failing those, to the room ID's own home server. None of them having
 admitted the user is reported as an error naming the room; it is never answered with a half-built room.
 
+A room joined from another server is a room whose past this server does not have: joining buys its current
+state and none of its history. The events this server later fetches to answer a question about that past
+are stored *detached* — readable, pageable, and explicitly not part of the room's graph. Detached history
+moves no state, opens no branch, and is never delivered as news: `/sync` does not put it in a timeline, and
+the unread badges do not count it, because a user who paged up to last year has not received last year.
+`/messages` and `/context` page through it like any other history, which is the only reason it was fetched.
+
 `/rooms/{roomID}/timestamp_to_event?ts=&dir=` searches the room's history for a moment: `dir=f` finds the
 earliest event stamped at or after it, `dir=b` the latest at or before. The direction is required because
 they are opposite questions, and in a room whose events share a millisecond they find different events —
@@ -439,8 +446,8 @@ room's own authorisation rules are then applied by the room server — a private
 public because the request arrived on the federation port, and a server may submit a join only for a
 user on its own domain.
 
-Every read of room contents (`/event`, `/timestamp_to_event`, and the ones still to come) is gated by one
-rule: **a server may read what its users are in.** A peer with no joined user in the room is refused even
+Every read of room contents (`/event`, `/timestamp_to_event`, `/state_ids`, `/state` and `/backfill`) is
+gated by one rule: **a server may read what its users are in.** A peer with no joined user in the room is refused even
 for an event whose ID it already knows, because event IDs are not secrets and "may I have that event?" is
 otherwise a way to read a room without ever joining it. An event this server has never heard of is a `404`
 and an event it holds but will not show is a `403`, in that order, so the difference between the two is
@@ -464,6 +471,18 @@ counting something that depends on the order the state happened to be written in
 `/timestamp_to_event` answers where this server's copy of the room's history was, not where all of it
 was — a resident server that has backfilled nothing points at the nearest event it holds. That is the
 contract: the asking server is expected to backfill around the answer it gets.
+
+A window served by `/backfill` includes what this server itself fetched from somebody else. Passing on
+history this server merely remembers is honest because the asking peer verifies every event it is given —
+the same rule that lets this server accept events it did not authorize. What this server refuses to do is
+place a fetched event in the room's graph: fetched events move no state, open no branch, and are not
+answered for by `/send`.
+
+The client's `/timestamp_to_event` asks a peer when the room's home server is not this one, and keeps what
+comes back. It does so *before* consulting its own store, because a store holding only this week's events
+is exactly the store that answers a question about last March with this week's join event and looks
+confident doing it. If the peer cannot be reached, the local answer is given: a server that cannot reach a
+neighbour is entitled to answer from what it knows, but not to pretend that is everything.
 
 `make_join` is a description of what a valid join would look like, not a permission slip: the answer
 to "may this user join?" is asked again, of the signed event, at `send_join`. An unknown room and an

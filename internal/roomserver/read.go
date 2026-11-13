@@ -343,6 +343,57 @@ func (s *Service) checkReadable(ctx context.Context, roomID string, opts RenderO
 	}
 }
 
+// fetchHistoryAtTimestamp asks a resident server about a moment this server cannot place, and keeps the
+// answer.
+//
+// Two requests, and the second is the one that makes the endpoint useful. The MSC tells a server that
+// fetched an event this way to backfill around it, and the reason is on the client's side of the
+// conversation: an event with nothing beside it is an answer the user can look at and nowhere to go, and
+// what they do next is page. Asking for a window now saves every client that follows a round trip through
+// a peer.
+//
+// It reports whether the peer named anything, and returns the transport's error alongside a false answer,
+// because "the peer had nothing" and "the peer could not be reached" need different log lines and the
+// same fallback: whatever this server already knows.
+func (s *Service) fetchHistoryAtTimestamp(ctx context.Context, req TimestampRequest) (bool, error) {
+	if s.remoteHistory == nil {
+		return false, nil
+	}
+	server, remote := roomResidentServer(req.RoomID, s.cfg.ServerName)
+	if !remote {
+		// This server hosts the room, so there is nobody to ask who knows more than it does.
+		return false, nil
+	}
+	raw, err := s.remoteHistory.EventAtTimestamp(ctx, server, req.RoomID, req.Timestamp, req.Forward)
+	if err != nil {
+		return false, err
+	}
+	events, err := s.ParsedEvents(ctx, req.RoomID, []json.RawMessage{raw})
+	if err != nil {
+		return false, err
+	}
+	if _, err := s.StoreDetachedEvents(ctx, events); err != nil {
+		return false, err
+	}
+	if _, err := s.remoteHistory.BackfillHistory(ctx, server, req.RoomID, 100); err != nil {
+		// A window is a bonus on top of an answer that has already arrived; refusing the user's
+		// question because the bonus failed would be a worse service than an incomplete history.
+		slog.Debug("backfilling around a fetched event failed", "room_id", req.RoomID, "error", err)
+	}
+	return true, nil
+}
+
+// roomResidentServer is the server named by a room ID — the one that created it, and the first one worth
+// asking about a room this server did not create. It reports false for a room of this server's own, which
+// is not a question to ask anybody.
+func roomResidentServer(roomID, serverName string) (string, bool) {
+	_, origin, err := matrix.ParseRoomID(roomID)
+	if err != nil || origin == "" || origin == serverName {
+		return "", false
+	}
+	return origin, true
+}
+
 // ContextRequest asks for the neighbourhood of one event: what it was, what happened just before and
 // just after it, and the tokens to keep walking in either direction.
 type ContextRequest struct {
@@ -414,13 +465,28 @@ func (s *Service) EventContext(ctx context.Context, req ContextRequest) (*Contex
 
 	// Both reads are bounded by the room, so an event that has drifted out of it (or never belonged to
 	// it) cannot drag another room's history into the answer.
-	before, err := s.store.Events.Range(ctx, store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: beforeLimit, Before: row.ID, OrderDesc: true})
-	if err != nil {
-		return nil, err
+	// A limit of zero still returns the event it was asked for, and no neighbours: the two reads are
+	// skipped rather than run with a limit of zero, because "no limit" and "no events" are different
+	// instructions and a query cannot tell them apart. Clients send `limit=0` on purpose to ask for the
+	// event and its tokens alone.
+	var before, after []store.EventRow
+	if beforeLimit > 0 {
+		before, err = s.store.Events.Range(ctx, store.EventQuery{
+			RoomIDs: []string{req.RoomID}, Limit: beforeLimit, Before: row.ID,
+			OrderDesc: true, IncludeDetached: true,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
-	after, err := s.store.Events.Range(ctx, store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: afterLimit, After: row.ID})
-	if err != nil {
-		return nil, err
+	if afterLimit > 0 {
+		after, err = s.store.Events.Range(ctx, store.EventQuery{
+			RoomIDs: []string{req.RoomID}, Limit: afterLimit, After: row.ID,
+			IncludeDetached: true,
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	response := &ContextResponse{
@@ -482,6 +548,21 @@ func (s *Service) EventContext(ctx context.Context, req ContextRequest) (*Contex
 	return response, nil
 }
 
+// RemoteHistory is how the room server asks a peer about history this server does not hold.
+//
+// It is a seam rather than a dependency because the direction of trust matters: the transport knows how
+// to sign a request and verify what comes back, and the room server knows what is worth asking and what
+// may be kept. Neither belongs in the other.
+type RemoteHistory interface {
+	// EventAtTimestamp asks `server` where `roomID` was at the given moment and returns the event it
+	// named. What comes back has been verified against the sender's keys: a peer's answer is a body it
+	// chose to send, not evidence.
+	EventAtTimestamp(ctx context.Context, server, roomID string, timestampMS int64, forward bool) (json.RawMessage, error)
+	// BackfillHistory asks `server` for a window of `roomID`'s history, keeps what is new here, and
+	// reports how many events that was.
+	BackfillHistory(ctx context.Context, server, roomID string, limit int) (int, error)
+}
+
 // TimestampRequest asks where a room's history was at a given moment.
 type TimestampRequest struct {
 	RoomID string
@@ -520,6 +601,23 @@ func (s *Service) EventAtTimestamp(ctx context.Context, req TimestampRequest) (*
 		}
 		return nil, err
 	}
+	// For a room this server does not host, ask a resident server first.
+	//
+	// Not because the local store is empty — it usually is not. A server that joined last week holds its
+	// own join event, and a search that finds it would answer "the room was here" with a confident
+	// untruth: this server's copy of a remote room's timeline is known to be incomplete, so a local hit is
+	// not evidence that the local event is the *nearest* one. The server that has the room is the one that
+	// can say where the room was.
+	if found, err := s.fetchHistoryAtTimestamp(ctx, req); err != nil {
+		// Said out loud and then set aside: a peer that cannot be reached is reason to answer from what
+		// this server knows, not reason to refuse a question about the past.
+		slog.Debug("asking a peer where its room was failed",
+			"room_id", req.RoomID, "error", err)
+	} else if !found {
+		slog.Debug("a peer had nothing to say about a moment in a room it hosts",
+			"room_id", req.RoomID)
+	}
+
 	// A former member's question is answered inside the stretch of history they may still read; the
 	// ceiling is what keeps the answer from naming an event their own client would then be refused.
 	row, err := s.store.Events.NearestByTimestamp(ctx, req.RoomID, req.Timestamp, req.Forward,
@@ -760,7 +858,11 @@ func (s *Service) Messages(ctx context.Context, req MessagesRequest) (*MessagesR
 	if direction == "" {
 		direction = DirectionBackward
 	}
-	query := store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: limit}
+	// Detached history — what this server fetched from a peer rather than received in the course of
+	// federation — is paged like any other history, because that is the only reason it was fetched. It is
+	// /sync and the unread badges that exclude it, where the question is what the room has done, not what
+	// the room remembers.
+	query := store.EventQuery{RoomIDs: []string{req.RoomID}, Limit: limit, IncludeDetached: true}
 	switch direction {
 	case DirectionBackward:
 		// A backward read includes the event named by `from`. The token a client has is a
