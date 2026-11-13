@@ -69,6 +69,13 @@ func (c *RemoteJoiner) JoinRemoteRoom(ctx context.Context, userID, roomID, reaso
 		slog.Debug("fedapi: could not join a room through this server",
 			"room_id", roomID, "server", server, "error", err)
 	}
+	// A room that refused is not a room that does not exist. Mapping every failure to "not found" made a
+	// room that said "you are not invited" indistinguishable from a dead server, and a client that
+	// believes a room is gone stops offering the user the one thing that would work — asking for an
+	// invite.
+	if refusal := peerRefusal(lastErr); refusal != nil {
+		return nil, refusal
+	}
 	if apiErr, ok := lastErr.(*matrix.APIError); ok {
 		return nil, apiErr
 	}
@@ -307,11 +314,17 @@ func (c *RemoteJoiner) readEvents(ctx context.Context, roomID string, version go
 // room ID's own home server is the only remaining candidate: room IDs are minted by the server that
 // created the room, which makes them a weak but honest pointer.
 func (c *RemoteJoiner) joinServers(roomID string, servers []string) []spec.ServerName {
+	return candidateServers(c.opts.ServerName, roomID, servers)
+}
+
+// candidateServers is the same rule as a free function, for the handshakes that are not joins: which
+// server holds a room is guesswork, and every handshake has to guess it the same way.
+func candidateServers(self spec.ServerName, roomID string, servers []string) []spec.ServerName {
 	seen := map[string]bool{}
 	candidates := make([]spec.ServerName, 0, len(servers)+1)
 	appendCandidate := func(server string) {
-		if server == "" || seen[server] || server == string(c.opts.ServerName) {
-			// This server is never worth asking: if it held the room, the join would not be
+		if server == "" || seen[server] || server == string(self) {
+			// This server is never worth asking: if it held the room, the handshake would not be
 			// federated, and asking it would be a loop with extra steps.
 			return
 		}
@@ -325,9 +338,6 @@ func (c *RemoteJoiner) joinServers(roomID string, servers []string) []spec.Serve
 		if _, domain, err := matrix.ParseRoomID(roomID); err == nil {
 			appendCandidate(domain)
 		}
-	}
-	if len(candidates) == 0 {
-		return nil
 	}
 	return candidates
 }

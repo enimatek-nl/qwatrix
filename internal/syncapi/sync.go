@@ -388,7 +388,7 @@ func (s *Service) build(ctx context.Context, req Request, since int64) (*Respons
 				empty = false
 			}
 		case matrix.MembershipKnock:
-			room, err := s.knockedRoom(ctx, membership.RoomID, since)
+			room, err := s.knockedRoom(ctx, membership.RoomID, req.Localpart)
 			if err != nil {
 				return nil, false, err
 			}
@@ -843,11 +843,17 @@ func (s *Service) stateAtLeave(ctx context.Context, roomID string, at int64, rea
 }
 
 // knockedRoom builds one room's `knock` entry.
-func (s *Service) knockedRoom(ctx context.Context, roomID string, since int64) (*KnockedRoom, error) {
-	state, err := s.rooms.StateEventRows(ctx, roomID, roomserver.RenderOptions{SkipTransactionID: true})
+//
+// It is not a room read. A user who has knocked on a room is not in it, and the room's own read rules —
+// which exist to stop exactly that — correctly refuse them; the answer is not to weaken those rules but to
+// hand over the front-door set the specification describes for this position, which the room server builds
+// and this function has no opinion about.
+//
+// A room whose state cannot be read still appears in the `knock` section with an empty list, because the
+// fact the client is looking for is the knock itself: an absent room would tell them they never knocked.
+func (s *Service) knockedRoom(ctx context.Context, roomID, localpart string) (*KnockedRoom, error) {
+	state, err := s.rooms.KnockState(ctx, roomID, localpart)
 	if err != nil {
-		// A knocked-on room whose state this server cannot read still has to appear, or the
-		// client would never learn the knock exists.
 		state = []json.RawMessage{}
 	}
 	return &KnockedRoom{KnockState: EventsBatch{Events: state}}, nil

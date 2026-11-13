@@ -36,7 +36,16 @@ type JoinServer interface {
 	MakeJoinTemplate(ctx context.Context, roomID, userID string, requested []string) (*roomserver.JoinTemplate, error)
 	// MakeLeaveTemplate drafts the leave event a peer signs for a user leaving this server's room,
 	// which is the handshake in front of `send_leave`.
-	MakeLeaveTemplate(ctx context.Context, roomID, userID string) (*roomserver.LeaveTemplate, error)
+	MakeLeaveTemplate(ctx context.Context, roomID, userID string) (*roomserver.MembershipTemplate, error)
+	// MakeKnockTemplate drafts the knock event a peer signs for a user knocking on this server's room,
+	// which is the handshake in front of `send_knock`.
+	MakeKnockTemplate(ctx context.Context, roomID, userID string,
+		requested []string) (*roomserver.MembershipTemplate, error)
+	// CheckKnock decides whether a peer's knock may be admitted at all: whose user it speaks for, and
+	// whether this room's join rule admits knocking.
+	CheckKnock(ctx context.Context, roomID, origin string, event gomatrixserverlib.PDU) error
+	// KnockStateForUser answers a knock with the room's front door and that user's own receipt.
+	KnockStateForUser(ctx context.Context, roomID, userID string) ([]json.RawMessage, error)
 	AcceptFederationJoin(ctx context.Context, roomID string, origin string, event gomatrixserverlib.PDU) (*roomserver.JoinAcceptance, error)
 	// AcceptFederationEvent admits one event a peer relayed about a room this server holds. Unlike
 	// a join, the event need not have originated at this peer, so the room server is not told who
@@ -143,6 +152,10 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_join/{roomID}/{eventID}", h.handleSendJoin(false))
 	h.mux.HandleFunc("GET /_matrix/federation/v1/make_leave/{roomID}/{userID}", h.handleMakeLeave)
 	h.mux.HandleFunc("GET /_matrix/federation/v2/make_leave/{roomID}/{userID}", h.handleMakeLeave)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/make_knock/{roomID}/{userID}", h.handleMakeKnock)
+	h.mux.HandleFunc("GET /_matrix/federation/v2/make_knock/{roomID}/{userID}", h.handleMakeKnock)
+	h.mux.HandleFunc("PUT /_matrix/federation/v1/send_knock/{roomID}/{eventID}", h.handleSendKnock)
+	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_knock/{roomID}/{eventID}", h.handleSendKnock)
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}", h.handleSendLeave)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", h.handleSendLeave)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", h.handleEventAuth(false))

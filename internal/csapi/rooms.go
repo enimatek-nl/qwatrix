@@ -594,6 +594,58 @@ func handleJoinRoom(deps Deps) http.HandlerFunc {
 	}
 }
 
+func handleKnock(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		// Both spellings in the specification are served here: `POST /rooms/{roomID}/knock` and
+		// `POST /knock/{roomIDOrAlias}`, which clients use when they have an alias rather than an ID.
+		roomID := r.PathValue("roomID")
+		if roomID == "" {
+			roomID = r.PathValue("roomIDOrAlias")
+		}
+		if strings.HasPrefix(roomID, "#") {
+			resolved, err := deps.Rooms.ResolveAlias(r.Context(), roomID)
+			if err != nil {
+				httpx.RespondError(w, r, err)
+				return
+			}
+			roomID = resolved
+		}
+
+		// The body is decoded as a document rather than a struct for the same reason a join's is: the
+		// body of a knock *is* the content of the member event it produces, so a key this server does
+		// not know is still something the client asked to have written into the room. Only the reason
+		// is read; the rest travels untouched. An absent body means "knock without a reason".
+		var raw map[string]json.RawMessage
+		if err := httpx.DecodeJSONIfPresent(r, &raw); err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		body := membershipActionRequest{extra: extraContentKeys(raw, "reason", "user_id", "room_id", "vi")}
+		if encoded, ok := raw["reason"]; ok {
+			if err := json.Unmarshal(encoded, &body.Reason); err != nil {
+				httpx.RespondError(w, r, matrix.NewBadJSON("reason must be a string"))
+				return
+			}
+		}
+
+		// The servers to knock through. A client that names none is asking this server to work out where
+		// the room is; for a room it holds the list is irrelevant, and for one it does not it is the
+		// only door.
+		var servers []string
+		servers = append(servers, r.URL.Query()["server_name"]...)
+		servers = append(servers, r.URL.Query()["via"]...)
+
+		eventID, err := deps.Rooms.KnockRoomVia(r.Context(), senderOf(session), roomID, body.Reason,
+			body.extra, servers)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]string{"room_id": roomID, "event_id": eventID})
+	}
+}
+
 func handleLeaveRoom(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session := httpx.MustSession(r)

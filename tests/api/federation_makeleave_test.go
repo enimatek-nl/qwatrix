@@ -22,9 +22,9 @@ import (
 	"github.com/matrix-org/gomatrixserverlib"
 )
 
-// makeLeaveTemplate asks this server for a leave draft, as a peer would, and returns the room version and
+// makeMembershipTemplate asks this server for a leave draft, as a peer would, and returns the room version and
 // the unsigned event.
-func makeLeaveTemplate(t *testing.T, server *harness.Server, peer *fakePeer, roomID, userID string,
+func makeMembershipTemplate(t *testing.T, server *harness.Server, peer *fakePeer, roomID, userID string,
 	versioned bool) (gomatrixserverlib.ProtoEvent, string) {
 	t.Helper()
 
@@ -100,7 +100,7 @@ func TestAPeerPlacesItsUsersLeaveWhereThisRoomCanTakeIt(t *testing.T) {
 	roomID, join, _ := joinedRoom(t, server, alice, peer, "public_chat")
 	remote := "@charlie:" + string(peer.serverNo)
 
-	event, version := makeLeaveTemplate(t, server, peer, roomID, remote, false)
+	event, version := makeMembershipTemplate(t, server, peer, roomID, remote, false)
 	if event.Type != "m.room.member" {
 		t.Fatalf("the draft is a %q, not a membership", event.Type)
 	}

@@ -68,6 +68,10 @@ type Service struct {
 	// asking a peer for a room this server does not hold. Nil means a room this server does not
 	// hold does not exist, which is the correct answer for a homeserver that does not federate.
 	federationJoiner FederationJoiner
+	// federationKnocker performs the part of knocking that only the federation transport can: a
+	// knock on a room this server does not hold is carried to a server that does, and what comes back
+	// is stored.
+	federationKnocker FederationKnocker
 	// remoteHistory asks a peer about history this server does not hold. Nil in a deployment with no
 	// outbound federation, where the answer to "where was this room last March" is honestly "this server
 	// does not know".

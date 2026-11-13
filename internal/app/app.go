@@ -292,6 +292,15 @@ func New(cfg *config.Config) (*App, error) {
 		Events:     eventService,
 		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
 	}))
+	// Knocking is the same shape of problem: a user knocking on a room this server does not hold needs a
+	// server that does hold it, both for where the knock attaches and for the answer the client shows
+	// them. Left unset, a knock on an unknown room is a 404, which is what a non-federating server should
+	// say rather than pretend to have queued something.
+	rooms.WithFederationKnocker(fedapi.NewRemoteKnocker(fedapi.RemoteKnockOptions{
+		ServerName: spec.ServerName(cfg.ServerName),
+		Peer:       peer,
+		Events:     eventService,
+	}))
 	// A user who asks where a joined room was last March cannot be answered from the local database,
 	// because joining a room buys its current state and none of its past. This gives the room server the
 	// same transport, for the read half: ask a resident peer, verify what it says, and keep it detached.

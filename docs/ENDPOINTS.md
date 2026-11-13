@@ -98,6 +98,8 @@ two differ in the specification and the server does not accept them interchangea
 | `POST` | `/rooms/{roomID}/forget` | [Forget room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidforget) |
 | `POST` | `/rooms/{roomID}/invite` | [Invite](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite) |
 | `POST` | `/rooms/{roomID}/kick` | [Kick](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidkick) |
+| `POST` | `/rooms/{roomID}/knock` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidknock) |
+| `POST` | `knock/{roomIDOrAlias}` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3knockroomidoralias) |
 | `POST` | `/rooms/{roomID}/ban` | [Ban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidban) |
 | `POST` | `/rooms/{roomID}/unban` | [Unban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidunban) |
 | `GET` | `/rooms/{roomID}/members` | [List members](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmembers) |
@@ -349,6 +351,10 @@ that arrives unauthenticated is a peer asking who this server is.
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
 | `POST` | `/_matrix/federation/v1/get_missing_events/{roomID}` | [Get missing events](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1get_missing_eventsroomid) |
 | `GET` | `/_matrix/federation/v1/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) |
+| `GET` | `/_matrix/federation/v1/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) |
+| `GET` | `/_matrix/federation/v2/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) |
+| `PUT` | `/_matrix/federation/v1/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) |
+| `PUT` | `/_matrix/federation/v2/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) |
 | `GET` | `/_matrix/federation/v2/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) |
 | `POST` | `/_matrix/federation/v1/user/keys/query` | [query user device keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysquery) |
 | `POST` | `/_matrix/federation/v1/user/keys/claim` | [claim user keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysclaim) |
@@ -458,6 +464,22 @@ logged by type rather than silent, and it remains open work.
 The sending side queues a device message in the same durable ledger as an event, for the reason the
 specification gives for retrying ephemeral events at all: a key share dropped because a peer was briefly
 asleep is not a notification that arrived late, it is a message that can never be read.
+
+Knocking is a membership, so it federates like one. A user who is not in a room and whose way in is not an
+invite can ask — `POST /rooms/{roomID}/knock` (or `/knock/{roomIDOrAlias}` for an alias), with the servers
+to ask named in `?via=` — and if the room is held elsewhere this server runs `make_knock` against a server
+that holds it, signs the draft it is given, and hands it to `send_knock`. Three things are worth naming.
+The draft is read before it is signed: a template describing another user, another room, or another
+membership is an invitation to forge a membership with this server's key, and a signed forgery is a
+statement every other server will believe. Of everything the peer says about the room, this server keeps
+only the front-door set — name, picture, alias, join rule, history visibility — because that is all a room
+is entitled to show somebody it has not let in, and a peer that hands over a member list finds it dropped.
+And a refusal is relayed as a refusal rather than as "no such room", because a user who was told no wants
+to know that is what happened.
+
+What a knocking user is shown is the same narrow set in their own sync, under `rooms.knock`: the receipt of
+their knock and the room's front door, and never another user's membership event. The member list is
+precisely what a knocking user wants and precisely what they have not been admitted to.
 
 A leave is drafted before it is signed. A server whose user is leaving — most often rejecting an
 invitation, a user who never joined and so holds none of the room's history to build on — asks

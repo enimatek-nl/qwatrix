@@ -228,9 +228,11 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   conversation and a recoverable one: room keys live on the devices that made them, so losing every
   device loses the history with it. Element Web offers the screen and this server has nowhere to put the
   answer (T753).
-- **Knocking is not implemented** — `/knock`, `make_knock`, `send_knock`, and the `knock_restricted`
-  join rule of room versions 11 and 12 — so the ways into a room are invite, join, and a restricted join
-  through another room (T752).
+- **Knocking is implemented** — `/rooms/{roomID}/knock`, `/knock/{roomIDOrAlias}`, `make_knock` and
+  `send_knock` in both directions, `knock_restricted` (room version 10 upwards), and the stripped state a
+  knocking user is shown. What is not implemented is the related case of a *peer's* restricted join being
+  authorised by this server (T751): a room can admit a user this server vouches for, but not yet a user
+  another server vouches for.
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
   search, URL preview, cross-signing verification flows, pushers and push gateway delivery, server ACLs,
   sliding sync, OIDC/SSO.

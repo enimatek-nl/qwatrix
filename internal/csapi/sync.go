@@ -214,6 +214,11 @@ func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 		{"rooms/{roomID}/forget", handleForgetRoom(deps)},
 		{"rooms/{roomID}/invite", handleInvite(deps)},
 		{"rooms/{roomID}/kick", handleKick(deps)},
+		// Knocking, in both of the spellings the specification carries: a user who is not in a room
+		// and whose join rule does not let them in can still ask, and the alias spelling is how a
+		// client does it for a room it only knows by name.
+		{"rooms/{roomID}/knock", handleKnock(deps)},
+		{"knock/{roomIDOrAlias}", handleKnock(deps)},
 		{"rooms/{roomID}/ban", handleBan(deps)},
 		{"rooms/{roomID}/unban", handleUnban(deps)},
 	}

@@ -24,37 +24,54 @@ import (
 	"github.com/matrix-org/gomatrixserverlib"
 )
 
-// LeaveTemplate is the draft event `make_leave` answers with.
-type LeaveTemplate struct {
+// MembershipTemplate is the draft event `make_leave` answers with.
+type MembershipTemplate struct {
 	RoomVersion gomatrixserverlib.RoomVersion `json:"room_version"`
 	Event       gomatrixserverlib.ProtoEvent  `json:"event"`
 }
 
 // MakeLeaveTemplate answers `GET /_matrix/federation/v1/make_leave/{roomID}/{userID}` and its v2.
-func (s *Service) MakeLeaveTemplate(ctx context.Context, roomID, userID string) (*LeaveTemplate, error) {
+func (s *Service) MakeLeaveTemplate(ctx context.Context, roomID, userID string) (*MembershipTemplate, error) {
+	// A leave is drafted only for a user the room has heard of: a draft is a place in this room's
+	// graph, and handing one out for a stranger would be this server endorsing a membership statement
+	// about a person it cannot know.
+	return s.draftMembership(ctx, roomID, userID, matrix.MembershipLeave, true)
+}
+
+// draftMembership builds the draft a peer signs for one of this room's membership handshakes.
+//
+// What this server supplies is the one thing the peer cannot know from outside: where the room's history
+// currently ends, and which events authorise a membership change in it. What it pointedly does not supply
+// is the identity: `sender`, `origin` and `origin_server_ts` are left empty for the peer to fill and
+// sign, because a draft that arrived already describing somebody would be this server stating a fact
+// about another server's user — and a peer that copies its template verbatim, which is what every
+// implementation does, would sign a claim from the wrong mouth.
+func (s *Service) draftMembership(ctx context.Context, roomID, userID string,
+	membership string, requireMembership bool) (*MembershipTemplate, error) {
 	room, err := s.store.Rooms.Get(ctx, roomID)
 	if err != nil {
 		if store.IsNotFound(err) {
 			// Worded the way the join handshake words its refusal: whether a room ID exists here is not
 			// this server's to publish, and a peer that is not in it learns nothing by asking twice.
-			return nil, matrix.NewForbidden("this server cannot leave that room")
+			return nil, matrix.NewForbidden("this server cannot take that membership change")
 		}
 		return nil, err
 	}
-	version, err := s.events.RoomVersion(string(gomatrixserverlib.RoomVersion(room.Version)))
-	if err != nil || version == nil {
+	if _, err := s.events.RoomVersion(room.Version); err != nil {
 		return nil, matrix.NewIncompatibleRoomVersion(room.Version)
 	}
 	parsed, err := s.parseUser(userID)
 	if err != nil {
 		return nil, err
 	}
-	member, err := s.membershipOf(ctx, roomID, parsed)
-	if err != nil {
-		return nil, err
-	}
-	if member == nil {
-		return nil, matrix.NewForbidden("this room has no member %q to leave", userID)
+	if requireMembership {
+		member, err := s.membershipOf(ctx, roomID, parsed)
+		if err != nil {
+			return nil, err
+		}
+		if member == nil {
+			return nil, matrix.NewForbidden("this room has no member %q to leave", userID)
+		}
 	}
 
 	// The same authorising set a join is drafted with — the room's create event, its rules, and the
@@ -74,21 +91,18 @@ func (s *Service) MakeLeaveTemplate(ctx context.Context, roomID, userID string) 
 		prevEvents = append(prevEvents, tip.EventID)
 		depth = tip.Depth + 1
 	}
-	content, err := json.Marshal(map[string]any{"membership": string(matrix.MembershipLeave)})
+	content, err := json.Marshal(map[string]any{"membership": membership})
 	if err != nil {
-		return nil, fmt.Errorf("encoding the leave template content: %w", err)
+		return nil, fmt.Errorf("encoding the %s template content: %w", membership, err)
 	}
 
-	return &LeaveTemplate{
+	return &MembershipTemplate{
 		RoomVersion: gomatrixserverlib.RoomVersion(room.Version),
 		Event: gomatrixserverlib.ProtoEvent{
-			Type:     string(matrix.EventTypeMember),
-			StateKey: stateKeyOf(userID),
-			RoomID:   roomID,
-			Depth:    depth,
-			// `sender`, `origin` and `origin_server_ts` are left to the peer for the same reason a join
-			// template leaves them: the peer says who the event is from, when its clock said so, and signs
-			// the result. This server offers a place in the graph and nothing else.
+			Type:       string(matrix.EventTypeMember),
+			StateKey:   stateKeyOf(userID),
+			RoomID:     roomID,
+			Depth:      depth,
 			PrevEvents: prevEvents,
 			AuthEvents: authEventIDs,
 			Content:    content,

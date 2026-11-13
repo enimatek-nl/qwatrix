@@ -190,7 +190,7 @@ a normal outcome of starting a conversation, not a failure.
 
 Deliberately not there yet, and written down rather than hidden: this server sends its own events
 but does not forward another server's, typing and receipts are not relayed, and authorising
-another server's restricted-room join — plus knock and ACL federation — are not implemented.
+another server's restricted-room join — plus ACL federation — are not implemented.
 
 ## Layout
 
