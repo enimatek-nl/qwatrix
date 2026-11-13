@@ -79,6 +79,10 @@ type Options struct {
 	// DeviceLists records that a peer told us one of its users changed their encryption devices. It
 	// may be nil, in which case an incoming device-list update is logged and dropped.
 	DeviceLists DeviceListAnnouncer
+	// MissingEvents fills a peer's gap in one of this server's rooms. It may be nil, in which case the
+	// endpoint refuses rather than answering with an empty list, because "nothing was missing" would tell
+	// the peer its history is complete.
+	MissingEvents MissingEventSource
 	// PeerKeys serves this server's users' device keys and one-time keys to peers. It may be nil, in
 	// which case both queries answer that this server does not serve keys — a refusal a peer can read,
 	// and the honest answer for a server whose key storage is switched off.
@@ -150,6 +154,7 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event/{eventID}", h.handleFederationEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/timestamp_to_event/{roomID}", h.handleFederationTimestampToEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
+	h.mux.HandleFunc("POST /_matrix/federation/v1/get_missing_events/{roomID}", h.handleGetMissingEvents)
 	h.mux.HandleFunc("POST /_matrix/federation/v1/user/keys/query", h.handlePeerKeyQuery)
 	h.mux.HandleFunc("POST /_matrix/federation/v1/user/keys/claim", h.handlePeerKeyClaim)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/download/{serverName}/{mediaID}", h.handleFederationMediaByServerName)

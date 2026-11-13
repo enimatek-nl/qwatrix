@@ -30,11 +30,25 @@ import (
 func peerPosts(t *testing.T, server *harness.Server, peer *fakePeer, path string, body any) map[string]any {
 	t.Helper()
 
+	response := peerRequest(t, server, peer, http.MethodPost, path, body)
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("a signed key question got %d, want 200", response.StatusCode)
+	}
+	return jsonOf(t, response.Body)
+}
+
+// peerRequest signs one federation request with a body as the peer and returns the response with its body
+// unread, for the tests that need to look at a refusal.
+func peerRequest(t *testing.T, server *harness.Server, peer *fakePeer, method, path string,
+	body any) *http.Response {
+	t.Helper()
+
 	raw, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("encoding the body: %v", err)
 	}
-	request := fclient.NewFederationRequest(http.MethodPost, peer.serverNo,
+	request := fclient.NewFederationRequest(method, peer.serverNo,
 		spec.ServerName(server.ServerName), path)
 	if err := request.SetContent(json.RawMessage(raw)); err != nil {
 		t.Fatalf("setting the request content: %v", err)
@@ -53,11 +67,7 @@ func peerPosts(t *testing.T, server *harness.Server, peer *fakePeer, path string
 	if err != nil {
 		t.Fatalf("sending the federation request: %v", err)
 	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("a signed key question got %d, want 200", response.StatusCode)
-	}
-	return jsonOf(t, response.Body)
+	return response
 }
 
 // unsignedPosts sends the same request with no signature at all, which is how a request that did not come

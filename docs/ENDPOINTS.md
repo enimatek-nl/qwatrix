@@ -347,6 +347,7 @@ that arrives unauthenticated is a peer asking who this server is.
 | `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) |
 | `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
+| `POST` | `/_matrix/federation/v1/get_missing_events/{roomID}` | [Get missing events](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1get_missing_eventsroomid) |
 | `POST` | `/_matrix/federation/v1/user/keys/query` | [query user device keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysquery) |
 | `POST` | `/_matrix/federation/v1/user/keys/claim` | [claim user keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysclaim) |
 
@@ -455,6 +456,15 @@ logged by type rather than silent, and it remains open work.
 The sending side queues a device message in the same durable ledger as an event, for the reason the
 specification gives for retrying ephemeral events at all: a key share dropped because a peer was briefly
 asleep is not a notification that arrived late, it is a message that can never be read.
+
+A gap is closed in both directions. This server asks a peer for the events its own events point at; and a
+peer asking `POST /get_missing_events/{roomID}` is answered with the stretch of history between the two
+events it named — oldest first, since it is about to attach that window to the older end and a window
+handed over backwards attaches a room's past in the wrong direction. Neither named end is included: the
+peer has those, which is why it could name them. The window is bounded by the room's history visibility as
+seen by the *asking server*: events from before that server joined a `joined` room are handed over with
+their content removed rather than omitted, because the peer needs the shape of the graph to close its gap
+and has no business reading what was said before it arrived.
 
 An event that follows history this server does not have is not refused straight away: the refusal names
 the missing event, and the transport asks the peer that reported it for exactly that event

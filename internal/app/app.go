@@ -241,6 +241,8 @@ func New(cfg *config.Config) (*App, error) {
 		DeviceLists: deviceListService,
 		// The far half of the same path: a peer's key share for one of this server's devices.
 		ToDevice: toDeviceService,
+		// The read a peer makes when this server is the one holding the history it lacks.
+		MissingEvents: rooms,
 		// And the questions a peer asks before it can send one: what keys do this server's users
 		// have, and may we spend a one-time key to start a session with one of their devices.
 		PeerKeys: keyService,
