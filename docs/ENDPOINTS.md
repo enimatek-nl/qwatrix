@@ -446,13 +446,19 @@ room's own authorisation rules are then applied by the room server — a private
 public because the request arrived on the federation port, and a server may submit a join only for a
 user on its own domain.
 
-Every read of room contents (`/event`, `/timestamp_to_event`, `/state_ids`, `/state` and `/backfill`) is
-gated by one rule: **a server may read what its users are in.** A peer with no joined user in the room is refused even
+Every read of room contents (`/event`, `/timestamp_to_event`, `/state_ids`, `/state`, `/backfill` and
+`/event_auth`) is gated by one rule: **a server may read what its users are in.** A peer with no joined user in the room is refused even
 for an event whose ID it already knows, because event IDs are not secrets and "may I have that event?" is
 otherwise a way to read a room without ever joining it. An event this server has never heard of is a `404`
 and an event it holds but will not show is a `403`, in that order, so the difference between the two is
 only visible to a server that is already entitled to the room. A rejected event is answered as if it did
 not exist: keeping a falsehood because a peer sent it is bookkeeping, not a reason to spread it.
+
+`/event_auth` carries one exception, and it is this room's membership in the asking server: a peer being
+shown the join, leave, ban or invite of **one of its own users** may fetch the rules that authorised that
+decision even before it is in the room. The event has already been delivered to it, and refusing its
+authority would leave the peer holding an event it cannot check — which is not a safety gain. What the
+exception is not is a key: the peer may read the rules behind that membership and nothing else in the room.
 
 `/backfill` gives a window of history ending just before a point the peer names, newest-first, so the
 asking server can chain it onto what it holds and ask again until a window comes back empty. `since` is

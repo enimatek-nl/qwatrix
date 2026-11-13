@@ -45,7 +45,7 @@ type JoinServer interface {
 	RoomVersionFor(ctx context.Context, roomID string) (gomatrixserverlib.IRoomVersion, error)
 	Events() *events.Service
 	// AuthChainFor answers a peer's request for the events that authorised one event.
-	AuthChainFor(ctx context.Context, roomID, eventID string) ([]json.RawMessage, error)
+	AuthChainFor(ctx context.Context, roomID, eventID, origin string) ([]json.RawMessage, error)
 	// FederatedEvent and FederatedEventAtTimestamp answer a peer's reads of history it does not hold.
 	// Both are permission-checked: a peer with no user in the room is refused whatever it asks for.
 	FederatedEvent(ctx context.Context, origin, eventID string) (json.RawMessage, error)

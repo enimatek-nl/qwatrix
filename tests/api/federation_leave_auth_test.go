@@ -265,3 +265,49 @@ func TestTheAuthChainReadNeedsTheRoom(t *testing.T) {
 }
 
 func strPtr(value string) *string { return &value }
+
+// TestAPeerReadsTheRulesBehindItsOwnMembershipOnly is the exception that lets federation work at all, and
+// the rule that stops it being a way in.
+//
+// A server being shown that one of *its* users was invited, joined, left or banned cannot already be "in"
+// the room in the sense the residency rule checks, so it must be allowed to fetch what authorised that
+// decision — the event has been delivered to it already, and refusing the rules behind it would leave it
+// unable to check an event it holds. What it must not be able to do is use that user as a key to the rest
+// of the room.
+func TestAPeerReadsTheRulesBehindItsOwnMembershipOnly(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "host", "pw-host", false)
+	peer := newFakePeer(t)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat"})
+
+	// The only tie between this room and the asking server: a membership event about one of its users.
+	outsider := "@outsider." + harness.Nonce("as") + ":" + string(peer.serverNo)
+	alice.MustPostJSON(t, server, "/_matrix/client/v3/rooms/"+harness.PathEscape(roomID)+"/invite",
+		map[string]any{"user_id": outsider})
+	message := alice.MustSendText(t, server, roomID, "something said in here")
+	state := remoteStateEventIDs(t, server, alice, roomID)
+	invited, ok := state["m.room.member\x00"+outsider]
+	if !ok {
+		t.Fatalf("the invite left no membership event for %s in %v", outsider, state)
+	}
+
+	// The membership about its own user: allowed, and complete enough to check.
+	status, body := federationGetSigned(t, server, peer,
+		"/_matrix/federation/v1/event_auth/"+harness.PathEscape(roomID, invited))
+	if status != http.StatusOK {
+		t.Fatalf("a peer asking about its own user's membership got %d (%s)", status, body)
+	}
+	if chain := gjson.GetBytes(body, "auth_chain"); !chain.IsArray() || len(chain.Array()) == 0 {
+		t.Fatalf("the answer carries no chain to check the membership against: %s", body)
+	}
+
+	// And the room itself: refused. An event ID is not a key, and this server has no user in here.
+	status, body = federationGetSigned(t, server, peer,
+		"/_matrix/federation/v1/event_auth/"+harness.PathEscape(roomID, message))
+	if status == http.StatusOK {
+		t.Errorf("a stranger read the auth chain of a message in a room it is not in: %s", body)
+	}
+	if status < 400 {
+		t.Errorf("status %d, want a refusal (%s)", status, body)
+	}
+}

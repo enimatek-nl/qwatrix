@@ -649,10 +649,25 @@ func (w *eventWriter) appendPrebuilt(req txAppend, event gomatrixserverlib.PDU) 
 // "No such event" and "that event lives in a different room" get the same refusal. This is a read a
 // peer can aim at any room and event ID it can guess, and telling the two apart confirms which
 // identifiers this server really holds.
-func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID string) ([]json.RawMessage, error) {
+func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID, origin string) ([]json.RawMessage, error) {
 	row, err := s.store.Events.ByEventID(ctx, eventID)
 	if err != nil || row.RoomID != roomID {
 		return nil, matrix.NewForbidden("Event %q not found in room %q", eventID, roomID)
+	}
+	// The same entitlement rule every other read of room contents applies: a server may ask about a room
+	// its own users are in.
+	//
+	// One exception, and it is this room's membership in the asking server. A server being shown the
+	// join, leave or ban of one of *its own* users is by definition not yet "in" the room in the sense
+	// `peerMayReadRoom` checks, and refusing the rules that authorised that decision would leave it
+	// unable to check the very event it was sent — which is not a safety gain, because the event has
+	// already been delivered to it.
+	permitted, err := s.peerMayReadRoom(ctx, roomID, origin)
+	if err != nil {
+		return nil, err
+	}
+	if !permitted && !eventIsAboutUserFrom(row, origin) {
+		return nil, matrix.NewForbidden("this server is not giving you the auth chain of %s", roomID)
 	}
 	event, err := s.Events().ParseRoomVersioned(row.RoomVersion, json.RawMessage(row.JSON))
 	if err != nil {
@@ -669,6 +684,20 @@ func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID string) ([]j
 	// event to the set it authorises would make the answer describe an event that is not part of the
 	// decision, and a peer counting on the size of the chain would be counting wrong.
 	return chain, nil
+}
+
+// eventIsAboutUserFrom reports whether an event is a membership event for a user whose home server is
+// `origin`. The user ID's own domain is what is compared, because that is the only claim being made: this
+// server is not being told the user exists, only that the event concerns somebody on that server.
+func eventIsAboutUserFrom(row *store.EventRow, origin string) bool {
+	if origin == "" || row.Type != matrix.EventTypeMember || row.StateKey == nil {
+		return false
+	}
+	_, domain, err := matrix.ParseUserID(*row.StateKey, origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(domain, origin)
 }
 
 // FederatedStateIDs answers `GET /state_ids/{roomID}`: the room's current state as event IDs, plus the

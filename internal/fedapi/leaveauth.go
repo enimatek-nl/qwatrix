@@ -106,7 +106,8 @@ func (h *Handler) handleSendLeave(w http.ResponseWriter, r *http.Request) {
 // error.
 func (h *Handler) handleEventAuth(withRooms bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.authenticatePeer(w, r) == nil {
+		fedRequest := h.authenticatePeer(w, r)
+		if fedRequest == nil {
 			return
 		}
 		if h.opts.Join == nil {
@@ -115,7 +116,7 @@ func (h *Handler) handleEventAuth(withRooms bool) http.HandlerFunc {
 		}
 		roomID := r.PathValue("roomID")
 		eventID := r.PathValue("eventID")
-		chain, err := h.opts.Join.AuthChainFor(r.Context(), roomID, eventID)
+		chain, err := h.opts.Join.AuthChainFor(r.Context(), roomID, eventID, string(fedRequest.Origin()))
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return
