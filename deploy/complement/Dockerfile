@@ -30,7 +30,11 @@ EXPOSE 8008 8448
 
 # The database, media and signing keys all live here. Complement starts a fresh container
 # per deployment, so this is intentionally disposable.
-ENV QWATRIX_DATA_DIR=/data \
+# The registration files complement copies into the container before it starts. The value is a glob,
+# and a glob rather than a path on purpose: most blueprints configure no application service at all,
+# and a server that failed to start because a file was missing would make every one of them fail.
+ENV QWATRIX_APP_SERVICE_CONFIG_FILES=/complement/appservice/*.yaml \
+	QWATRIX_DATA_DIR=/data \
 	QWATRIX_ADDR=:8008 \
 	QWATRIX_REGISTRATION_SECRET=complement \
 	QWATRIX_REGISTRATION=true \

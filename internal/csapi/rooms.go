@@ -180,8 +180,15 @@ func handleSendMessage(deps Deps) http.HandlerFunc {
 			return
 		}
 
-		eventID, replayed, err := deps.Rooms.SendMessage(r.Context(), senderOf(session),
-			roomID, eventType, txnID, content)
+		// An application service may say when the event happened; anybody else's `ts` is ignored
+		// here rather than refused, which is what the specification requires of it.
+		at, err := importedTimestamp(session, r)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		eventID, replayed, err := deps.Rooms.SendMessageAt(r.Context(), senderOf(session),
+			roomID, eventType, txnID, content, at)
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return
@@ -229,8 +236,13 @@ func handleSetState(deps Deps) http.HandlerFunc {
 			return
 		}
 
-		eventID, err := deps.Rooms.SendStateEvent(r.Context(), senderOf(session),
-			roomID, eventType, stateKey, content)
+		at, err := importedTimestamp(session, r)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		eventID, err := deps.Rooms.SendStateEventAt(r.Context(), senderOf(session),
+			roomID, eventType, stateKey, content, at)
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return

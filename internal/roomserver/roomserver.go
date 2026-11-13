@@ -502,6 +502,11 @@ type txAppend struct {
 	// membership is the membership value when this is an m.room.member event; it is needed
 	// to keep the room's member counters honest.
 	membership string
+	// originServerTS stamps the event at a moment other than now. Only an application service may
+	// ask for that, because a client that could choose its own timestamps could rewrite when a room
+	// was created, retroactively authorise a join by being "there earlier", and make a room's
+	// history disagree with every server that saw it happen. Zero means now.
+	originServerTS time.Time
 }
 
 // eventWriter appends events to a room inside one transaction.
@@ -624,7 +629,9 @@ func (w *eventWriter) append(req txAppend) (*store.EventRow, error) {
 		AuthState:   state,
 		Depth:       depth,
 		Redacts:     req.redacts,
-		Unsigned:    unsigned,
+		// Zero means "now", which is the answer for every event that anybody normal sends.
+		Timestamp: req.originServerTS,
+		Unsigned:  unsigned,
 	})
 	if err != nil {
 		return nil, err

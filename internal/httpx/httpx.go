@@ -65,6 +65,15 @@ type Session struct {
 	AccessToken string
 	// Admin is true when the user has administrator rights.
 	Admin bool
+	// AppService marks a session authenticated by an application service token rather than by a
+	// device session this server issued. It is not decoration: it is the difference between a caller
+	// that speaks for one device and one that speaks for a program this server delegated a slice of
+	// its user namespace to, and the handful of capabilities only the latter holds are precisely the
+	// ones that must not leak out of it.
+	AppService bool
+	// AppServiceID names which registered service the caller is, for logs and for attributing what
+	// it did. Empty unless AppService is true.
+	AppServiceID string
 	// SoftLogout marks a session whose token is expired but whose identity is known: the
 	// caller must re-authenticate rather than re-register.
 	SoftLogout bool
@@ -358,8 +367,31 @@ func RequireAuth(resolver SessionResolver, next http.Handler) http.Handler {
 			RespondError(w, r, err)
 			return
 		}
+		if err := checkImpersonation(r, session); err != nil {
+			RespondError(w, r, err)
+			return
+		}
 		next.ServeHTTP(w, r.WithContext(withSession(r, session)))
 	})
+}
+
+// checkImpersonation enforces the one rule that makes `?user_id=` safe: naming the user you are
+// speaking for is an application service's privilege, because that is how a bridge sends as the
+// people it bridges.
+//
+// A normal session that names *itself* is tolerated — it is a no-op, and refusing it would break a
+// client that echoes the identity it already authenticated as. A normal session that names somebody
+// else is refused rather than ignored: ignoring an identity claim leaves the client believing it sent
+// as that user, and the two of them disagree about who wrote the message.
+func checkImpersonation(r *http.Request, session *Session) error {
+	if session.AppService {
+		return nil
+	}
+	named := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	if named == "" || named == session.UserID {
+		return nil
+	}
+	return matrix.NewForbidden("only an application service may act as another user")
 }
 
 // OptionalAuth resolves the token when one is present but does not fail without it.

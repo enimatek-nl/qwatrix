@@ -437,6 +437,31 @@ to "may this user join?" is asked again, of the signed event, at `send_join`. An
 unjoinable one are answered the same way so the endpoint cannot be used to ask which room IDs exist
 here.
 
-Deliberately out of scope for the foreseeable future: application services, OIDC/SSO, third-party
-invites, `/search`, sliding sync, and room version 12's state-DAG variant — the reasoning is in
-[REQUIREMENTS.md](REQUIREMENTS.md).
+## Application services
+
+An application service is a program this server has been told to trust — typically a bridge to another
+network. Trust is configured with files, read at start-up from
+`-app-service-config-files` / `QWATRIX_APP_SERVICE_CONFIG_FILES` (comma-separated, globs allowed), in
+Synapse's own registration format so an existing registration can be dropped in unchanged. A file that
+cannot be read or understood stops the server: a delegation nobody read is not a delegation.
+
+| What | How |
+|---|---|
+| Authentication | the registration's `as_token`, presented as an ordinary access token. It is not stored anywhere, so revoking it means editing the file |
+| Who it speaks for | its own `sender_localpart`, or any local user named by `?user_id=` **inside a `users` namespace**; anything else is `403 M_FORBIDDEN` |
+| Virtual users | the account and its device are created the moment the service first speaks for that user, with no password — and a deactivated account stays deactivated, because that was this server's decision, not the service's |
+| `?ts=` on `PUT /send/{txnID}` and `PUT /state/{type}/{key}` | honoured for a service and **ignored for everybody else** (MSC3316): importing history means saying when a message happened, and letting any client choose that would let it rewrite when a room began or retroactively claim it was there first |
+| `/sync` | refused with `403`: it is one person's devices catching up, and a service is told what it cares about over its own URL instead |
+
+Namespace patterns are matched against the **whole** user ID and anchored, so a namespace naming `alice`
+does not also cover `alice-evil`. `rooms` and `aliases` namespaces are read and reported but not yet
+enforced anywhere, because nothing this server does today consults them.
+
+**Not implemented:** the outbound half. Events are not pushed to the service's `url`, so a service
+learns nothing it has to be told about; ephemeral events, `de.sorunome.msc2409.push_ephemeral`,
+`org.matrix.msc3202` encryption and the transaction endpoint are all absent. A bridge that only sends
+works; one that also receives does not, and it will fail quietly rather than loudly, which is worth
+knowing before trusting one.
+
+Deliberately out of scope for the foreseeable future: OIDC/SSO, third-party invites, `/search`, sliding
+sync, and room version 12's state-DAG variant — the reasoning is in [REQUIREMENTS.md](REQUIREMENTS.md).

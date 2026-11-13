@@ -98,6 +98,7 @@ a flag you did not pass never overwrites an inherited environment variable.
 -federation-insecure-skip-tls-verify   disable peer TLS verification (test networks only)
 -registration                allow POST /register               (true)
 -registration-secret         shared secret for the admin endpoint (empty = disabled)
+-app-service-config-files      application service registrations to trust (comma-separated, globs ok)
 -room-version                default room version               (11)
 -sync-max-timeout            longest permitted /sync long-poll  (1m)
 -sync-timeline-limit         default /sync timeline batch size  (10)

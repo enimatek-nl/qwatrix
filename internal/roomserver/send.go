@@ -16,6 +16,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/store"
@@ -26,7 +27,16 @@ import (
 // Idempotency is checked before the transaction opens rather than inside it: the whole
 // point is that a retry costs one read instead of producing a second event, and reading
 // outside the write lock keeps a slow client from holding the writer.
-func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventType, txnID string, content json.RawMessage) (eventID string, replayed bool, err error) {
+func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventType, txnID string, content json.RawMessage) (string, bool, error) {
+	return s.SendMessageAt(ctx, sender, roomID, eventType, txnID, content, time.Time{})
+}
+
+// SendMessageAt appends a message event stamped at a chosen moment.
+//
+// A zero moment means now, which is what every request from a normal client means. The non-zero case
+// belongs to application services alone — see [Service.SendMessage] and MSC3316 — because choosing
+// when your own event happened is the power to rewrite a room's past.
+func (s *Service) SendMessageAt(ctx context.Context, sender Sender, roomID, eventType, txnID string, content json.RawMessage, originServerTS time.Time) (eventID string, replayed bool, err error) {
 	if eventType == "" {
 		return "", false, matrix.NewInvalidParam("an event type is required")
 	}
@@ -60,13 +70,14 @@ func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventT
 	err = s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
 		writer := &eventWriter{service: s, tx: tx, ctx: ctx}
 		row, appendErr := writer.append(txAppend{
-			roomID:    roomID,
-			eventType: eventType,
-			isState:   false,
-			sender:    sender.UserID,
-			content:   json.RawMessage(content),
-			txnID:     txnID,
-			deviceID:  sender.DeviceID,
+			roomID:         roomID,
+			eventType:      eventType,
+			isState:        false,
+			sender:         sender.UserID,
+			content:        json.RawMessage(content),
+			txnID:          txnID,
+			deviceID:       sender.DeviceID,
+			originServerTS: originServerTS,
 		})
 		if appendErr != nil {
 			return appendErr
@@ -103,6 +114,12 @@ func (s *Service) SendMessage(ctx context.Context, sender Sender, roomID, eventT
 
 // SendStateEvent sets one state tuple of a room.
 func (s *Service) SendStateEvent(ctx context.Context, sender Sender, roomID, eventType, stateKey string, content json.RawMessage) (string, error) {
+	return s.SendStateEventAt(ctx, sender, roomID, eventType, stateKey, content, time.Time{})
+}
+
+// SendStateEventAt sets one state tuple with a chosen origin_server_ts. As in
+// [Service.SendMessageAt], the chosen moment is an application service's privilege and nobody else's.
+func (s *Service) SendStateEventAt(ctx context.Context, sender Sender, roomID, eventType, stateKey string, content json.RawMessage, originServerTS time.Time) (string, error) {
 	if err := validateEventType(eventType); err != nil {
 		return "", err
 	}

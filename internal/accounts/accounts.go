@@ -37,6 +37,23 @@ type Service struct {
 	// this user learn it exists. Like the profile observer it is a seam, and a failure to
 	// announce must never turn into a failed login.
 	observeDevice func(userID string)
+	// external authenticates tokens this service did not issue. Nil in every deployment that has
+	// not been told about an application service, which is the common case and the safe one.
+	external ExternalToken
+}
+
+// ExternalToken is the seam an application service is authenticated through.
+//
+// The accounts service issues access tokens, so it is the natural place to be asked "who is this
+// token?" — and an application service's token is precisely a credential this server did not issue
+// and cannot store, because it is a shared secret written into a file by an operator. Returning a
+// nil session and a nil error means "not mine", which lets the ordinary answer,
+// M_UNKNOWN_TOKEN, stand for tokens nobody recognises.
+type ExternalToken interface {
+	// ResolveExternal returns the session a foreign token authenticates, or nil if the token is
+	// not one this resolver knows. An error is returned only for a token that *is* known and is
+	// not allowed to do what it asked — a service asking to act as a user outside its namespace.
+	ResolveExternal(r *http.Request, token string) (*httpx.Session, error)
 }
 
 // DeviceObserver is notified when an account gains a device.
@@ -71,6 +88,12 @@ func (s *Service) publishProfile(ctx context.Context, localpart string) {
 }
 
 // New builds the service.
+// WithExternalAuthenticator installs the resolver that handles tokens this service did not issue.
+func (s *Service) WithExternalAuthenticator(resolver ExternalToken) *Service {
+	s.external = resolver
+	return s
+}
+
 func New(st *store.Store, cfg *config.Config) *Service {
 	return &Service{store: st, cfg: cfg, nowMS: func() int64 { return time.Now().UnixMilli() }}
 }
@@ -236,6 +259,86 @@ func (s *Service) Register(ctx context.Context, params RegisterParams) (*Account
 	}, nil
 }
 
+// EnsureVirtualUser creates, or finds, the account that an application service is acting as.
+//
+// A bridge user is a fiction: nobody registered it, nobody knows a password for it, and it exists
+// because a service this server trusts said so. The account is still a real row, because membership
+// events, read receipts and device lists all need it to be addressable. Two properties make that safe
+// rather than a way to mint accounts:
+//
+//   - the account can never log in with a password, since an empty hash matches nothing — the service
+//     authenticates with its own token, on every request;
+//   - a deactivated account stays deactivated. A user who was switched off is not brought back by a
+//     service that still believes it owns them, because deactivation is this server's decision, not
+//     the service's.
+func (s *Service) EnsureVirtualUser(ctx context.Context, localpart, deviceID string) (*Account, error) {
+	if !matrix.ValidLocalpart(localpart) {
+		return nil, matrix.NewInvalidParam("the application service's user %q is not a valid local part", localpart)
+	}
+	userID := matrix.UserID(localpart, s.cfg.ServerName)
+	now := s.nowMS()
+	created := false
+
+	err := s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
+		user, err := s.store.Users.Get(ctx, localpart)
+		switch {
+		case err == nil:
+			if user.Deactivated {
+				return matrix.NewAPIError(http.StatusForbidden, matrix.ErrUserDisabled,
+					"This account has been deactivated")
+			}
+		case store.IsNotFound(err):
+			user = &store.User{
+				Localpart:   localpart,
+				UserID:      userID,
+				CreatedMS:   now,
+				UserVersion: 1,
+			}
+			if err := s.store.Users.Create(ctx, user); err != nil {
+				if store.IsAlreadyExists(err) {
+					// Another request provisioned the same bridge user at the same moment. The
+					// account exists, which is all this call was ever asked to guarantee.
+					return nil
+				}
+				return fmt.Errorf("creating application service account %q: %w", userID, err)
+			}
+			created = true
+		default:
+			return fmt.Errorf("reading account %q: %w", userID, err)
+		}
+
+		device, err := s.store.Devices.Get(ctx, deviceID)
+		switch {
+		case err == nil && device.Localpart == localpart:
+			// The service's own device, already there.
+		case err == nil:
+			// The wanted identifier is taken by another account, so take any other one rather
+			// than fail a service that has no opinion about device names.
+			fresh := matrix.DeviceID()
+			if err := s.store.Devices.Create(ctx, &store.Device{ID: fresh, Localpart: localpart,
+				CreatedMS: now, LastSeenMS: now}); err != nil {
+				return fmt.Errorf("creating device for %q: %w", userID, err)
+			}
+			deviceID = fresh
+		case store.IsNotFound(err):
+			if err := s.store.Devices.Create(ctx, &store.Device{ID: deviceID, Localpart: localpart,
+				CreatedMS: now, LastSeenMS: now}); err != nil {
+				return fmt.Errorf("creating device for %q: %w", userID, err)
+			}
+		default:
+			return fmt.Errorf("reading device %q: %w", deviceID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if created {
+		slog.Info("provisioned application service account", "user_id", userID, "device_id", deviceID)
+	}
+	return &Account{Localpart: localpart, UserID: userID, DeviceID: deviceID, NewlyCreated: created}, nil
+}
+
 // LoginParams describes a password login attempt.
 type LoginParams struct {
 	Localpart string
@@ -384,6 +487,19 @@ func (s *Service) ResolveSession(r *http.Request, token string) (*httpx.Session,
 	row, err := s.store.Tokens.Get(ctx, token)
 	if err != nil {
 		if store.IsNotFound(err) {
+			// A token this server never issued. Before calling it unknown, ask the one other
+			// kind of credential the deployment may have configured, because "unknown token" is
+			// the answer that makes a client log out — and an application service that was
+			// configured correctly would have to log in as a user it does not have a password for.
+			if s.external != nil {
+				session, externalErr := s.external.ResolveExternal(r, token)
+				if externalErr != nil {
+					return nil, externalErr
+				}
+				if session != nil {
+					return session, nil
+				}
+			}
 			return nil, matrix.NewUnknownAccessToken()
 		}
 		return nil, fmt.Errorf("resolving access token: %w", err)

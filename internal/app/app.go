@@ -21,6 +21,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/enimatek-nl/qwatrix/internal/accounts"
+	"github.com/enimatek-nl/qwatrix/internal/appservice"
 	"github.com/enimatek-nl/qwatrix/internal/config"
 	"github.com/enimatek-nl/qwatrix/internal/csapi"
 	"github.com/enimatek-nl/qwatrix/internal/devicelists"
@@ -100,6 +101,22 @@ func New(cfg *config.Config) (*App, error) {
 	}
 
 	acc := accounts.New(st, cfg)
+
+	// Application services are trusted because an operator said so in a file, which makes that file
+	// part of the security configuration: a registration that cannot be read, parsed, or understood
+	// stops the server rather than being logged and forgotten. A bridge discovered at the wrong moment
+	// is a bridge whose operator finds out at three in the morning.
+	applicationServices, err := appservice.Load(cfg.AppServiceConfigPatterns(), slog.Default())
+	if err != nil {
+		_ = st.Close()
+		return nil, err
+	}
+	if applicationServices.Len() > 0 {
+		// Said out loud because it is a privilege the deployment granted: these programs may send
+		// events as every user inside their configured namespaces.
+		slog.Info("trusted application services loaded", "count", applicationServices.Len())
+	}
+	acc.WithExternalAuthenticator(appservice.NewAuthenticator(applicationServices, acc, cfg.ServerName, slog.Default()))
 
 	// The signing identity is loaded (or created) before anything can build an event, and
 	// the notifier is shared by the writers and the long-pollers: one process, one stream.

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,6 +55,11 @@ type Options struct {
 	DefaultRoomVersion string
 	// LogLevel silences (or raises) the server's own logging.
 	LogLevel slog.Level
+	// ApplicationServices holds application-service registration files, in the format an operator
+	// writes for Synapse. They are written out as real files under the server's directory, because
+	// the server reads registrations from files and a test that could not be expressed as a file
+	// would not be testing what an operator does.
+	ApplicationServices []string
 	// FederationInsecureTLS lets this server's outbound federation client accept any peer
 	// certificate, which is how a test peer (an httptest TLS server with its own certificate)
 	// can stand in for a real homeserver. It mirrors the operator flag of the same name and is
@@ -76,6 +82,12 @@ const FederationPort = "8448"
 
 func WithServerName(name string) Option {
 	return func(o *Options) { o.ServerName = name }
+}
+
+// WithApplicationService trusts one more application service on this server, given the registration
+// file's contents. The token in it is what the test authenticates with, exactly as a bridge would.
+func WithApplicationService(registration string) Option {
+	return func(o *Options) { o.ApplicationServices = append(o.ApplicationServices, registration) }
 }
 
 // WithFederationInsecureTLS lets this server's federation client talk to a test peer whose
@@ -194,6 +206,18 @@ func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server 
 	cfg.RateLimitEnabled = options.RateLimit
 	cfg.DefaultRoomVersion = options.DefaultRoomVersion
 	cfg.FederationInsecureSkipTLSVerify = options.FederationInsecureTLS
+	if len(options.ApplicationServices) > 0 {
+		// One file per service, in the server's own directory, which the test's cleanup removes.
+		var paths []string
+		for i, registration := range options.ApplicationServices {
+			path := fmt.Sprintf("%s/application-service-%d.yaml", dir, i)
+			if err := os.WriteFile(path, []byte(registration), 0o600); err != nil {
+				t.Fatalf("harness: writing an application service registration: %v", err)
+			}
+			paths = append(paths, path)
+		}
+		cfg.AppServiceConfigFiles = strings.Join(paths, ",")
+	}
 	cfg.Version = "test"
 
 	// The log handler is process-global, so the most recently started server in this test owns

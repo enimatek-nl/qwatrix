@@ -19,6 +19,10 @@ import (
 func handleSync(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		session := httpx.MustSession(r)
+		if err := refuseApplicationServiceSync(session); err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
 		query := r.URL.Query()
 
 		request := syncapi.Request{

@@ -61,6 +61,15 @@ type Config struct {
 	EnableRegistration bool
 	// EnableRegistrationRequiresGuest is unused placeholder for future UIA guest flows.
 
+	// AppServiceConfigFiles lists the application-service registration files this server trusts,
+	// separated by commas. Each entry may be a glob, because bridges are usually provisioned by
+	// dropping a file into a directory rather than by editing a command line.
+	//
+	// An application service is a delegation of trust: it may act as every user named in the
+	// namespaces its file carries. With no files configured there is no delegation at all, and an
+	// as_token is just an unknown token.
+	AppServiceConfigFiles string
+
 	// DefaultRoomVersion is used when POST /createRoom does not name one.
 	DefaultRoomVersion string
 	// UnsupportedRoomVersions are room versions to omit from /capabilities.
@@ -115,6 +124,20 @@ func Default() *Config {
 	}
 }
 
+// AppServiceConfigPatterns splits the configured registration files into the patterns to expand.
+func (c *Config) AppServiceConfigPatterns() []string {
+	if c == nil {
+		return nil
+	}
+	var patterns []string
+	for _, pattern := range strings.Split(c.AppServiceConfigFiles, ",") {
+		if pattern = strings.TrimSpace(pattern); pattern != "" {
+			patterns = append(patterns, pattern)
+		}
+	}
+	return patterns
+}
+
 // ApplyFlags binds every setting to a flag on fs, using the same names as the environment
 // variables in [Config.ApplyEnv] without the prefix.
 func (c *Config) ApplyFlags(fs *flag.FlagSet) {
@@ -130,6 +153,8 @@ func (c *Config) ApplyFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DatabasePath, "db", c.DatabasePath, "SQLite database path (defaults to <data-dir>/qwatrix.db)")
 	fs.StringVar(&c.RegistrationSecret, "registration-secret", c.RegistrationSecret, "shared secret for /_synapse/admin/v1/register (empty disables)")
 	fs.BoolVar(&c.EnableRegistration, "registration", c.EnableRegistration, "allow POST /register")
+	fs.StringVar(&c.AppServiceConfigFiles, "app-service-config-files", c.AppServiceConfigFiles,
+		"comma-separated application service registration files (globs allowed)")
 	fs.StringVar(&c.DefaultRoomVersion, "room-version", c.DefaultRoomVersion, "default room version for POST /createRoom")
 	fs.Int64Var(&c.MediaSizeLimitBytes, "media-limit", c.MediaSizeLimitBytes, "maximum size in bytes of one uploaded file")
 	fs.BoolVar(&c.ThumbnailsEnabled, "thumbnails", c.ThumbnailsEnabled, "enable thumbnail generation")
@@ -179,6 +204,7 @@ func (c *Config) ApplyEnv(getenv func(string) (string, bool)) error {
 	}
 
 	str("SERVER_NAME", &c.ServerName)
+	str("APP_SERVICE_CONFIG_FILES", &c.AppServiceConfigFiles)
 	str("ADDR", &c.ClientAddr)
 	str("FEDERATION_ADDR", &c.FederationAddr)
 	str("TLS_CERT", &c.TLSCertFile)
