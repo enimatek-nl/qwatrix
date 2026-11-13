@@ -203,11 +203,18 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   room's history in two. Events fetched from a peer to answer a question about the past are stored
   *detached* — readable and pageable, but moving no state, opening no branch, and never delivered as news.
   A fetched event is therefore never answered for by `/send`, and never appears in a `/sync` batch.
-- **`m.device_list_updates` EDUs are not sent**, so a key upload on one server is invisible to peers
-  until a room event follows (T712b).
+- **Typing notifications and read receipts are still not relayed between servers.** Device list updates
+  and to-device messages are, so a key uploaded here reaches a peer without waiting for a room event.
+- **Server-side key backup is not implemented**, which is the difference between an encrypted
+  conversation and a recoverable one: room keys live on the devices that made them, so losing every
+  device loses the history with it. Element Web offers the screen and this server has nowhere to put the
+  answer (T753).
+- **Knocking is not implemented** — `/knock`, `make_knock`, `send_knock`, and the `knock_restricted`
+  join rule of room versions 11 and 12 — so the ways into a room are invite, join, and a restricted join
+  through another room (T752).
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
-  search, URL preview, key backup and cross-signing verification flows, pushers and push gateway
-  delivery, knocking, server ACLs, sliding sync, OIDC/SSO.
+  search, URL preview, cross-signing verification flows, pushers and push gateway delivery, server ACLs,
+  sliding sync, OIDC/SSO.
 - **Application services are supported on the receiving side**: registration files, `as_token`
   authentication, virtual users, acting as a namespaced user (`?user_id=`), and MSC3316 event import with a
   chosen `?ts=`. What is not implemented is the *outbound* half — no events or ephemeral data are pushed to

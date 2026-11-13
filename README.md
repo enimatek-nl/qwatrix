@@ -181,6 +181,13 @@ room hosted elsewhere is put to a server that has it, and what comes back is kep
 page-able through `/messages` and `/context`, and outside the room's graph, its state, its tip and
 its `/sync`, because a user who paged up to last year has not received last year.
 
+Encrypted conversations cross the border as well as rooms do. A peer may ask this server which of its
+users' devices hold which keys and for a one-time key to begin a session with, and this server asks peers
+the same, refusing to answer for a user whose name does not end here and spending at most one key per
+device per ask. A key share for a device elsewhere travels as an `m.direct_to_device` EDU and is queued to
+be retried — including across a restart of either server — and a message the far end cannot decrypt yet is
+a normal outcome of starting a conversation, not a failure.
+
 Deliberately not there yet, and written down rather than hidden: this server sends its own events
 but does not forward another server's, typing and receipts are not relayed, and authorising
 another server's restricted-room join — plus knock and ACL federation — are not implemented.
