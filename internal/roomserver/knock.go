@@ -28,6 +28,7 @@ import (
 
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/spec"
+	"github.com/tidwall/gjson"
 
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/store"
@@ -265,23 +266,42 @@ func (s *Service) KnockStateForUser(ctx context.Context, roomID, userID string) 
 }
 
 func (s *Service) knockState(ctx context.Context, roomID, own string) ([]json.RawMessage, error) {
+	// The reader's own receipt is not in the room's state, because a knock is not a state change —
+	// it is the ask. The membership row is what points at it, being the one place this server records
+	// that somebody knocked.
+	// The room's own record of the ask, newest wins: a user who knocked twice has their latest
+	// knock as their receipt, and the room's members see that same one.
+	ownRow := ""
+	ownPosition := int64(-1)
+	members, err := s.store.Events.Range(ctx, store.EventQuery{
+		RoomIDs: []string{roomID},
+		Types:   []string{string(matrix.EventTypeMember)},
+	})
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range members {
+		if row.StateKey == nil || *row.StateKey != own || row.RejectedReason != "" {
+			continue
+		}
+		if gjson.Get(row.JSON, "content.membership").String() != matrix.MembershipKnock {
+			continue
+		}
+		if int64(row.ID) > ownPosition {
+			ownPosition, ownRow = int64(row.ID), row.EventID
+		}
+	}
 	state, err := s.store.State.All(ctx, roomID)
 	if err != nil {
 		return nil, err
 	}
-	if len(state) == 0 {
-		return []json.RawMessage{}, nil
-	}
-	ownRow := ""
 	rows := map[string]store.EventRow{}
-	ids := make([]string, 0, len(state))
+	ids := make([]string, 0, len(state)+1)
+	if ownRow != "" {
+		ids = append(ids, ownRow)
+	}
 	for _, entry := range state {
 		if _, ok := knockStateTypes[entry.Type]; ok {
-			ids = append(ids, entry.EventID)
-			continue
-		}
-		if entry.Type == string(matrix.EventTypeMember) && entry.StateKey == own {
-			ownRow = entry.EventID
 			ids = append(ids, entry.EventID)
 		}
 	}

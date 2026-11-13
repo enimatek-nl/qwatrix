@@ -35,6 +35,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
 	"github.com/enimatek-nl/qwatrix/internal/store"
+	"github.com/tidwall/gjson"
 )
 
 // Presets, as named by the specification's m.create_room_request.
@@ -679,10 +680,21 @@ func (w *eventWriter) append(req txAppend) (*store.EventRow, error) {
 	}
 
 	if req.isState {
-		replaced, err := s.store.State.Upsert(ctx, w.tx, req.roomID, written.EventID,
-			req.eventType, req.stateKey, written.ID)
-		if err != nil {
-			return nil, err
+		// A knock is the one membership the specification keeps *out* of a room's state. It is an
+		// out-of-band statement that somebody asked — delivered to the room's members as a timeline
+		// event, and to the knocker as their receipt — and it does not move the room's current state.
+		// Two reasons, not one: a second knock with a better reason is not a new fact about the room,
+		// and a room whose state a stranger can rewrite has let them in before anybody said yes. The
+		// membership tables below are still written, because "which rooms is this user in, and with
+		// what membership" is exactly the question a knock answers.
+		replaced := ""
+		if !isOutOfBandMembership(req.eventType, req.content) {
+			var err error
+			replaced, err = s.store.State.Upsert(ctx, w.tx, req.roomID, written.EventID,
+				req.eventType, req.stateKey, written.ID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		if err := s.applyStateSideEffects(ctx, w.tx, room, req, written, replaced); err != nil {
 			return nil, err
@@ -1215,4 +1227,24 @@ func relationOf(event gomatrixserverlib.PDU) (eventID, relType string) {
 		return "", ""
 	}
 	return relates.RelatesTo.EventID, relates.RelatesTo.RelType
+}
+
+// isOutOfBandMembership reports whether a state event is a membership that is written down but not made
+// part of the room's state: today, a `knock`.
+//
+// It reads the event's content rather than a flag from the caller because the same code path stores a
+// knock this server built and a knock a peer sent, and neither gets to decide the rule.
+func isOutOfBandMembership(eventType string, content any) bool {
+	if eventType != string(matrix.EventTypeMember) {
+		return false
+	}
+	raw, ok := content.(json.RawMessage)
+	if !ok {
+		encoded, err := json.Marshal(content)
+		if err != nil {
+			return false
+		}
+		raw = encoded
+	}
+	return gjson.GetBytes(raw, "membership").String() == matrix.MembershipKnock
 }
