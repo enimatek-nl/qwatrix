@@ -11,10 +11,10 @@ server-server API.
 
 | | |
 |---|---|
-| Go files / lines | 149 files, 46 479 lines — 92 files / 28 222 lines of server in `cmd/` + `internal/`, 57 files / 18 257 lines of tests |
-| Documented endpoints | 121 rows in `docs/ENDPOINTS.md`, with a test asserting no route is undocumented |
-| In-process tests | 288 `Test…` functions under `tests/` |
-| Tasks | 129 rows tracked in the working task list, which along with the progress log is deliberately kept out of the repository; the open ones are listed in § 5 |
+| Go files / lines | 154 files, 48 120 lines — 93 files / 29 210 lines of server in `cmd/` + `internal/`, 61 files / 18 910 lines of tests |
+| Documented endpoints | 124 rows in `docs/ENDPOINTS.md`, with a test asserting no route is undocumented |
+| In-process tests | 296 `Test…` functions under `tests/` |
+| Tasks | 136 rows tracked in the working task list, which along with the progress log is deliberately kept out of the repository; the open ones are listed in § 5 |
 | Statements covered | 72.4 % of `./internal/...` measured over `tests/api` and `tests/unit` together (71.5 % from `tests/api` alone) |
 
 ## 2. What was built
@@ -58,6 +58,14 @@ page-able and signature-verified, and outside the room's graph, its state, its t
 - Device lists across servers: `GET /user/devices/{userID}` served for this server's own users,
   `/keys/query` for a remote user fetched from *their* server, and remote members announced into
   `/sync device_lists.changed`.
+- **Encryption across servers**: a to-device message reaches a device on another homeserver as the
+  `m.direct_to_device` EDU, remembered per sending server by the identifier that server chose so a retried
+  key share is delivered once, and queued in the same durable ledger as an event because a Megolm key
+  dropped while a peer slept is a message that can never be read. A peer's `POST /user/keys/query` and
+  `POST /user/keys/claim` are served for this server's own users only, and this server asks the same two
+  questions of a peer, so a client here can *begin* an Olm session with a device elsewhere rather than only
+  receive one. Complement's `TestToDeviceMessagesOverFederation` passes all three subtests, including the
+  one that restarts both servers.
 - **Gap filling**: a peer's missing predecessor events are fetched with `get_missing_events` before an
   event is refused, with the boundary documented (a peer that supplies only part of a run gets the
   batch refused rather than being allowed to split the room's history).
