@@ -66,9 +66,13 @@ page-able and signature-verified, and outside the room's graph, its state, its t
   questions of a peer, so a client here can *begin* an Olm session with a device elsewhere rather than only
   receive one. Complement's `TestToDeviceMessagesOverFederation` passes all three subtests, including the
   one that restarts both servers.
-- **Gap filling**: a peer's missing predecessor events are fetched with `get_missing_events` before an
-  event is refused, with the boundary documented (a peer that supplies only part of a run gets the
-  batch refused rather than being allowed to split the room's history).
+- **Gap filling, in both directions**: a peer's missing predecessor events are fetched with
+  `get_missing_events` before an event is refused, with the boundary documented (a peer that supplies only
+  part of a run gets the batch refused rather than being allowed to split the room's history); and a peer
+  whose own question is `POST /get_missing_events` is answered with the events between the two it named,
+  oldest first, redacted where the room's history visibility says the asking server arrived too late.
+  Answering that question used to be impossible, which left gap closing one-way and two servers holding
+  different histories of one room.
 - **Remote media (MSC2448)**: a file whose origin is another server is fetched and cached, so an image
   in a federated room is an image rather than a grey square.
 
