@@ -108,7 +108,7 @@ runs beside the listeners rather than behind them.
 | AC-1 toolchain | `go build ./...`, `go vet ./...`, `gofmt -s -l cmd internal tests`, `golangci-lint run ./...` | all clean; `golangci-lint`: 0 issues |
 | AC-2 test location | `find . -name '*_test.go' -not -path './tests/*' -not -path './.git/*'` | prints nothing |
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
-| AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
+| AC-3 coverage | `go test ./tests/api ./tests/unit -count=1 -coverpkg=./internal/... -coverprofile=…` then `go tool cover -func` | **72.4 %** of `./internal/...` statements over the two suites together (71.5 % from `tests/api` alone) |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
 | AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at run 115; 121 of 197 recorded verdicts overall |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
