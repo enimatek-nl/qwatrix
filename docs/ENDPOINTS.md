@@ -461,7 +461,7 @@ asleep is not a notification that arrived late, it is a message that can never b
 
 A leave is drafted before it is signed. A server whose user is leaving — most often rejecting an
 invitation, a user who never joined and so holds none of the room's history to build on — asks
-`GET /make_leave/{roomID}/{userID}` for a place in the graph, fills in who and when, signs it, and hands it
+`GET /_matrix/federation/v1/make_leave/{roomID}/{userID}` for a place in the graph, fills in who and when, signs it, and hands it
 to `send_leave`. The draft deliberately names no sender: a draft that arrived already describing somebody
 would be this server stating a fact about another server's user, and a peer copying the field verbatim
 would sign a claim from the wrong mouth. A user this room never had is refused, because a drafted event is
