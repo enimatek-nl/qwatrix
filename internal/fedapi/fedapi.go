@@ -46,6 +46,10 @@ type JoinServer interface {
 	Events() *events.Service
 	// AuthChainFor answers a peer's request for the events that authorised one event.
 	AuthChainFor(ctx context.Context, roomID, eventID string) ([]json.RawMessage, error)
+	// FederatedEvent and FederatedEventAtTimestamp answer a peer's reads of history it does not hold.
+	// Both are permission-checked: a peer with no user in the room is refused whatever it asks for.
+	FederatedEvent(ctx context.Context, origin, eventID string) (json.RawMessage, error)
+	FederatedEventAtTimestamp(ctx context.Context, origin, roomID string, timestampMS int64, forward bool) (json.RawMessage, int64, error)
 }
 
 // Options configures the server-server handler.
@@ -125,6 +129,8 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/invite/{roomID}/{eventID}", h.handleSendInvite(true))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/event/{eventID}", h.handleFederationEvent())
+	h.mux.HandleFunc("GET /_matrix/federation/v1/timestamp_to_event/{roomID}", h.handleFederationTimestampToEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/download/{serverName}/{mediaID}", h.handleFederationMediaByServerName)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/media/download/{mediaID}", h.handleFederationMedia)

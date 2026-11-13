@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
@@ -648,4 +649,101 @@ func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID string) ([]j
 	// event to the set it authorises would make the answer describe an event that is not part of the
 	// decision, and a peer counting on the size of the chain would be counting wrong.
 	return chain, nil
+}
+
+// FederatedEvent answers a peer's `GET /event/{eventID}`.
+//
+// Two answers are distinguished and both are honest: an event this server has never heard of is a 404,
+// and an event it holds but will not show to this peer is a 403. Collapsing them into one refusal would
+// let a peer walk event IDs and learn which rooms exist here from the difference between two failures;
+// keeping them apart, in the order they are checked here, means the difference is only ever visible to
+// a server that already has a user in the room.
+func (s *Service) FederatedEvent(ctx context.Context, origin, eventID string) (json.RawMessage, error) {
+	row, err := s.store.Events.ByEventID(ctx, eventID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewNotFound("Event %q does not exist", eventID)
+		}
+		return nil, err
+	}
+	if row.RejectedReason != "" {
+		// A rejected event is kept because a peer sent it, not because it is true. Handing it out would
+		// spread the falsity with this server's name on the request that fetched it.
+		return nil, matrix.NewNotFound("Event %q does not exist", eventID)
+	}
+	permitted, err := s.peerMayReadRoom(ctx, row.RoomID, origin)
+	if err != nil {
+		return nil, err
+	}
+	if !permitted {
+		return nil, matrix.NewForbidden("this server is not giving you events in %s", row.RoomID)
+	}
+	return json.RawMessage(row.JSON), nil
+}
+
+// FederatedEventAtTimestamp answers a peer's `GET /timestamp_to_event/{roomID}`: where this room's
+// history was, as far as this server knows, at the moment named.
+//
+// "As far as this server knows" is the honest scope. A resident server that has backfilled nothing
+// answers with the nearest event it holds, which can be later than what a server with the full history
+// would return; the specification accepts that, which is why it tells the asking server to backfill
+// around whatever it gets.
+func (s *Service) FederatedEventAtTimestamp(ctx context.Context, origin, roomID string,
+	timestampMS int64, forward bool) (json.RawMessage, int64, error) {
+	if _, err := s.store.Rooms.Get(ctx, roomID); err != nil {
+		if store.IsNotFound(err) {
+			return nil, 0, matrix.NewNotFound("Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, 0, err
+	}
+	permitted, err := s.peerMayReadRoom(ctx, roomID, origin)
+	if err != nil {
+		return nil, 0, err
+	}
+	if !permitted {
+		return nil, 0, matrix.NewForbidden("this server is not giving you history for %s", roomID)
+	}
+	row, err := s.store.Events.NearestByTimestamp(ctx, roomID, timestampMS, forward, 0)
+	if err != nil {
+		if store.IsNotFound(err) {
+			side := "before"
+			if forward {
+				side = "after"
+			}
+			return nil, 0, matrix.NewNotFound("No event found %s the given timestamp in room %q", side, roomID)
+		}
+		return nil, 0, err
+	}
+	return json.RawMessage(row.JSON), row.OriginServerTS, nil
+}
+
+// peerMayReadRoom is the rule every federation read shares: a server may read a room's contents if it
+// has one of its own users in that room.
+//
+// Membership is the only standing a remote server has here. There is no list of allowed servers to
+// consult, and a server whose users have all left has nothing left to read through — which is the
+// point: leaving a room is how a server stops being told about it.
+func (s *Service) peerMayReadRoom(ctx context.Context, roomID, origin string) (bool, error) {
+	if origin == "" {
+		return false, nil
+	}
+	if origin == string(s.cfg.ServerName) {
+		return true, nil
+	}
+	members, err := s.store.Memberships.List(ctx, roomID, []string{matrix.MembershipJoin}, nil)
+	if err != nil {
+		return false, err
+	}
+	for _, member := range members {
+		_, domain, err := matrix.ParseUserID(member.UserID, s.cfg.ServerName)
+		if err != nil {
+			// A membership row whose user ID cannot be parsed describes nobody. Skipping it can only
+			// ever refuse, which is the safe direction.
+			continue
+		}
+		if strings.EqualFold(domain, origin) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

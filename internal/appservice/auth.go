@@ -69,9 +69,10 @@ func (a *Authenticator) ResolveExternal(r *http.Request, token string) (*httpx.S
 	if !ok {
 		return nil, nil
 	}
-	// The service speaks for its own sender user unless it names another one.
+	// The service speaks for its own sender user unless it names another one. Its own sender needs no
+	// namespace entry: the registration names that user explicitly, and a service that could not be
+	// itself would be unable to send anything at all.
 	localpart := registration.SenderLocalpart
-	userID := registration.UserID(a.serverName)
 	if requested := strings.TrimSpace(r.URL.Query().Get("user_id")); requested != "" {
 		parsed, domain, err := matrix.ParseUserID(requested, a.serverName)
 		if err != nil {
@@ -87,7 +88,7 @@ func (a *Authenticator) ResolveExternal(r *http.Request, token string) (*httpx.S
 			return nil, matrix.NewInvalidParam("user_id %q belongs to %s, not to this homeserver", requested, domain)
 		}
 		localpart = parsed
-		userID = matrix.UserID(localpart, a.serverName)
+		userID := matrix.UserID(localpart, a.serverName)
 		if !registration.AllowsUser(userID) {
 			a.log.Warn("application service asked for a user outside its namespaces",
 				"as_id", registration.ID, "user_id", userID)
