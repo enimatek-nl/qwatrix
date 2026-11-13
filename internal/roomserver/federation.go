@@ -388,11 +388,14 @@ func (s *Service) gapFillAnchors(ctx context.Context, event gomatrixserverlib.PD
 // checkJoinEvent makes sure the event is what a send_join is allowed to carry.
 func checkJoinEvent(event gomatrixserverlib.PDU, roomID, origin string) error {
 	if event.Type() != string(matrix.EventTypeMember) {
-		return matrix.NewForbidden("send_join requires an m.room.member event, got %q", event.Type())
+		// 400 rather than 403 because it is the event that is wrong, not the permission: a peer told
+		// "forbidden" keeps a permanent answer it will repeat forever, whereas a bad event is one it can
+		// correct and resend. The distinction is how a peer decides whether to try again.
+		return matrix.NewInvalidParam("send_join requires an m.room.member event, got %q", event.Type())
 	}
 	stateKey := event.StateKey()
 	if stateKey == nil || *stateKey == "" {
-		return matrix.NewForbidden("a join event must name the user it joins")
+		return matrix.NewInvalidParam("a join event must name the user it joins")
 	}
 	if string(event.SenderID()) != *stateKey {
 		// The signature says which server sent this; the state key says who it claims to join.
@@ -415,10 +418,10 @@ func checkJoinEvent(event gomatrixserverlib.PDU, roomID, origin string) error {
 		Membership string `json:"membership"`
 	}
 	if err := json.Unmarshal(event.Content(), &content); err != nil {
-		return matrix.NewForbidden("the join event's content cannot be read")
+		return matrix.NewInvalidParam("the join event's content cannot be read")
 	}
 	if content.Membership != string(matrix.MembershipJoin) {
-		return matrix.NewForbidden("send_join carries membership %q, not join", content.Membership)
+		return matrix.NewInvalidParam("send_join carries membership %q, not join", content.Membership)
 	}
 	return nil
 }

@@ -66,17 +66,21 @@ func (h *Handler) handleSendLeave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if event.Type() != "m.room.member" || event.StateKey() == nil {
+		// 400 because the event is the thing that is wrong: a peer told "forbidden" reads that as a
+		// permanent answer about an event it could perfectly well have built correctly, and stops trying.
 		httpx.RespondError(w, r, matrix.NewInvalidParam(
 			"send_leave takes a membership event, not %q", event.Type()))
 		return
 	}
-	switch membershipOf(fedRequest.Content()) {
-	case "leave", "ban", "knock":
-		// The three ways this endpoint ends a membership: on its own, by being told to go,
-		// and by withdrawing a knock.
-	default:
+	// This endpoint takes a leave and nothing else. It used to take a ban or a knock as well, on the
+	// reasoning that all three end a membership — which is true of the effect and false of the protocol:
+	// a ban is state that travels in a transaction, a knock has its own endpoints, and neither has been
+	// through the handshake that makes the sender entitled to write that membership. `send_leave` is the
+	// narrow door with no state exchange and no co-signing behind it, so the narrower the promise the more
+	// it can be trusted; this is also exactly what the specification says and what Synapse enforces.
+	if membership := membershipOf(fedRequest.Content()); membership != "leave" {
 		httpx.RespondError(w, r, matrix.NewInvalidParam(
-			"send_leave takes a leave, ban or knock, not a membership of %q", membershipOf(fedRequest.Content())))
+			"send_leave takes a leave, not a membership of %q", membership))
 		return
 	}
 
