@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -964,6 +965,23 @@ func (s *Service) StoreDetachedEvents(ctx context.Context, events []gomatrixserv
 		}
 		return 0, err
 	}
+	// Insert oldest first. A peer hands a window over newest-first because that is how a backfill chains
+	// onto what the asker already holds; this server's stream position is the only order it can offer a
+	// client, and storing in the peer's order would page this history backwards.
+	//
+	// The events' own timestamps and depths are the best available stand-in for the room's order: they are
+	// signed statements about where each event sat, which is a great deal more than this server knows.
+	sort.SliceStable(events, func(i, j int) bool {
+		left, right := int64(events[i].OriginServerTS()), int64(events[j].OriginServerTS())
+		if left != right {
+			return left < right
+		}
+		if events[i].Depth() != events[j].Depth() {
+			return events[i].Depth() < events[j].Depth()
+		}
+		return events[i].EventID() < events[j].EventID()
+	})
+
 	kept := 0
 	err = s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
 		for _, event := range events {

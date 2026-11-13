@@ -142,6 +142,13 @@ func TestAServerFetchesHistoryThatHappenedBeforeItJoined(t *testing.T) {
 			"HS1 LOG:\n%s\nHS2 LOG:\n%s", bodies, hs1.Logs(), hs2.Logs())
 	}
 
+	// And in the right order. A peer hands a window over newest-first because that is how a backfill
+	// chains onto what the asker holds; a client paging forward must still be taken forward through time.
+	ordered := messageBodies(messagesOf(t, charlie, hs2, roomID))
+	if indexOfBody(ordered, "written before anyone else joined") > indexOfBody(ordered, "the newest thing in the room") {
+		t.Fatalf("the fetched history pages backwards through time: %v", ordered)
+	}
+
 	// And the part that must not happen: history is not news. A client opening this room must not be told
 	// that last year's messages have just arrived, because they have not, and a user who reads to the top
 	// of a room should not accumulate unread counts for the past they just looked at.
@@ -203,10 +210,15 @@ func syncBodies(t *testing.T, body []byte, roomID string) []string {
 }
 
 func containsBody(bodies []string, want string) bool {
-	for _, body := range bodies {
+	return indexOfBody(bodies, want) >= 0
+}
+
+// indexOfBody locates a message in a page of history, or reports -1 for a message that is not there.
+func indexOfBody(bodies []string, want string) int {
+	for i, body := range bodies {
 		if body == want {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }

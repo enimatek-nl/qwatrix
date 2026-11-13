@@ -516,7 +516,11 @@ func (s *Service) EventContext(ctx context.Context, req ContextRequest) (*Contex
 	// on from here continues with the next event rather than the last one it already has. When a side was
 	// empty the boundary is the event itself, which is where a reader with nothing to work from has to
 	// start.
-	response.Start = formatStreamToken(row.ID)
+	// Going backward is the one direction that must exclude the centre even when there is nothing to
+	// show, because `/messages?dir=b` reads *through* the event its token names: a token pointing at the
+	// centre hands the client the event it already has and calls it progress. Forward needs no such
+	// adjustment — a forward read begins after its token.
+	response.Start = formatStreamToken(row.ID - 1)
 	if len(before) > 0 {
 		response.Start = formatStreamToken(before[len(before)-1].ID - 1)
 	}
