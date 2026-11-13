@@ -33,6 +33,19 @@ is how the test places events at exact milliseconds), the client reads `/timesta
 told about — detached, so it moves no state and reaches no `/sync`, and page-able, because that is the only
 reason to have fetched it. Its run 115 row is the first in this file where the mandatory column is empty.
 
+## What the remaining failures are
+
+Seventy-one named tests still fail while the mandatory set passes. They group, and the groups are the
+roadmap: knocking (6), a restricted join authorised *for* another server (7), proposed MSCs 4289, 4291,
+4297 and 4311 (16), relaying presence, typing and device-list updates over federation (3), client features
+with no server half — search, URL preview, threads and thread receipts, push rules across upgrades, server
+notices, async uploads, room members at a point in time, key-backup room-key rules, transactions across a
+refresh (about 20) — and a tail of federation edge cases: unverifiable and rejected auth chains,
+partition ordering, partial state in `send_join`, unicode in remote alias names, `is_direct` flags, ACLs.
+
+Nothing in that list is a broken room, a lost message or a lost membership. They are features not built,
+in a specification considerably larger than this server, and the mandatory set is what says so.
+
 ## The runs, most recent first
 
 `<img>` names the commit the container image was built from, which is the only thing a run can

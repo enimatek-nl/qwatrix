@@ -122,7 +122,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `make race` (`go test -race -count=1 -timeout 25m ./tests/...`) | exit 0, **no data race**: `tests/api` 719.8 s, `tests/runtime` 8.2 s, `tests/unit` 6.1 s. The explicit timeout is new: the suite outgrew `go test`'s default 10 m under `-race`, and a suite that fails by running out of clock reads like a failure |
 | AC-3 coverage | `go test ./tests/api ./tests/unit -count=1 -coverpkg=./internal/... -coverprofile=…` then `go tool cover -func` | **72.5 %** of `./internal/...` statements over the two suites together (71.5 % from `tests/api` alone) |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at runs 115, 116 and 118; 122 of 197 recorded verdicts overall |
+| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at runs 115, 116, 118, 119 and 121; 126 of 197 recorded verdicts overall |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
@@ -171,12 +171,31 @@ The last test to fall was `TestJumpToDateEndpoint`, and [COMPLEMENT-RESULTS.md](
 records what its thirteen subtests took: application services, two history reads, those reads over
 federation, and a place to keep a past this server was never told about.
 
-AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 93 of 106 pass; this report
-scores the harder thing — the mandatory set, across both packages, 122 of 197 recorded verdicts.
+AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where most of that package passes;
+this report scores the harder thing — the mandatory set, across both packages, 126 of 197 recorded
+verdicts.
 
-The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
-rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,
-…); [`COMPLEMENT-RESULTS.md`](COMPLEMENT-RESULTS.md) records them run by run, and the working
+The 71 named tests still failing are not one undifferentiated pile, and grouping them is the useful
+exercise, because the groups say what to build next:
+
+- **Knocking** (6) — a fourth membership with its own federation door, and the `knock_restricted` join rule
+  of room versions 11 and 12 (T752).
+- **Restricted rooms joined through a *peer*** (7) — this server can make a restricted room admit somebody
+  (T709), but authorising the same rule when the join arrives from another server is a different question
+  (T751), and it is what these tests ask.
+- **Proposed MSCs** (16) — MSC4289 privileged room creators, MSC4291 room IDs as hashes of the create
+  event, MSC4297 state resolution v2.1, MSC4311 stripped state as full events. These are not in the stable
+  specification; they are the future arriving early, and two of them change how a room ID is computed.
+- **Relaying what is not a message** (3) — presence and typing across federation, plus device-list updates
+  reaching a peer without a room event to carry them.
+- **Client features with no server half** (about 20) — search, URL preview, threads and thread receipts,
+  push rules surviving an upgrade, server notices, async uploads, room members at a point in time, key
+  backup's room-key rules, transactions surviving a refresh.
+- The remainder are federation edge cases worth their own rows: unverified and rejected auth chains,
+  network-partition ordering, partial state in `send_join`, unicode in remote alias names, `is_direct`
+  flags, ACLs.
+
+[`COMPLEMENT-RESULTS.md`](COMPLEMENT-RESULTS.md) records them run by run, and the working
 status log is the narrative of the earlier rounds, stopping at run 97 — which is
 exactly why it should not be cited for a current count.
 
