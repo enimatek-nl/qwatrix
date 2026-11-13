@@ -1,12 +1,49 @@
 package fedapi
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/tidwall/gjson"
 )
+
+// handleMakeLeave answers `GET /_matrix/federation/v1/make_leave/{roomID}/{userID}` and its v2 — the
+// draft a leaving server signs before it hands the leave to `send_leave` below.
+//
+// It is unsigned on purpose, like `make_join`. The answer is a place in this room's graph and nothing
+// else: the leaving user's own server decides when the leave happened and signs that, which is why this
+// handler can be reached before either server has any reason to trust the other. A draft that arrived
+// *signed* by this server would be this server stating a fact about somebody else's user.
+func (h *Handler) handleMakeLeave(w http.ResponseWriter, r *http.Request) {
+	if h.opts.Join == nil {
+		httpx.RespondError(w, r, matrix.NewForbidden("this server does not take federated leaves"))
+		return
+	}
+	// Signed, unlike `make_join`. Every federation request is signed in practice, so this costs nothing
+	// real, and what this endpoint reveals is a room's membership and where its history ends — a leave
+	// draft also confirms that the named user *is* in the room, which is a fact about a person rather
+	// than an invitation to come in.
+	if h.authenticatePeer(w, r) == nil {
+		return
+	}
+	template, err := h.opts.Join.MakeLeaveTemplate(r.Context(), r.PathValue("roomID"), r.PathValue("userID"))
+	if err != nil {
+		httpx.RespondError(w, r, err)
+		return
+	}
+	event, err := marshalTemplate(template.Event)
+	if err != nil {
+		slog.Error("fedapi: encoding a leave template", "error", err)
+		httpx.RespondError(w, r, matrix.NewUnknown("could not offer a leave template"))
+		return
+	}
+	httpx.RespondJSON(w, http.StatusOK, map[string]any{
+		"room_version": string(template.RoomVersion),
+		"event":        event,
+	})
+}
 
 // handleSendLeave serves `PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}` and its v2, the
 // older federation API's way of ending a membership.
