@@ -79,6 +79,10 @@ type Options struct {
 	// DeviceLists records that a peer told us one of its users changed their encryption devices. It
 	// may be nil, in which case an incoming device-list update is logged and dropped.
 	DeviceLists DeviceListAnnouncer
+	// PeerKeys serves this server's users' device keys and one-time keys to peers. It may be nil, in
+	// which case both queries answer that this server does not serve keys — a refusal a peer can read,
+	// and the honest answer for a server whose key storage is switched off.
+	PeerKeys PeerKeySource
 	// ToDevice takes a message a peer delivered for one of this server's devices — the far half of an
 	// end-to-end key share. Nil means the queue is unreachable, and the message is refused rather
 	// than swallowed: a peer cannot be told an ephemeral event landed when it did not.
@@ -146,6 +150,8 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event/{eventID}", h.handleFederationEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/timestamp_to_event/{roomID}", h.handleFederationTimestampToEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)
+	h.mux.HandleFunc("POST /_matrix/federation/v1/user/keys/query", h.handlePeerKeyQuery)
+	h.mux.HandleFunc("POST /_matrix/federation/v1/user/keys/claim", h.handlePeerKeyClaim)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/download/{serverName}/{mediaID}", h.handleFederationMediaByServerName)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/media/download/{mediaID}", h.handleFederationMedia)
 	h.mux.HandleFunc("POST /_matrix/key/v2/query", h.handleKeyQuery)
@@ -377,6 +383,16 @@ func (h *Handler) handleUnknown(w http.ResponseWriter, r *http.Request) {
 // share a room with the subject learn that the keys they hold moved or went away.
 type DeviceListAnnouncer interface {
 	Announce(ctx context.Context, userID string, left bool) error
+}
+
+// PeerKeySource answers another homeserver's questions about this server's own users' encryption keys.
+// It is the served half of the two key queries a peer makes, and the pair a client on the far side needs
+// before it can start an Olm session with a device here.
+type PeerKeySource interface {
+	// PeerDeviceKeys returns the device key documents of this server's users named by the query.
+	PeerDeviceKeys(ctx context.Context, query map[string][]string) (map[string]map[string]json.RawMessage, error)
+	// PeerClaimKeys spends one-time keys of this server's devices for the asking peer.
+	PeerClaimKeys(ctx context.Context, request map[string]map[string]string) (map[string]map[string]json.RawMessage, error)
 }
 
 // DeviceMessageSink is where an incoming to-device message is delivered, so that the people who share

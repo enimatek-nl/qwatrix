@@ -17,6 +17,13 @@ func registerKeyRoutes(mux *httpx.RouteTable, deps Deps) {
 	for _, path := range versionedPath("keys/query") {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleQueryKeys(deps)))
 	}
+	// `GET /keys/status` is the cheapest thing a client can poll to decide whether to work: it answers
+	// how many one-time keys this device has left, and a device that runs out cannot start a new
+	// Olm session with anybody until it is online again. It is served as a map keyed by algorithm, so
+	// a client that only understands signed_curve25519 does not have to know what else exists.
+	for _, path := range versionedPath("keys/status") {
+		mux.HandleFunc("GET "+path, deps.requireAuth(handleKeyStatus(deps)))
+	}
 	for _, path := range versionedPath("keys/changes") {
 		mux.HandleFunc("GET "+path, deps.requireAuth(handleKeyChanges(deps)))
 	}
@@ -135,6 +142,28 @@ func handleSearchUserDirectory(deps Deps) http.HandlerFunc {
 			"results": results,
 			"limited": limited,
 		})
+	}
+}
+
+// handleKeyStatus implements GET /keys/status.
+func handleKeyStatus(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		// The counts are this device's, from the device's own session — and no device may read
+		// another's, because "how many keys does this device have left" says something about when it
+		// was last online, which is somebody else's business.
+		counts, err := deps.Keys.Counts(r.Context(), session.UserID, session.DeviceID)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		if counts == nil {
+			// A device that has never uploaded anything holds zero of each, and the specification
+			// answers an empty map rather than null: a client reading `counts["signed_curve25519"]`
+			// should get 0 and top up, not crash on a missing key.
+			counts = map[string]int64{}
+		}
+		httpx.RespondJSON(w, http.StatusOK, counts)
 	}
 }
 

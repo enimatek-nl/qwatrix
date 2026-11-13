@@ -177,6 +177,7 @@ a room with the subject, which is the privacy rule of the feature.
 | `POST` | `/keys/upload` | [upload keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysupload) |
 | `POST` | `/keys/query` | [query keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysquery) |
 | `GET` | `/keys/changes` | [key changes](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3keyschanges) |
+| `GET` | `/keys/status` | [key status](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3keysstatus) |
 | `POST` | `/keys/claim` | [claim keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysclaim) |
 | `POST` | `/user_directory/search` | [search user directory](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3user_directorysearch) |
 
@@ -346,6 +347,27 @@ that arrives unauthenticated is a peer asking who this server is.
 | `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) |
 | `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
 | `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
+| `POST` | `/_matrix/federation/v1/user/keys/query` | [query user device keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysquery) |
+| `POST` | `/_matrix/federation/v1/user/keys/claim` | [claim user keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysclaim) |
+
+These two are what an encrypted conversation between two homeservers needs before it can start: the
+first returns the device key documents of this server's users, and the second *spends* a one-time key so
+that a device on the far side can wrap the first message of an Olm session to it.
+
+Both answer for the domain in the user ID and for nobody else's, which is the same rule every other key
+path here runs on and for the same two reasons. A device's keys are believed by the client that receives
+them because they came from the domain in the user ID, so a server that answered for another domain would
+let any peer mint an identity for any user. And a one-time key is spent by being handed over, so serving
+one for a user this server does not host would be spending a secret that is not this server's to spend.
+A user this server does not host is therefore left out of the answer entirely rather than answered with
+an empty set: "no devices" and "not mine to say" are different facts, and the first one tells a client to
+stop trying to encrypt to somebody it can reach.
+
+A peer that claims a key and then vanishes has used it, and that is the protocol working rather than
+leaking: reserving a key in case the asker comes back would let any peer freeze this server's devices'
+key pools by asking and not finishing. A device notices its stock running low through
+`GET /keys/status`, which answers how many unsent one-time keys *this* device holds — keyed by algorithm,
+so a client that only knows `signed_curve25519` need not know what else exists.
 | `GET` | `/_matrix/federation/v1/media/download/{mediaID}` | [MSC2448](https://github.com/matrix-org/matrix-spec-proposals/pull/2448) — signed; files this server originates only |
 | `GET` | `/_matrix/federation/v1/download/{serverName}/{mediaID}` | [Download media from its origin](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1downloadservernamemediaid) — signed, and only for this server's own files; it is also the first path this server tries when fetching somebody else's, before the legacy `/_matrix/media/v3/download/...` and the MSC2448 draft it also serves |
 

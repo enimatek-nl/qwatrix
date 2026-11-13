@@ -241,6 +241,9 @@ func New(cfg *config.Config) (*App, error) {
 		DeviceLists: deviceListService,
 		// The far half of the same path: a peer's key share for one of this server's devices.
 		ToDevice: toDeviceService,
+		// And the questions a peer asks before it can send one: what keys do this server's users
+		// have, and may we spend a one-time key to start a session with one of their devices.
+		PeerKeys: keyService,
 	})
 	// A user's device list is this server's to speak for, so the servers that share a room with that
 	// user hear about a change from here. Best-effort by design: the change is recorded locally either

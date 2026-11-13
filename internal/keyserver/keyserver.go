@@ -364,6 +364,85 @@ func (s *Service) Claim(ctx context.Context, _ string, request map[string]map[st
 	return out, nil
 }
 
+// PeerDeviceKeys answers another homeserver's question about the devices of *this* server's users,
+// which is the served half of `POST /_matrix/federation/v1/user/keys/query`.
+//
+// A name whose domain is not this server is dropped rather than chased. That is not shyness: a server
+// that answered for somebody else's domain would let any peer mint keys for any user on the planet, and
+// a client starting an Olm session has no way to tell an answer from an forgery — it trusts the keys it
+// is given because they came from the domain in the user ID. Chasing a third server for it would also
+// turn this server into a relay for key questions it cannot vouch for.
+//
+// A user who lives here and has no devices is answered with an empty set rather than omitted, because
+// "no devices" is information the asking server needs in order to stop waiting for a key share, while
+// an absent entry is indistinguishable from "not my problem".
+func (s *Service) PeerDeviceKeys(ctx context.Context, query map[string][]string) (map[string]map[string]json.RawMessage, error) {
+	out := make(map[string]map[string]json.RawMessage, len(query))
+	for userID, deviceIDs := range query {
+		if !s.hosts(userID) {
+			slog.Debug("keyserver: a peer asked for the devices of a user this homeserver does not host",
+				"user_id", userID)
+			continue
+		}
+		entries := map[string]json.RawMessage{}
+		rows, err := s.store.Keys.Devices(ctx, userID, deviceIDs)
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			entries[rows[i].DeviceID] = json.RawMessage(rows[i].KeyJSON)
+		}
+		out[userID] = entries
+	}
+	return out, nil
+}
+
+// PeerClaimKeys spends one-time keys of this server's devices for a peer, which is the served half of
+// `POST /_matrix/federation/v1/user/keys/claim`. This is how an Olm session with a user on another
+// homeserver begins: without it, a device on the far side has nothing to encrypt its Megolm key to, and
+// the conversation stays in plaintext or never starts.
+//
+// The same rule as the query, and it matters more here: keys are spent by being handed over, so serving
+// one for a user this server does not host would be spending a secret this server does not own.
+func (s *Service) PeerClaimKeys(ctx context.Context, request map[string]map[string]string) (map[string]map[string]json.RawMessage, error) {
+	out := map[string]map[string]json.RawMessage{}
+	for userID, devices := range request {
+		if !s.hosts(userID) {
+			slog.Debug("keyserver: a peer asked to claim the keys of a user this homeserver does not host",
+				"user_id", userID)
+			continue
+		}
+		for deviceID, algorithm := range devices {
+			claimed, err := s.store.Keys.ClaimOneTimeKeys(ctx, userID, deviceID, algorithm, 1)
+			if err != nil {
+				return nil, err
+			}
+			if len(claimed) == 0 {
+				// Out of prepaid keys. The asking device learns by absence, which is how the
+				// specification puts it: an empty claim is a normal answer, not an error.
+				continue
+			}
+			keys := map[string]json.RawMessage{}
+			for _, key := range claimed {
+				keys[key.KeyID] = json.RawMessage(key.KeyJSON)
+			}
+			entries, ok := out[userID]
+			if !ok {
+				entries = map[string]json.RawMessage{}
+				out[userID] = entries
+			}
+			entries[deviceID] = json.RawMessage(mustJSON(keys))
+		}
+	}
+	return out, nil
+}
+
+// hosts reports whether a user ID names this server.
+func (s *Service) hosts(userID string) bool {
+	_, domain, err := matrix.ParseUserID(userID, s.cfg.ServerName)
+	return err == nil && string(domain) == s.cfg.ServerName
+}
+
 // mustJSON encodes a map of raw JSON, which cannot fail.
 func mustJSON(value map[string]json.RawMessage) []byte {
 	encoded, err := json.Marshal(value)
