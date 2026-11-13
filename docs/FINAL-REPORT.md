@@ -1,6 +1,6 @@
 # qwatrix — final report
 
-Measured state as of 2026-11-11. Every number below came from a command that was actually run; where a
+Measured state as of 2026-11-13. Every number below came from a command that was actually run; where a
 claim could not be verified it says so.
 
 ## 1. What this is
@@ -11,11 +11,11 @@ server-server API.
 
 | | |
 |---|---|
-| Go files / lines | 120 files, 37 250 lines (23 843 in `internal/` + `cmd/`, 13 407 of them tests) |
-| Documented endpoints | 100 rows in `docs/ENDPOINTS.md`, with a test asserting no route is undocumented |
-| In-process tests | 204 `Test…` functions under `tests/` |
-| Tasks | 105 rows tracked in the working task list, which along with the progress log is deliberately kept out of the repository; the open ones are listed in § 5 |
-| Statements covered | 70.2 % of `./internal/...` by `tests/api` plus 20.6 % by `tests/unit` |
+| Go files / lines | 149 files, 46 479 lines — 92 files / 28 222 lines of server in `cmd/` + `internal/`, 57 files / 18 257 lines of tests |
+| Documented endpoints | 121 rows in `docs/ENDPOINTS.md`, with a test asserting no route is undocumented |
+| In-process tests | 288 `Test…` functions under `tests/` |
+| Tasks | 129 rows tracked in the working task list, which along with the progress log is deliberately kept out of the repository; the open ones are listed in § 5 |
+| Statements covered | 72.4 % of `./internal/...` measured over `tests/api` and `tests/unit` together (71.5 % from `tests/api` alone) |
 
 ## 2. What was built
 
@@ -36,6 +36,15 @@ remote media fetch-and-cache with the signed federation download (MSC2448) and t
 servers' files, `405` with an `Allow` header where an endpoint exists and the method does not, the
 filename-bearing download forms, and `GET /_matrix/client/v1/room_summary/{room}` including the rooms
 a restricted join admits.
+
+**A room's past, and a bridge's users.** Two capabilities landed at the end because the mandatory suite
+asked for them. Application services on the receiving side: registration files read at start-up (a bad one
+stops the server, because a registration file is security configuration), `as_token` authentication,
+virtual users provisioned without a password, `?user_id=` acting inside the registration's users namespace
+and nowhere else, and MSC3316 event import with a deliberately chosen `?ts=`. And the two reads that let a
+client jump into history — `/timestamp_to_event` and `/context` — served to clients and to peers, with a
+joining server that asks a resident peer for a past it never received and keeps what it is given *detached*:
+page-able and signature-verified, and outside the room's graph, its state, its tip and its `/sync`.
 
 - Signing keys: published, fetched from peers, and verified (`/send`, `/make_join`, `/send_join` all
   require a valid `X-Matrix` signature; refusals name the reason without leaking the signature).
@@ -101,7 +110,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `go test -race -count=1 ./tests/...` | exit 0, **no data race**: `tests/api` 544.6 s, `tests/runtime` 8.9 s, `tests/unit` 3.9 s |
 | AC-3 coverage | `go test -coverpkg=./internal/... -cover ./tests/...` | 70.2 % of `./internal/...` statements via `tests/api`, 20.6 % via `tests/unit` |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **not met**: 94 of the 95 mandatory tests pass, 1 fails, 0 never ran (§ 5) |
+| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at run 115; 121 of 197 recorded verdicts overall |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .` then `podman run -e QWATRIX_SERVER_NAME=…` | builds; boots; `/versions` answers. Writing this line found the federation-key bug below |
@@ -143,19 +152,14 @@ and this server implements a working subset of it.
 
 ### AC-5, the named mandatory set
 
-[`ACCEPTANCE-CRITERIA.md`](ACCEPTANCE-CRITERIA.md) names 95 tests that must pass. Measured at run 113: **94 passing**,
-**1 failing**, 0 skipped, **0 never run**. AC-5 is therefore **not met**, and the gap is one named
-behaviour rather than a broad failure.
+[`ACCEPTANCE-CRITERIA.md`](ACCEPTANCE-CRITERIA.md) names 95 tests that must pass. Measured at run 115,
+against the image built at `7110cfd`: **95 passing, 0 failing, 0 skipped, 0 never run**. **AC-5 is met.**
+The last test to fall was `TestJumpToDateEndpoint`, and [COMPLEMENT-RESULTS.md](COMPLEMENT-RESULTS.md)
+records what its thirteen subtests took: application services, two history reads, those reads over
+federation, and a place to keep a past this server was never told about.
 
-AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 91 pass; this report scores
-the harder thing — the mandatory set, across both packages.
-
-| Failing mandatory test | The behaviour behind it |
-|---|---|
-| `TestJumpToDateEndpoint` | its five remaining subtests jump to a moment in a room hosted on **another** server, which needs this server to answer `GET /rooms/{roomID}/timestamp_to_event` for a past it was never told about — asking a resident peer, keeping what it says, and then paging through it. Measured at run 115 (pending): application services landed, `?ts=` event import works, and both endpoints are served locally and over federation; what remains is the fetching-and-keeping half (T753). |
-
-Every other test the criteria name passes at run 113. Each was closed by a change with a behavioural test
-of its own, and the runs are listed in [COMPLEMENT-RESULTS.md](COMPLEMENT-RESULTS.md).
+AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where 93 of 106 pass; this report
+scores the harder thing — the mandatory set, across both packages, 121 of 197 recorded verdicts.
 
 The 15 `tests/csapi` failures are a similar list (threads, search over federation, key-backup room-key
 rules, URL preview, pushers, transactions across refresh, server notices, room members at a point,

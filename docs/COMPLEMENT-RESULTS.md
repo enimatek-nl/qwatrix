@@ -24,6 +24,15 @@ The tag does **not** satisfy complement's per-homeserver `runtime.SkipIf` guards
 failures, with a warning line in the log saying complement could not tell which homeserver is
 running. The counts below are conservative rather than flattering.
 
+## What one test took
+
+`TestJumpToDateEndpoint` was the last mandatory test standing, and its thirteen subtests needed four
+features between them: application services (only a service may stamp an event with a chosen `?ts=`, which
+is how the test places events at exact milliseconds), the client reads `/timestamp_to_event` and
+`/context`, those same reads over **federation**, and somewhere to keep a history this server was never
+told about — detached, so it moves no state and reaches no `/sync`, and page-able, because that is the only
+reason to have fetched it. Its run 115 row is the first in this file where the mandatory column is empty.
+
 ## The runs, most recent first
 
 `<img>` names the commit the container image was built from, which is the only thing a run can
@@ -34,6 +43,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 115 | `7110cfd` | **95 / 95** | **`TestJumpToDateEndpoint` passes, all thirteen subtests** — application services (so events can be placed at chosen milliseconds), the served federation reads, and a joining server that asks a resident peer where its room was and keeps the answer detached. `TestJoinFederatedRoomFromApplicationServiceBridgeUser` also passes outright. No mandatory test is left failing: AC-5 is met, with 121 of 197 recorded verdicts overall | **94 / 95** | `TestJumpToDateEndpoint` (its five federation subtests) |
 | 113 | `2796643` | **94 / 95** | `TestSyncTimelineGap` passes, both subtests — a fifty-event gap is now bridged by walking it from its far end. One mandatory test remains, and it waits behind a feature the criteria defer (see below) | **93 / 95** | `TestRestrictedRoomsLocalJoin` passes — a `restricted` room now admits the members its `allow` entry names, on the strength of an authorisation this server signs. It had failed in every run since the suite was first run | **92 / 95** | `TestDeviceListUpdates` passes outright — all ten subtests, first time. It needed device-list changes to cross the border in both directions, and a membership event to be read as two announcements instead of one |
 | 114 | `9e69c36` | **94 / 95** | Confirms the count after two new history reads (`/timestamp_to_event`, `/context`). No mandatory test moved. `TestJumpToDateEndpoint` went from refusing everything to **six of its subtests passing** — complement scores a parent by all of its subtests, so the verdict is unchanged and the progress is real |
 | 110 | `2d22829` | **91 / 95** | unchanged at the top level, but `TestDeviceListUpdates/when_local_user_leaves_a_room` began passing once device-list changes stopped reaching people who had stopped sharing a room |
