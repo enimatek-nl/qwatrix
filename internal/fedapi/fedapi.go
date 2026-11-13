@@ -49,6 +49,11 @@ type JoinServer interface {
 	// FederatedEvent and FederatedEventAtTimestamp answer a peer's reads of history it does not hold.
 	// Both are permission-checked: a peer with no user in the room is refused whatever it asks for.
 	FederatedEvent(ctx context.Context, origin, eventID string) (json.RawMessage, error)
+	// FederatedStateIDs and FederatedState answer a peer's question about the room's current state, with
+	// and without the events themselves; FederatedBackfill answers for a window of history before a point.
+	FederatedStateIDs(ctx context.Context, origin, roomID string) (pduIDs, authChainIDs []string, err error)
+	FederatedState(ctx context.Context, origin, roomID string) (state, authChain []json.RawMessage, err error)
+	FederatedBackfill(ctx context.Context, origin, roomID, since string, limit int) ([]json.RawMessage, error)
 	FederatedEventAtTimestamp(ctx context.Context, origin, roomID string, timestampMS int64, forward bool) (json.RawMessage, int64, error)
 }
 
@@ -129,6 +134,11 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/invite/{roomID}/{eventID}", h.handleSendInvite(true))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send/{transactionID}", h.handleSendTransaction)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send/{transactionID}", h.handleSendTransaction)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/state_ids/{roomID}", h.handleFederationStateIDs(false))
+	h.mux.HandleFunc("GET /_matrix/federation/v2/state_ids/{roomID}", h.handleFederationStateIDs(true))
+	h.mux.HandleFunc("GET /_matrix/federation/v1/state/{roomID}", h.handleFederationState())
+	h.mux.HandleFunc("GET /_matrix/federation/v2/state/{roomID}", h.handleFederationState())
+	h.mux.HandleFunc("GET /_matrix/federation/v1/backfill/{roomID}", h.handleFederationBackfill())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event/{eventID}", h.handleFederationEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/timestamp_to_event/{roomID}", h.handleFederationTimestampToEvent())
 	h.mux.HandleFunc("GET /_matrix/federation/v1/user/devices/{userID}", h.handleUserDevices)

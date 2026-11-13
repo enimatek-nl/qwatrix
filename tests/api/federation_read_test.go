@@ -151,3 +151,141 @@ func TestAPeerAsksWhereTheRoomWasAtAMoment(t *testing.T) {
 		t.Fatal("a server with no user in the room was told where the room was")
 	}
 }
+
+// TestAPeerAsksForTheRoomsState is what a server does when it has been told a state event exists but
+// has never seen the room: it asks a resident server for the state, and for the events that authorised
+// it, because it cannot evaluate one state event from its `auth_events` alone.
+func TestAPeerAsksForTheRoomsState(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "host", "pw-host", false)
+	peer := newFakePeer(t)
+	roomID, _, _ := joinedRoom(t, server, alice, peer, "public_chat")
+	alice.MustSendText(t, server, roomID, "a message that is not state and must not be fetched")
+
+	// The IDs first: cheap to check, and the shape a peer uses to work out what it still needs.
+	status, body := federationGetSigned(t, server, peer, "/_matrix/federation/v2/state_ids/"+harness.PathEscape(roomID))
+	if status != http.StatusOK {
+		t.Fatalf("asking for state IDs: got %d, want 200\nbody: %s", status, body)
+	}
+	var ids struct {
+		Presentation string   `json:"presentation"`
+		PDUIDs       []string `json:"pdu_ids"`
+		AuthChainIDs []string `json:"auth_chain_ids"`
+	}
+	if err := json.Unmarshal(body, &ids); err != nil {
+		t.Fatalf("the answer cannot be read: %v (%s)", err, body)
+	}
+	if len(ids.PDUIDs) == 0 {
+		t.Fatalf("the room has state and the answer says otherwise: %s", body)
+	}
+	// The room's create event is in the state, and a message is not. That distinction is the whole
+	// difference between a state query and a history dump.
+	known := remoteStateEventIDs(t, server, alice, roomID)
+	if !hasID(ids.PDUIDs, known["m.room.create\x00"]) {
+		t.Errorf("the create event is missing from pdu_ids: %v", ids.PDUIDs)
+	}
+	if hasID(ids.PDUIDs, "$nothing") {
+		t.Error("a made-up event turned up in the state")
+	}
+	if len(ids.AuthChainIDs) == 0 {
+		t.Error("no auth chain was offered, so a peer cannot check any of the state it is given")
+	}
+
+	// The full events, for the peer that would rather not ask again event by event.
+	status, body = federationGetSigned(t, server, peer, "/_matrix/federation/v2/state/"+harness.PathEscape(roomID))
+	if status != http.StatusOK {
+		t.Fatalf("asking for state: got %d, want 200\nbody: %s", status, body)
+	}
+	var state struct {
+		Origin    string            `json:"origin"`
+		PDUs      []json.RawMessage `json:"pdus"`
+		AuthChain []json.RawMessage `json:"auth_chain"`
+	}
+	if err := json.Unmarshal(body, &state); err != nil {
+		t.Fatalf("the answer cannot be read: %v (%s)", err, body)
+	}
+	if len(state.PDUs) != len(ids.PDUIDs) {
+		t.Errorf("the IDs said %d events and the answer carries %d", len(ids.PDUIDs), len(state.PDUs))
+	}
+	if state.Origin != server.ServerName {
+		t.Errorf("origin = %q, want this server", state.Origin)
+	}
+
+	// A server with no user in the room gets neither answer.
+	outsider := newFakePeer(t)
+	for _, path := range []string{
+		"/_matrix/federation/v2/state_ids/" + harness.PathEscape(roomID),
+		"/_matrix/federation/v2/state/" + harness.PathEscape(roomID),
+	} {
+		if status, _ := federationGetSigned(t, server, outsider, path); status == http.StatusOK {
+			t.Errorf("a server with no user in the room was handed the state at %s", path)
+		}
+	}
+}
+
+// TestAPeerBackfillsHistoryItDoesNotHold is how a room gets its past: a peer asks for a window of events
+// before a point it already holds, and stores what it is given.
+//
+// The order matters and is the specification's — newest first, so a peer can chain the window onto what
+// it has and stop when the window runs out.
+func TestAPeerBackfillsHistoryItDoesNotHold(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "host", "pw-host", false)
+	peer := newFakePeer(t)
+	roomID, _, _ := joinedRoom(t, server, alice, peer, "public_chat")
+	var sent []string
+	for _, body := range []string{"older", "middle", "newest"} {
+		sent = append(sent, alice.MustSendText(t, server, roomID, body))
+	}
+
+	status, body := federationGetSigned(t, server, peer,
+		"/_matrix/federation/v1/backfill/"+harness.PathEscape(roomID)+"?limit=10")
+	if status != http.StatusOK {
+		t.Fatalf("asking to backfill: got %d, want 200\nbody: %s", status, body)
+	}
+	var answer struct {
+		Origin string            `json:"origin"`
+		PDUs   []json.RawMessage `json:"pdus"`
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("the answer cannot be read: %v (%s)", err, body)
+	}
+	if len(answer.PDUs) == 0 {
+		t.Fatalf("the room has history and the window is empty: %s", body)
+	}
+	if len(answer.PDUs) > 10 {
+		t.Errorf("the window carries %d events, more than the limit asked for", len(answer.PDUs))
+	}
+	// Newest first: the last event the peer is told about is the oldest one it has never seen.
+	if body := bodyOf(t, answer.PDUs[0]); body != "newest" {
+		t.Errorf("the first event in the window is %q, want the newest message first", body)
+	}
+
+	// Asking with a `since` point moves the window back rather than ignoring it: a peer that kept being
+	// handed the same newest window could never reach the beginning of a room. The point is named by an
+	// event, which is the one thing both sides are certain to hold in common.
+	status, body = federationGetSigned(t, server, peer,
+		"/_matrix/federation/v1/backfill/"+harness.PathEscape(roomID)+"?limit=10&since="+
+			harness.PathEscape(sent[2]))
+	if status != http.StatusOK {
+		t.Fatalf("asking to backfill from a point: got %d, want 200\nbody: %s", status, body)
+	}
+	if err := json.Unmarshal(body, &answer); err != nil {
+		t.Fatalf("the answer cannot be read: %v (%s)", err, body)
+	}
+	if len(answer.PDUs) == 0 {
+		t.Fatalf("a window from a point in the middle of the room is empty: %s", body)
+	}
+	for _, raw := range answer.PDUs {
+		if event := bodyOf(t, raw); event == "newest" {
+			t.Errorf("the window from a point still carries the event that point names: %s", body)
+		}
+	}
+
+	// And the permission rule holds here too.
+	outsider := newFakePeer(t)
+	if status, _ := federationGetSigned(t, server, outsider,
+		"/_matrix/federation/v1/backfill/"+harness.PathEscape(roomID)); status == http.StatusOK {
+		t.Fatal("a server with no user in the room was handed the room's history")
+	}
+}

@@ -319,6 +319,11 @@ that arrives unauthenticated is a peer asking who this server is.
 | `GET` | `/_matrix/federation/v1/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1event_authroomideventid) — the events that authorised one event, transitively
 | `GET` | `/_matrix/federation/v1/event/{eventID}` | [Get a single event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1eventeventid) |
 | `GET` | `/_matrix/federation/v1/timestamp_to_event/{roomID}` | [MSC3059 — get the event closest to a timestamp](https://github.com/matrix-org/matrix-spec-proposals/pull/3059) |
+| `GET` | `/_matrix/federation/v1/state_ids/{roomID}` | [Get the current state of a room by ID](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1state_idsroomid) |
+| `GET` | `/_matrix/federation/v2/state_ids/{roomID}` | [Get the current state of a room by ID, with presentation](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2state_idsroomid) |
+| `GET` | `/_matrix/federation/v1/state/{roomID}` | [Get the current state of a room](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1stateroomid) |
+| `GET` | `/_matrix/federation/v2/state/{roomID}` | [Get the current state of a room, signed](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2stateroomid) |
+| `GET` | `/_matrix/federation/v1/backfill/{roomID}` | [Backfill](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1backfillroomid) |
 | `GET` | `/_matrix/federation/v2/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event (v2)](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2event_authroomideventid) — as v1, plus the `rooms` set for auth events missing from the room (always empty here)
 | `PUT` | `/_matrix/federation/v1/invite/{roomID}/{eventID}` | [Sign an invite for our user (legacy)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1inviteroomideventid) |
 | `PUT` | `/_matrix/federation/v2/invite/{roomID}/{eventID}` | [Sign an invite for our user](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2inviteroomideventid) |
@@ -441,6 +446,20 @@ otherwise a way to read a room without ever joining it. An event this server has
 and an event it holds but will not show is a `403`, in that order, so the difference between the two is
 only visible to a server that is already entitled to the room. A rejected event is answered as if it did
 not exist: keeping a falsehood because a peer sent it is bookkeeping, not a reason to spread it.
+
+`/backfill` gives a window of history ending just before a point the peer names, newest-first, so the
+asking server can chain it onto what it holds and ask again until a window comes back empty. `since` is
+accepted as an event ID or as one of this server's own stream tokens — both are things a peer can legitimately
+hold — and a `since` this server does not recognise is refused rather than answered with the newest window,
+because silently restarting from the tip is how a backfill loop spins forever. The window is capped at 100,
+which is the specification's own cap for this endpoint.
+
+`/state_ids` and `/state` are the same read in two shapes — IDs, and events — and both go through one
+function, so a peer that asked one then the other cannot be shown a state that moved between the questions.
+Version 2 of `state_ids` adds `presentation`; this server only ever answers with the state it acts on, which
+is the whole of it, so it says `full` and means it. The auth chain that travels with them is the closure
+across the whole state, with each event named once, because a peer counting the chain would otherwise be
+counting something that depends on the order the state happened to be written in.
 
 `/timestamp_to_event` answers where this server's copy of the room's history was, not where all of it
 was — a resident server that has backfilled nothing points at the nearest event it holds. That is the

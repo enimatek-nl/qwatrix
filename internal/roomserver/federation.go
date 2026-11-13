@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -505,8 +506,23 @@ func (s *Service) appendRemoteEvent(ctx context.Context, roomID string, event go
 // a correct room graph, but a hostile or buggy one is not, so the walk is bounded by the set of
 // events already visited.
 func (s *Service) authChain(ctx context.Context, event gomatrixserverlib.PDU) ([]json.RawMessage, error) {
+	rows, err := s.authChainRows(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]json.RawMessage, 0, len(rows))
+	for i := range rows {
+		out = append(out, json.RawMessage(rows[i].JSON))
+	}
+	return out, nil
+}
+
+// authChainRows is the same closure as [Service.authChain], kept as rows because the two answers a peer
+// can ask for need different shapes: `state_ids` wants the IDs and `state` wants the events. Deriving one
+// from the other by re-reading the database is how the two end up disagreeing about what the closure was.
+func (s *Service) authChainRows(ctx context.Context, event gomatrixserverlib.PDU) ([]store.EventRow, error) {
 	var (
-		out     []json.RawMessage
+		out     []store.EventRow
 		visited = map[string]bool{}
 		queue   = append([]string(nil), event.AuthEventIDs()...)
 	)
@@ -519,14 +535,14 @@ func (s *Service) authChain(ctx context.Context, event gomatrixserverlib.PDU) ([
 		visited[id] = true
 		row, err := s.store.Events.ByEventID(ctx, id)
 		if store.IsNotFound(err) {
-			// An auth event this server does not have. Omitting it is the only honest
-			// answer; the peer's own check will report the gap rather than accept less.
+			// An auth event this server does not have. Omitting it is the only honest answer; the
+			// peer's own check will report the gap rather than accept less.
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, json.RawMessage(row.JSON))
+		out = append(out, *row)
 		var parent struct {
 			AuthEvents []string `json:"auth_events"`
 		}
@@ -535,7 +551,9 @@ func (s *Service) authChain(ctx context.Context, event gomatrixserverlib.PDU) ([
 		}
 	}
 	if out == nil {
-		return []json.RawMessage{}, nil
+		// Never nil: this is an array on the wire, and `null` is a different answer from `[]` to a peer
+		// counting what it has to fetch.
+		out = []store.EventRow{}
 	}
 	return out, nil
 }
@@ -649,6 +667,199 @@ func (s *Service) AuthChainFor(ctx context.Context, roomID, eventID string) ([]j
 	// event to the set it authorises would make the answer describe an event that is not part of the
 	// decision, and a peer counting on the size of the chain would be counting wrong.
 	return chain, nil
+}
+
+// FederatedStateIDs answers `GET /state_ids/{roomID}`: the room's current state as event IDs, plus the
+// events that authorised them.
+//
+// The IDs are a separate endpoint because a peer on a bad connection can find out what it is missing
+// before it pays to fetch it, and because the authorisation closure is what makes the state verifiable: a
+// peer cannot evaluate one state event from its own `auth_events` alone, since each of those was itself
+// authorised by others. Handing over the closure lets the peer run the same rules this server does
+// instead of trusting whoever happens to be relaying.
+func (s *Service) FederatedStateIDs(ctx context.Context, origin, roomID string) (pduIDs, authChainIDs []string, err error) {
+	state, chain, err := s.stateRowsForPeer(ctx, roomID, origin)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range state {
+		pduIDs = append(pduIDs, state[i].EventID)
+	}
+	for i := range chain {
+		authChainIDs = append(authChainIDs, chain[i].EventID)
+	}
+	return pduIDs, authChainIDs, nil
+}
+
+// FederatedState answers `GET /state/{roomID}` with the events themselves.
+//
+// Both this and `state_ids` read through [Service.stateRowsForPeer], so a peer that asked one and then the
+// other cannot be shown a state that moved between the questions.
+func (s *Service) FederatedState(ctx context.Context, origin, roomID string) (state, authChain []json.RawMessage, err error) {
+	rows, chain, err := s.stateRowsForPeer(ctx, roomID, origin)
+	if err != nil {
+		return nil, nil, err
+	}
+	for i := range rows {
+		state = append(state, json.RawMessage(rows[i].JSON))
+	}
+	for i := range chain {
+		authChain = append(authChain, json.RawMessage(chain[i].JSON))
+	}
+	return state, authChain, nil
+}
+
+// stateRowsForPeer reads the room's current state and the closure that authorised it, after checking that
+// the asking server is entitled to the room at all.
+func (s *Service) stateRowsForPeer(ctx context.Context, roomID, origin string) ([]store.EventRow, []store.EventRow, error) {
+	permitted, err := s.peerMayReadRoom(ctx, roomID, origin)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !permitted {
+		return nil, nil, matrix.NewForbidden("this server is not giving you state for %s", roomID)
+	}
+	room, err := s.store.Rooms.Get(ctx, roomID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return nil, nil, matrix.NewNotFound("Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, nil, err
+	}
+	entries, err := s.store.State.All(ctx, roomID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(entries) == 0 {
+		return nil, nil, matrix.NewNotFound("Room %q has no state on this homeserver", roomID)
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		ids = append(ids, entry.EventID)
+	}
+	rows, err := s.store.Events.ByEventIDs(ctx, ids)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// The closure is built across the whole state at once, and an event that authorises two state events
+	// is named once. A peer counting the size of the chain would otherwise be counting a number that
+	// depends on how the state happened to be ordered.
+	chain := []store.EventRow{}
+	kept := []store.EventRow{}
+	seen := map[string]bool{}
+	for i := range rows {
+		row := &rows[i]
+		if row.RejectedReason != "" {
+			// A rejected event is not part of the state this server would act on, so it is not part of
+			// the state it hands to a peer either.
+			continue
+		}
+		kept = append(kept, *row)
+		event, err := s.Events().ParseRoomVersioned(room.Version, json.RawMessage(row.JSON))
+		if err != nil {
+			// A state row this server cannot re-read is a corrupt row. Saying so is better than handing
+			// over a state whose authorisation is quietly incomplete.
+			return nil, nil, matrix.NewUnknown(fmt.Sprintf("the state of %q cannot be read back", roomID))
+		}
+		parents, err := s.authChainRows(ctx, event)
+		if err != nil {
+			return nil, nil, err
+		}
+		for j := range parents {
+			if seen[parents[j].EventID] {
+				continue
+			}
+			seen[parents[j].EventID] = true
+			chain = append(chain, parents[j])
+		}
+	}
+	return kept, chain, nil
+}
+
+// FederatedBackfill answers `GET /backfill/{roomID}`: a window of this room's history ending just before
+// the point the peer names.
+//
+// The window is newest-first for the peer's benefit: it chains the oldest event it was given onto the
+// history it already has, then asks again from that point until a window comes back empty. A window in the
+// other order cannot be attached without first knowing where it stops.
+//
+// `since` is accepted as either an event ID or one of this server's own stream tokens, because both are
+// things a peer can legitimately hold: an event ID from the events this server sent it, or a token from a
+// previous answer of this server's. A token this server does not recognise is refused rather than answered
+// with the newest window, because silently restarting from the tip is how a backfill loop spins forever.
+func (s *Service) FederatedBackfill(ctx context.Context, origin, roomID, since string,
+	limit int) ([]json.RawMessage, error) {
+	if _, err := s.store.Rooms.Get(ctx, roomID); err != nil {
+		if store.IsNotFound(err) {
+			return nil, matrix.NewNotFound("Room %q does not exist on this homeserver", roomID)
+		}
+		return nil, err
+	}
+	permitted, err := s.peerMayReadRoom(ctx, roomID, origin)
+	if err != nil {
+		return nil, err
+	}
+	if !permitted {
+		return nil, matrix.NewForbidden("this server is not giving you history for %s", roomID)
+	}
+	switch {
+	case limit <= 0:
+		limit = 100
+	case limit > 100:
+		// The specification's own cap for this endpoint. A peer asking for more is either mistaken or
+		// asking to read a room's whole history in one request, and the second is not made cheaper by
+		// being called /backfill.
+		limit = 100
+	}
+
+	position, err := s.backfillPosition(ctx, roomID, since)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.store.Events.Range(ctx, store.EventQuery{
+		RoomIDs:   []string{roomID},
+		Before:    position,
+		Limit:     limit,
+		OrderDesc: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	window := make([]json.RawMessage, 0, len(rows))
+	for i := range rows {
+		window = append(window, json.RawMessage(rows[i].JSON))
+	}
+	return window, nil
+}
+
+// backfillPosition turns a peer's `since` into a place in this room's history. An empty `since` means
+// "from wherever the room is now".
+func (s *Service) backfillPosition(ctx context.Context, roomID, since string) (int64, error) {
+	if since == "" {
+		current, err := s.store.Events.MaxPositionInRoom(ctx, roomID)
+		if err != nil {
+			return 0, err
+		}
+		// One past the newest event, because a range is exclusive of its upper bound and a peer asking
+		// for the room's end wants the newest thing in it.
+		return current + 1, nil
+	}
+	if position, err := strconv.ParseInt(since, 10, 64); err == nil && position > 0 {
+		return position, nil
+	}
+	row, err := s.store.Events.ByEventID(ctx, since)
+	if err != nil {
+		if store.IsNotFound(err) {
+			return 0, matrix.NewInvalidParam("this server does not know the event %q named by since", since)
+		}
+		return 0, err
+	}
+	if row.RoomID != roomID {
+		// Answering this would tell a peer which other room an event ID belongs to.
+		return 0, matrix.NewInvalidParam("this server does not know the event %q named by since", since)
+	}
+	return row.ID, nil
 }
 
 // FederatedEvent answers a peer's `GET /event/{eventID}`.

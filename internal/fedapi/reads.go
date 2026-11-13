@@ -112,3 +112,111 @@ func raw2json(raw []byte) any {
 	}
 	return json.RawMessage(raw)
 }
+
+// handleFederationStateIDs answers `GET /_matrix/federation/v{1,2}/state_ids/{roomID}`.
+//
+// The IDs-only answer exists so a peer on a bad connection can work out what it is missing before paying
+// to fetch it. Version 2 of the endpoint adds `presentation`, which says whether the state is the room's
+// whole current state or a subset; this server only ever answers with the state it acts on, which is the
+// whole of it, so it says "full" and means it.
+func (h *Handler) handleFederationStateIDs(withPresentation bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fedRequest := h.authenticatePeer(w, r)
+		if fedRequest == nil {
+			return
+		}
+		if h.opts.Join == nil {
+			httpx.RespondError(w, r, matrix.NewUnknown("this homeserver does not serve room state to peers"))
+			return
+		}
+		pduIDs, authChainIDs, err := h.opts.Join.FederatedStateIDs(r.Context(),
+			string(fedRequest.Origin()), r.PathValue("roomID"))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		answer := map[string]any{
+			"origin":           string(h.opts.ServerName),
+			"origin_server_ts": time.Now().UnixMilli(),
+			"pdu_ids":          nonNil(pduIDs),
+			"auth_chain_ids":   nonNil(authChainIDs),
+		}
+		if withPresentation {
+			answer["presentation"] = "full"
+		}
+		httpx.RespondJSON(w, http.StatusOK, answer)
+	}
+}
+
+// handleFederationState answers `GET /_matrix/federation/v{1,2}/state/{roomID}` with whole events.
+func (h *Handler) handleFederationState() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fedRequest := h.authenticatePeer(w, r)
+		if fedRequest == nil {
+			return
+		}
+		if h.opts.Join == nil {
+			httpx.RespondError(w, r, matrix.NewUnknown("this homeserver does not serve room state to peers"))
+			return
+		}
+		state, authChain, err := h.opts.Join.FederatedState(r.Context(),
+			string(fedRequest.Origin()), r.PathValue("roomID"))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{
+			"origin":     string(h.opts.ServerName),
+			"pdus":       state,
+			"auth_chain": authChain,
+		})
+	}
+}
+
+// handleFederationBackfill answers `GET /_matrix/federation/v1/backfill/{roomID}`.
+//
+// This is how a room gets its past. A server that joined a room yesterday holds today's state and none of
+// yesterday's messages, and this endpoint is the one window-giving question it can ask a resident server.
+// The window is newest-first so the asking peer can chain it onto what it already has and stop when a
+// window comes back empty.
+func (h *Handler) handleFederationBackfill() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		fedRequest := h.authenticatePeer(w, r)
+		if fedRequest == nil {
+			return
+		}
+		if h.opts.Join == nil {
+			httpx.RespondError(w, r, matrix.NewUnknown("this homeserver does not serve room history to peers"))
+			return
+		}
+		limit := 100
+		if raw := r.URL.Query().Get("limit"); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil {
+				httpx.RespondError(w, r, matrix.NewInvalidParam("limit must be an integer"))
+				return
+			}
+			limit = parsed
+		}
+		window, err := h.opts.Join.FederatedBackfill(r.Context(), string(fedRequest.Origin()),
+			r.PathValue("roomID"), r.URL.Query().Get("since"), limit)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{
+			"origin":           string(h.opts.ServerName),
+			"origin_server_ts": time.Now().UnixMilli(),
+			"pdus":             window,
+		})
+	}
+}
+
+// nonNil keeps an empty list answering as `[]`, which is what the specification's arrays mean; `null` is
+// a missing field wearing the costume of an empty one.
+func nonNil(values []string) []string {
+	if values == nil {
+		return []string{}
+	}
+	return values
+}
