@@ -31,6 +31,28 @@ type ToDeviceMessage struct {
 // TableName pins the table name.
 func (ToDeviceMessage) TableName() string { return "to_device_messages" }
 
+// DeviceMessageReceipt is the memory that this server has already taken one to-device message from a
+// peer.
+//
+// A key share delivered twice is worse than one that arrives late: a client handed the same Megolm
+// session key twice can replay a message key it has already used. The wire therefore carries an
+// identifier chosen by the sending server for exactly this question, and this table is where this
+// server records that it has answered it once.
+type DeviceMessageReceipt struct {
+	ID int64 `gorm:"primaryKey;autoIncrement" json:"-"`
+	// Origin is the server the message arrived from, because the identifier belongs to that server's
+	// own numbering: two servers may each invent "1", and both have to be believed.
+	Origin string `gorm:"size:255;uniqueIndex:device_receipt_key,priority:1" json:"-"`
+	// MessageID is the sender's idempotence identifier. The specification caps it at 32 codepoints,
+	// which is a hint that it is meant to be short and opaque.
+	MessageID string `gorm:"size:64;uniqueIndex:device_receipt_key,priority:2" json:"-"`
+	// CreatedMS is when this server saw it, which is what lets the memory be bounded.
+	CreatedMS int64 `gorm:"index" json:"-"`
+}
+
+// TableName pins the table name.
+func (DeviceMessageReceipt) TableName() string { return "device_message_receipts" }
+
 // ToDeviceRepo is the to-device queue repository.
 type ToDeviceRepo interface {
 	// Append queues one message and returns its position.
@@ -44,6 +66,15 @@ type ToDeviceRepo interface {
 	LastPosition(ctx context.Context, localpart, deviceID string) (int64, error)
 	// Prune removes messages a device has demonstrably moved past.
 	Prune(ctx context.Context, below int64) (int64, error)
+	// Remember takes first sight of an (origin, message ID) pair: true means "this copy is new,
+	// deliver it", false means "this one has been taken already". Check and write are one statement
+	// because a message and the retry that duplicates it can arrive on two connections at the same
+	// moment, and the answer must be that one of them delivers it.
+	Remember(ctx context.Context, origin, messageID string, nowMS int64) (bool, error)
+	// PruneReceipts forgets messages older than a moment, which is what keeps the idempotence memory
+	// bounded. A retry older than the horizon counts as a new message, which is the honest reading: a
+	// server still retrying after a week is not retrying, it is failing.
+	PruneReceipts(ctx context.Context, belowMS int64) (int64, error)
 }
 
 // ToDeviceRepoImpl is the GORM-backed [ToDeviceRepo].
@@ -51,6 +82,31 @@ type ToDeviceRepoImpl struct{ db *gorm.DB }
 
 // NewToDeviceRepo builds the to-device queue repository.
 func NewToDeviceRepo(db *gorm.DB) *ToDeviceRepoImpl { return &ToDeviceRepoImpl{db: db} }
+
+// Remember implements [ToDeviceRepo].
+func (r *ToDeviceRepoImpl) Remember(ctx context.Context, origin, messageID string, nowMS int64) (bool, error) {
+	receipt := &DeviceMessageReceipt{Origin: origin, MessageID: messageID, CreatedMS: nowMS}
+	if err := session(ctx, r.db).Create(receipt).Error; err != nil {
+		if IsAlreadyExists(err) {
+			// Somebody else took this copy first — a duplicate, not a failure.
+			return false, nil
+		}
+		return false, fmt.Errorf("recording a to-device message from %q: %w", origin, err)
+	}
+	return true, nil
+}
+
+// PruneReceipts implements [ToDeviceRepo].
+func (r *ToDeviceRepoImpl) PruneReceipts(ctx context.Context, belowMS int64) (int64, error) {
+	if belowMS <= 0 {
+		return 0, nil
+	}
+	result := session(ctx, r.db).Where("created_ms < ?", belowMS).Delete(&DeviceMessageReceipt{})
+	if result.Error != nil {
+		return 0, fmt.Errorf("pruning the to-device idempotence memory: %w", result.Error)
+	}
+	return result.RowsAffected, nil
+}
 
 // Append implements [ToDeviceRepo].
 func (r *ToDeviceRepoImpl) Append(ctx context.Context, message *ToDeviceMessage) (int64, error) {

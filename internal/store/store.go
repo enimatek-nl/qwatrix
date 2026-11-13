@@ -235,6 +235,7 @@ func migrate(db *gorm.DB) error {
 		&DirectoryEntry{},
 		&PushRule{},
 		&ToDeviceMessage{},
+		&DeviceMessageReceipt{},
 		&MediaFile{},
 		&DeviceListChange{},
 		&FederationOutbox{},

@@ -225,6 +225,11 @@ func New(cfg *config.Config) (*App, error) {
 		rooms.WithoutFederationOutbound()
 	}
 	app.outbox = fedapi.NewOutbox(peer, st, spec.ServerName(cfg.ServerName)).WithWakeup(app.notifier)
+	// A key share addressed to a device on another server has to leave this one, and leave *queued*:
+	// a Megolm session key dropped because a peer was briefly unreachable is a message that can never
+	// be read. The outbox is where that intent is kept, since it already survives restarts and retries
+	// a peer that is asleep.
+	toDeviceService.WithForwarder(app.outbox)
 
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
 		ServerName:  spec.ServerName(cfg.ServerName),
@@ -234,6 +239,8 @@ func New(cfg *config.Config) (*App, error) {
 		Devices:     keyService,
 		Media:       mediaService,
 		DeviceLists: deviceListService,
+		// The far half of the same path: a peer's key share for one of this server's devices.
+		ToDevice: toDeviceService,
 	})
 	// A user's device list is this server's to speak for, so the servers that share a room with that
 	// user hear about a change from here. Best-effort by design: the change is recorded locally either

@@ -23,8 +23,16 @@ type FederationOutbox struct {
 	// Destination is the homeserver this copy is for, taken from a member's user ID rather than
 	// guessed: a server is told about events in rooms it has members in, and no others.
 	Destination string `gorm:"size:255;index:outbox_due" json:"destination"`
-	RoomID      string `gorm:"size:512" json:"-"`
-	EventID     string `gorm:"size:255;index" json:"-"`
+	// Kind says what this row carries: an event to hand over, or an ephemeral message destined for
+	// somebody's device. They travel inside a transaction in different shapes and are acknowledged
+	// differently — a peer answers per event for events and says nothing at all about ephemeral ones —
+	// so a transaction is one kind or the other, never a mixture of the two.
+	Kind    string `gorm:"size:16;index;default:event" json:"kind"`
+	RoomID  string `gorm:"size:512" json:"-"`
+	EventID string `gorm:"size:255;index" json:"-"`
+	// Content is the ephemeral message this row carries, in the shape the destination's `edus` array
+	// expects. Empty for an event row, whose bytes live in JSON.
+	Content string `gorm:"type:text" json:"-"`
 	// JSON is the event as it was persisted — already signed by this server, because re-signing a
 	// stored event would produce a different event ID from the one everybody else has.
 	JSON string `gorm:"type:text" json:"-"`
@@ -40,6 +48,23 @@ type FederationOutbox struct {
 
 // TableName pins the table name.
 func (FederationOutbox) TableName() string { return "federation_outbox" }
+
+// What a delivery row holds.
+const (
+	// OutboxKindEvent is a persistent event, handed over inside a transaction's `pdus` and answered
+	// one by one.
+	OutboxKindEvent = "event"
+	// OutboxKindDevice is an ephemeral message for one recipient's device, carried in `edus` and
+	// never answered for: the specification makes ephemeral events unacknowledged, which is why the
+	// sending side has to be the one that remembers.
+	OutboxKindDevice = "device"
+)
+
+// IsDevice reports whether this row is an ephemeral device message rather than an event. Anything
+// that is not marked as a device message is treated as an event, which is the safe reading for rows
+// written before the distinction existed: an event retried as an event is merely late, while an
+// ephemeral message retried as an event is a transaction a peer has to refuse.
+func (r FederationOutbox) IsDevice() bool { return r.Kind == OutboxKindDevice }
 
 // FederationOutboxRepo is the delivery ledger.
 type FederationOutboxRepo interface {

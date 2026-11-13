@@ -224,6 +224,15 @@ media from another server is answered with 404 rather than fetched.
 
 Queued messages are delivered in the `to_device` section of `/sync`.
 
+A recipient who lives on another homeserver is not dropped and not delivered locally: that recipient's
+share is separated out and queued for the server named in their user ID, which delivers it to the devices
+it holds and verifies the signatures on the payload itself. Two details of that hand-off are this server's
+problem even though the far server does the delivering. The client's transaction ID travels with it —
+not because the destination is told the client's bookkeeping, but because it is the only identifier both
+sides have for "the same send", and the destination needs that to tell a retry from a second key. And a
+recipient naming every device with `*` is expanded by the server that owns those devices, since only it
+knows that the laptop was added an hour ago.
+
 ## Push rules
 
 | Method | Path | Spec |
@@ -391,10 +400,25 @@ the answer sends the transaction again, and a room where every message appears t
 An event is refused if its own signature cannot be verified, if it follows history this server does not
 have (that is a gap to fill, not a branch to invent), or if the room's rules would not allow it.
 
-Ephemeral events (EDUs) are parsed — a transaction containing one still delivers its events — but are
-not acted on yet, so typing indicators, remote receipts, to-device messages and presence from a peer
-are discarded. The response cannot report a failure for those, which is why the drop is logged by type
-rather than silent; it remains open work.
+Ephemeral events (EDUs) are parsed — a transaction containing one still delivers its events — and two
+kinds are acted on. `m.device_list_update` is applied for users of the server that signed it, so that
+somebody who shares a room learns that the keys they hold moved elsewhere. `m.direct_to_device` is
+delivered into the recipient's device queue, and it is the only way an end-to-end key share crosses
+from one homeserver to another — without it, encryption works between two devices on this server and
+nowhere else.
+
+Delivery is remembered rather than trusted. A message carries an idempotence identifier chosen by the
+sending server, and a peer that retries must not hand a client the same Megolm key twice: a replayed
+message key can be replayed as a message. The memory is keyed on the sender *and* that identifier,
+because two servers are each free to invent `message_id: 1`.
+
+Everything else — typing indicators, remote receipts, presence — is discarded, which the response
+cannot report because ephemeral events are acknowledged as a whole or not at all; the drop is therefore
+logged by type rather than silent, and it remains open work.
+
+The sending side queues a device message in the same durable ledger as an event, for the reason the
+specification gives for retrying ephemeral events at all: a key share dropped because a peer was briefly
+asleep is not a notification that arrived late, it is a message that can never be read.
 
 An event that follows history this server does not have is not refused straight away: the refusal names
 the missing event, and the transport asks the peer that reported it for exactly that event

@@ -79,6 +79,10 @@ type Options struct {
 	// DeviceLists records that a peer told us one of its users changed their encryption devices. It
 	// may be nil, in which case an incoming device-list update is logged and dropped.
 	DeviceLists DeviceListAnnouncer
+	// ToDevice takes a message a peer delivered for one of this server's devices — the far half of an
+	// end-to-end key share. Nil means the queue is unreachable, and the message is refused rather
+	// than swallowed: a peer cannot be told an ephemeral event landed when it did not.
+	ToDevice DeviceMessageSink
 	// Media serves this server's own files to peers. It may be nil, in which case the media endpoint
 	// answers that this server does not serve media over federation — a refusal a peer can read, and
 	// the right answer for a server whose media repository is switched off.
@@ -373,4 +377,13 @@ func (h *Handler) handleUnknown(w http.ResponseWriter, r *http.Request) {
 // share a room with the subject learn that the keys they hold moved or went away.
 type DeviceListAnnouncer interface {
 	Announce(ctx context.Context, userID string, left bool) error
+}
+
+// DeviceMessageSink is where an incoming to-device message is delivered, so that the people who share
+// a conversation with the recipient can decrypt what they send next.
+type DeviceMessageSink interface {
+	// IngestFromPeer queues a message a peer delivered for one of this server's devices and reports
+	// how many devices took it.
+	IngestFromPeer(ctx context.Context, origin, messageID, eventType, sender string,
+		messages map[string]map[string]json.RawMessage) (int, error)
 }

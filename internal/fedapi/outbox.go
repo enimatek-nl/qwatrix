@@ -145,7 +145,9 @@ func (o *Outbox) coSignInvites(ctx context.Context, rows []store.FederationOutbo
 	remaining = make([]store.FederationOutbox, 0, len(rows))
 	coSignedByEvent := map[string]string{}
 	for _, row := range rows {
-		if !events.IsInvite([]byte(row.JSON)) || !invitesUserAt(row, o.serverName) {
+		if row.IsDevice() || !events.IsInvite([]byte(row.JSON)) || !invitesUserAt(row, o.serverName) {
+			// A device message is not an event, so it is not an invitation either — and parsing its
+			// ephemeral content as though it were one would be reading meaning into bytes that have none.
 			remaining = append(remaining, row)
 			continue
 		}
@@ -285,9 +287,13 @@ func (o *Outbox) wait(ctx context.Context, ticker *time.Ticker, generation *uint
 }
 
 // outboxBatch is the set of queued events for one peer.
+// outboxBatch is one peer's share of one delivery pass, in the order the work was queued.
 type outboxBatch struct {
 	destination string
-	rows        []store.FederationOutbox
+	// kind is what the batch carries. A transaction holds events or ephemeral device messages and
+	// never both, because the peer answers one kind and not the other.
+	kind string
+	rows []store.FederationOutbox
 }
 
 // SplitDelivery reads a peer's answer to a transaction and says which queued copies it may clear.
@@ -369,24 +375,147 @@ func (o *Outbox) SendDeviceListUpdate(ctx context.Context, destination string, c
 // deviceListUpdateEDU is the ephemeral event type that carries a device-list change.
 const deviceListUpdateEDU = "m.device_list_update"
 
+// directToDeviceEDU is the ephemeral event type that carries a message for one device — the only way
+// an end-to-end key share crosses from one homeserver to another.
+const directToDeviceEDU = "m.direct_to_device"
+
+// ForwardToDevice queues an ephemeral message for one destination server.
+//
+// The message ID is not generated here: it is derived by the caller from the client transaction that
+// asked for this, so that a client retrying its key share produces the same ID and the destination
+// can tell a retry from a second key. Generating a fresh ID on every attempt would make this
+// queue-and-retry machinery its own source of duplicates, which is the opposite of what an
+// idempotence ID is for.
+//
+// It is a queue write rather than a send because a room key is not a typing notification: if the
+// peer is asleep, the key has to still be here when it wakes.
+func (o *Outbox) ForwardToDevice(ctx context.Context, destination, messageID,
+	eventType, sender string, messages map[string]map[string]json.RawMessage) error {
+	if o == nil || o.store == nil || o.peer == nil || destination == "" ||
+		destination == string(o.serverName) || len(messages) == 0 {
+		return nil
+	}
+	content, err := json.Marshal(map[string]any{
+		"message_id": messageID,
+		"type":       eventType,
+		"sender":     sender,
+		"messages":   messages,
+	})
+	if err != nil {
+		// A message this server cannot encode is not a peer's problem to wait on.
+		return fmt.Errorf("encoding a device message for %s: %w", destination, err)
+	}
+	row := &store.FederationOutbox{
+		Destination: destination,
+		Kind:        store.OutboxKindDevice,
+		// The sender's ID is kept where an event ID would go: it is what this row is known by, and
+		// what a peer's duplicate arrives with.
+		EventID: messageID,
+		Content: string(content),
+	}
+	if err := o.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
+		return o.store.FederationOutbox.Append(ctx, tx, []*store.FederationOutbox{row})
+	}); err != nil {
+		return fmt.Errorf("queueing a device message for %s: %w", destination, err)
+	}
+	if o.notify != nil {
+		// A key share waits for nobody: the delivery loop should wake now rather than at the next
+		// tick, because the recipient is usually sitting with a room open and undecryptable.
+		o.notify.Publish()
+	}
+	return nil
+}
+
 // groupByDestination splits the queue into one batch per peer, in the order the events were queued.
+//
+// Device messages are batched apart from events rather than alongside them: a transaction is
+// answered per event, and an ephemeral message has no answer to match, so mixing the two would make
+// it impossible to say which queued rows the peer took.
 func groupByDestination(rows []store.FederationOutbox) []outboxBatch {
 	index := map[string]int{}
 	out := []outboxBatch{}
 	for _, row := range rows {
-		at, ok := index[row.Destination]
+		kind := store.OutboxKindEvent
+		if row.IsDevice() {
+			kind = store.OutboxKindDevice
+		}
+		key := row.Destination + "\x00" + kind
+		at, ok := index[key]
 		if !ok {
 			at = len(out)
-			index[row.Destination] = at
-			out = append(out, outboxBatch{destination: row.Destination})
+			index[key] = at
+			out = append(out, outboxBatch{destination: row.Destination, kind: kind})
 		}
 		out[at].rows = append(out[at].rows, row)
 	}
 	return out
 }
 
+// deliverDevices hands one peer everything this pass holds for somebody's devices there.
+//
+// Unlike events, an ephemeral message is not answered: the specification makes EDUs unacknowledged,
+// so a transaction that arrived means each message inside it arrived. That is also why these rows
+// are queued at all rather than sent inline — a peer that is briefly down would otherwise take a
+// room key with it, and a Megolm session key that never arrives is a message nobody can ever read.
+func (o *Outbox) deliverDevices(ctx context.Context, batch outboxBatch) (int, error) {
+	ids := make([]int64, 0, len(batch.rows))
+	edus := make([]gomatrixserverlib.EDU, 0, outboxEventsPerTransaction)
+	for _, row := range batch.rows {
+		if len(edus) >= outboxEventsPerTransaction {
+			// The specification caps a transaction at 100 EDUs; this shares the tighter bound already
+			// used for events, so a peer that has been asleep is caught up in pages rather than in one
+			// request it is entitled to refuse.
+			break
+		}
+		if !json.Valid([]byte(row.Content)) {
+			slog.Error("fedapi: a queued device message is not valid JSON and is being dropped",
+				"destination", batch.destination, "message_id", row.EventID)
+			_ = o.store.FederationOutbox.Delete(ctx, []int64{row.ID})
+			continue
+		}
+		ids = append(ids, row.ID)
+		edus = append(edus, gomatrixserverlib.EDU{
+			Type:        directToDeviceEDU,
+			Origin:      string(o.serverName),
+			Destination: batch.destination,
+			Content:     spec.RawJSON(row.Content),
+		})
+	}
+	if len(edus) == 0 {
+		return 0, nil
+	}
+
+	transaction := gomatrixserverlib.Transaction{
+		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
+		Origin:         o.serverName,
+		Destination:    spec.ServerName(batch.destination),
+		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
+		EDUs:           edus,
+	}
+	if _, err := o.peer.Signed().SendTransaction(ctx, transaction); err != nil {
+		delay := outboxBackoff(batch.rows[0].Attempts)
+		next := time.Now().Add(delay).UnixMilli()
+		if deferErr := o.store.FederationOutbox.Deferred(ctx, ids, next, err.Error()); deferErr != nil {
+			slog.Error("fedapi: could not defer a failed device delivery",
+				"destination", batch.destination, "error", deferErr)
+		}
+		return 0, fmt.Errorf("sending device messages to %s: %w", batch.destination, err)
+	}
+	if err := o.store.FederationOutbox.Delete(ctx, ids); err != nil {
+		// The peer has them. Leaving the rows queued asks again, which is legal — a device message
+		// carries an idempotence ID, and the destination is required to deliver it once.
+		return 0, fmt.Errorf("clearing delivered device messages for %s: %w", batch.destination, err)
+	}
+	slog.Info("fedapi: delivered device messages to a peer",
+		"destination", batch.destination, "messages", len(edus))
+	return len(edus), nil
+}
+
 // deliver sends one peer everything this pass holds for it.
 func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
+	if batch.kind == store.OutboxKindDevice {
+		return o.deliverDevices(ctx, batch)
+	}
 	ids := make([]int64, 0, len(batch.rows))
 	sent := make([]store.FederationOutbox, 0, outboxEventsPerTransaction)
 	pdus := make([]json.RawMessage, 0, outboxEventsPerTransaction)

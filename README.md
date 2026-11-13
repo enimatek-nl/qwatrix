@@ -169,9 +169,10 @@ exists for test networks and removes a security boundary.
 Working today, between two real servers: inbound and outbound `/make_join` + `/send_join`,
 transaction ingest **and** delivery (locally originated events reach peers through a persistent
 ledger that survives a restart), server signing keys both ways, fetching a remote user's device
-list for `/keys/query`, gap filling for missing events, and the reads a peer makes when it is the
-one being asked — `/event`, `/timestamp_to_event`, `/state_ids`, `/state`, `/backfill` and
-`/event_auth`, each answering only what the asking server's own users are in.
+list for `/keys/query`, to-device messages — the path an end-to-end key share takes between homeservers,
+remembered per sender so a retried share is not delivered twice — gap filling for missing events, and the
+reads a peer makes when it is the one being asked — `/event`, `/timestamp_to_event`, `/state_ids`,
+`/state`, `/backfill` and `/event_auth`, each answering only what the asking server's own users are in.
 
 Joining a room buys its current state and none of its history, so a question about the past of a
 room hosted elsewhere is put to a server that has it, and what comes back is kept *detached*:
@@ -179,7 +180,7 @@ page-able through `/messages` and `/context`, and outside the room's graph, its 
 its `/sync`, because a user who paged up to last year has not received last year.
 
 Deliberately not there yet, and written down rather than hidden: this server sends its own events
-but does not forward another server's, `m.device_list_updates` EDUs are not sent, and authorising
+but does not forward another server's, typing and receipts are not relayed, and authorising
 another server's restricted-room join — plus knock and ACL federation — are not implemented.
 
 ## Layout

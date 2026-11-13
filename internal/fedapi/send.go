@@ -161,21 +161,23 @@ func (h *Handler) parseRelayedEvent(ctx context.Context, raw json.RawMessage) (g
 // silently, which is exactly the failure worth naming: the sender believes it told this server
 // something and this server has thrown it away.
 //
-// None of them are applied by this server yet. Every one is parsed — a transaction containing a
-// malformed EDU must still deliver its events — and every one is dropped with a debug log naming its
-// type, and the work is tracked as task T706. What must not happen is the silence:
-// a peer cannot be told an ephemeral event failed, so a server that quietly discards typing
-// indicators looks, from the other side, like a server where nobody is ever typing. A debug line
-// naming the type is the only trace that this server chose not to act rather than acting and losing
-// it somewhere else.
+// The two this server acts on are device-list changes and device messages; the rest are parsed — a
+// transaction containing a malformed EDU must still deliver its events — and dropped with a debug log
+// naming their type. What must not happen is the silence: a peer cannot be told an ephemeral event
+// failed, so a server that quietly discards typing indicators looks, from the other side, like a
+// server where nobody is ever typing. A debug line naming the type is the only trace that this server
+// chose not to act rather than acting and losing it somewhere else.
 func (h *Handler) handleEDUs(ctx context.Context, transaction gomatrixserverlib.Transaction) {
 	for _, edu := range transaction.EDUs {
-		if edu.Type != deviceListUpdateEDU {
+		switch edu.Type {
+		case deviceListUpdateEDU:
+			h.applyDeviceListUpdate(ctx, transaction.Origin, edu.Content)
+		case directToDeviceEDU:
+			h.applyToDevice(ctx, transaction.Origin, edu.Content)
+		default:
 			slog.Debug("fedapi: ignored an ephemeral event this homeserver does not act on",
 				"edu_type", edu.Type, "origin", transaction.Origin)
-			continue
 		}
-		h.applyDeviceListUpdate(ctx, transaction.Origin, edu.Content)
 	}
 }
 

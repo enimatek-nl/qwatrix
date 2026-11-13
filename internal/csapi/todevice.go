@@ -41,7 +41,12 @@ func handleSendToDevice(deps Deps) http.HandlerFunc {
 			return
 		}
 		sender := matrix.UserID(session.Localpart, deps.Config.ServerName)
-		if err := deps.ToDevice.Send(r.Context(), sender, r.PathValue("eventType"), body.Messages); err != nil {
+		// The transaction ID is passed down rather than dropped. This server does not use it to
+		// deduplicate its own queue — but the server on the far end of a remote recipient has to be
+		// able to tell a retry from a second key share, and the only identifier both sides have for
+		// "the same send" is the one the client chose.
+		if err := deps.ToDevice.Send(r.Context(), sender, r.PathValue("txnID"),
+			r.PathValue("eventType"), body.Messages); err != nil {
 			httpx.RespondError(w, r, err)
 			return
 		}
