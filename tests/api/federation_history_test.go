@@ -130,16 +130,13 @@ func TestAServerFetchesHistoryThatHappenedBeforeItJoined(t *testing.T) {
 	if paged.StatusCode != http.StatusOK {
 		t.Fatalf("paging back from a fetched event: got %d, want 200\nbody: %s", paged.StatusCode, paged.Body)
 	}
-	bodies := messageBodies(messagesOf(t, charlie, hs2, roomID))
-	foundOlder := false
-	for _, body := range bodies {
-		if body == "written before anyone else joined" {
-			foundOlder = true
-		}
-	}
-	if !foundOlder {
-		t.Errorf("the room's history never became reachable on the joining server, which holds %v\n"+
-			"HS1 LOG:\n%s\nHS2 LOG:\n%s", bodies, hs1.Logs(), hs2.Logs())
+	// The page itself, not a fresh read of the room: the claim is that paging backward from the token
+	// this server handed out reaches history it never held, and a whole-room read would happily find
+	// those events by walking forward from the beginning.
+	bodies := chunkBodies(t, paged.Body)
+	if !containsBody(bodies, "written before anyone else joined") {
+		t.Errorf("paging backward from a fetched event never reached the event before it; the page holds %v, start=%s\n"+
+			"HS1 LOG:\n%s\nHS2 LOG:\n%s", bodies, neighbours.Start, hs1.Logs(), hs2.Logs())
 	}
 
 	// And in the right order. A peer hands a window over newest-first because that is how a backfill
@@ -204,6 +201,29 @@ func syncBodies(t *testing.T, body []byte, roomID string) []string {
 			if event.Type == "m.room.message" {
 				bodies = append(bodies, event.Content.Body)
 			}
+		}
+	}
+	return bodies
+}
+
+// chunkBodies lists the message bodies of a /messages response, in the order the server sent them.
+func chunkBodies(t *testing.T, body []byte) []string {
+	t.Helper()
+	var page struct {
+		Chunk []struct {
+			Type    string `json:"type"`
+			Content struct {
+				Body string `json:"body"`
+			} `json:"content"`
+		} `json:"chunk"`
+	}
+	if err := json.Unmarshal(body, &page); err != nil {
+		t.Fatalf("a page of history cannot be read: %v\nbody: %s", err, body)
+	}
+	bodies := []string{}
+	for _, event := range page.Chunk {
+		if event.Type == "m.room.message" {
+			bodies = append(bodies, event.Content.Body)
 		}
 	}
 	return bodies

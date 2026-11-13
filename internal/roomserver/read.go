@@ -368,17 +368,23 @@ func (s *Service) fetchHistoryAtTimestamp(ctx context.Context, req TimestampRequ
 	if err != nil {
 		return false, err
 	}
+
+	// The window is fetched and kept before the single event it usually contains, and the order is not
+	// fussiness. A stream position is assigned when an event arrives, and this server has no way to
+	// re-place one later: storing the answer first would give it a position older than the neighbour it
+	// was fetched alongside, and a client paging backward from the answer would walk away from the
+	// history it sits in.
+	if _, err := s.remoteHistory.BackfillHistory(ctx, server, req.RoomID, 100); err != nil {
+		// A window is a bonus on top of an answer that has already arrived; refusing the user's
+		// question because the bonus failed would be a worse service than an incomplete history.
+		slog.Debug("backfilling around a fetched event failed", "room_id", req.RoomID, "error", err)
+	}
 	events, err := s.ParsedEvents(ctx, req.RoomID, []json.RawMessage{raw})
 	if err != nil {
 		return false, err
 	}
 	if _, err := s.StoreDetachedEvents(ctx, events); err != nil {
 		return false, err
-	}
-	if _, err := s.remoteHistory.BackfillHistory(ctx, server, req.RoomID, 100); err != nil {
-		// A window is a bonus on top of an answer that has already arrived; refusing the user's
-		// question because the bonus failed would be a worse service than an incomplete history.
-		slog.Debug("backfilling around a fetched event failed", "room_id", req.RoomID, "error", err)
 	}
 	return true, nil
 }
@@ -456,9 +462,19 @@ func (s *Service) EventContext(ctx context.Context, req ContextRequest) (*Contex
 
 	// The limit covers both arrays, so each side gets half. Rounding the earlier side up means a reader
 	// walking back from an event sees at least as much as one walking on.
+	// A caller with no opinion passes a negative and gets the specification's default of ten. Zero is a
+	// different opinion: it means "the event and its tokens, and nothing around it", which is exactly what
+	// a client asks for when it wants a place to page from. Defaulting zero to ten would answer a request
+	// for nothing with a page of history and no way to ask for less.
 	limit := req.Limit
-	if limit <= 0 {
+	if limit < 0 {
 		limit = 10
+	}
+	if limit > 100 {
+		// The same ceiling `/messages` puts on one page, and for the same reason: `/context` renders
+		// every event, its neighbourhood and the state at the centre, so one generous number from one
+		// client is a request to render a room.
+		limit = 100
 	}
 	beforeLimit := (limit + 1) / 2
 	afterLimit := limit / 2
