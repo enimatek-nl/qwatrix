@@ -170,7 +170,9 @@ Working today, between two real servers: inbound and outbound `/make_join` + `/s
 transaction ingest **and** delivery (locally originated events reach peers through a persistent
 ledger that survives a restart), server signing keys both ways, fetching a remote user's device
 list for `/keys/query`, to-device messages — the path an end-to-end key share takes between homeservers,
-remembered per sender so a retried share is not delivered twice — gap filling for missing events, and the
+remembered per sender so a retried share is not delivered twice — a peer's key queries and one-time-key
+claims, which is what lets a client on one server begin an Olm session with a device on another, gap
+filling for missing events, and the
 reads a peer makes when it is the one being asked — `/event`, `/timestamp_to_event`, `/state_ids`,
 `/state`, `/backfill` and `/event_auth`, each answering only what the asking server's own users are in.
 

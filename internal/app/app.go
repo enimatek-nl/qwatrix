@@ -253,7 +253,13 @@ func New(cfg *config.Config) (*App, error) {
 	// so the key server is given the transport that can ask. Without it, /keys/query for a remote user
 	// answers "no devices" — which a client reads as a true statement about a stranger rather than as
 	// this server shrugging, and it will not ask again.
-	keyService.WithRemoteKeySource(fedapi.NewRemoteDevices(peer))
+	remoteKeys := fedapi.NewRemoteDevices(peer)
+	// One object for both directions of the same relationship, because that is what it is: this server
+	// asking a peer what its users' keys are, and asking that peer to spend one so a session can start.
+	// The second is the one that costs something, and it is the reason a client of this server can send
+	// an encrypted message at all — without it, this server can receive encrypted conversations and never
+	// begin one.
+	keyService.WithRemoteKeySource(remoteKeys).WithRemoteKeyClaimer(remoteKeys)
 	// An image hosted elsewhere is not this server's file, and a client cannot fetch it from the
 	// origin on its own behalf: a Matrix client asks its own homeserver, and this server has to be
 	// willing to go and ask. Without this, every image, avatar and file from another server in a

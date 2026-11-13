@@ -110,13 +110,24 @@ func handleClaimKeys(deps Deps) http.HandlerFunc {
 			httpx.RespondError(w, r, err)
 			return
 		}
-		claimed, err := deps.Keys.Claim(r.Context(),
+		claimed, failures, err := deps.Keys.Claim(r.Context(),
 			matrix.UserID(session.Localpart, deps.Config.ServerName), body.OneTimeKeys)
 		if err != nil {
 			httpx.RespondError(w, r, err)
 			return
 		}
-		httpx.RespondJSON(w, http.StatusOK, map[string]any{"one_time_keys": claimed})
+		// `failures` travels beside the keys rather than only in the log, because the two ways a claim
+		// comes back empty are not the same news: a device that has run out of prepaid keys needs the
+		// owner to open it, while a homeserver that could not be reached needs nothing from anybody and
+		// the client should simply ask again. A client that is told neither gives up on an encrypted
+		// conversation that would work a minute later.
+		if failures == nil {
+			failures = map[string]any{}
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{
+			"one_time_keys": claimed,
+			"failures":      failures,
+		})
 	}
 }
 

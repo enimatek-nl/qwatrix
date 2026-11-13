@@ -36,6 +36,9 @@ type Service struct {
 	// case a query for a remote user answers that their devices are unknown rather than pretending
 	// they have none.
 	remote RemoteKeySource
+	// remoteClaim asks another homeserver to spend a one-time key for one of its devices. Nil in a
+	// deployment that does not federate, where the honest answer is a named failure rather than silence.
+	remoteClaim RemoteKeyClaimer
 }
 
 // RemoteKeySource is the outbound half of device-key federation: another homeserver's answer to
@@ -50,9 +53,31 @@ type RemoteKeySource interface {
 	UserDevices(ctx context.Context, serverName, userID string) ([]json.RawMessage, error)
 }
 
+// RemoteKeyClaimer is the outbound half of a one-time-key claim across a federation border: it asks the
+// server a user lives on for a key to start a session with one of their devices.
+//
+// It is a separate seam from RemoteKeySource rather than another method on it because the two have
+// different consequences. Asking for a device list reads; this spends a key on somebody else's server,
+// and a server that got it wrong could quietly exhaust a remote user's whole stock of one-time keys —
+// leaving every device that tries to reach them unable to start a session at all. Keeping the seam narrow
+// keeps that permission question visible.
+type RemoteKeyClaimer interface {
+	// ClaimKeys asks `serverName` to spend one-time keys for the devices it names, and returns them in
+	// the shape the local claim produces: user, then device, then that device's key document.
+	ClaimKeys(ctx context.Context, serverName string,
+		oneTimeKeys map[string]map[string]string) (map[string]map[string]json.RawMessage, error)
+}
+
 // WithRemoteKeySource installs the federation source and returns the service for chaining.
 func (s *Service) WithRemoteKeySource(remote RemoteKeySource) *Service {
 	s.remote = remote
+	return s
+}
+
+// WithRemoteKeyClaimer installs the transport that spends a remote device's key, and returns the service
+// for chaining.
+func (s *Service) WithRemoteKeyClaimer(claim RemoteKeyClaimer) *Service {
+	s.remoteClaim = claim
 	return s
 }
 
@@ -335,16 +360,46 @@ func (s *Service) parseDeviceKeys(callerUserID, deviceID string, raw json.RawMes
 // A caller who gets nothing back is told so by their device being absent from the response rather
 // than by an error, because "this device has run out of prepaid keys and must be online for you to
 // reach it" is a normal outcome of the protocol, not a failure of the request.
-func (s *Service) Claim(ctx context.Context, _ string, request map[string]map[string]string) (map[string]map[string]json.RawMessage, error) {
+func (s *Service) Claim(ctx context.Context, _ string, request map[string]map[string]string) (map[string]map[string]json.RawMessage, map[string]any, error) {
 	out := map[string]map[string]json.RawMessage{}
-	for userID, devices := range request {
+	// Failures are reported per server under its own name, which is what the specification's `failures`
+	// map is keyed by and what a client uses to tell "this device has run out of keys" from "that
+	// homeserver could not be asked". Returning nothing for an unreachable user is the worst answer
+	// available: a client cannot distinguish it from an exhausted device, stops trying, and the
+	// conversation quietly never becomes encrypted at all.
+	failures := map[string]any{}
+
+	local, remote, unreadable := s.splitClaimByOwner(request)
+	for _, userID := range unreadable {
+		slog.Debug("keyserver: a claim named something that is not a user ID", "user_id", userID)
+	}
+	for destination, byUser := range remote {
+		if s.remoteClaim == nil {
+			// A deployment that does not federate cannot ask, and the place to say so is the answer the
+			// client reads rather than only the log it will never open.
+			failures[destination] = map[string]any{"error": "this homeserver is not federating"}
+			continue
+		}
+		claimed, err := s.remoteClaim.ClaimKeys(ctx, destination, byUser)
+		if err != nil {
+			slog.Warn("keyserver: could not ask a peer for a device's one-time keys",
+				"server", destination, "users", len(byUser), "error", err)
+			failures[destination] = map[string]any{"error": err.Error()}
+			continue
+		}
+		for userID, devices := range claimed {
+			out[userID] = devices
+		}
+	}
+
+	for userID, devices := range local {
 		for deviceID, algorithm := range devices {
 			// A device may claim its own one-time keys. Refusing would be tempting — it spends
 			// keys the uploader presumably wanted — but complement's own suite does it to
 			// observe the spending, and the keys belong to the account asking.
 			claimed, err := s.store.Keys.ClaimOneTimeKeys(ctx, userID, deviceID, algorithm, 1)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			if len(claimed) == 0 {
 				continue
@@ -361,7 +416,35 @@ func (s *Service) Claim(ctx context.Context, _ string, request map[string]map[st
 			entries[deviceID] = json.RawMessage(mustJSON(keys))
 		}
 	}
-	return out, nil
+	return out, failures, nil
+}
+
+// splitClaimByOwner sorts a claim request into this server's own users, the peers that have to be asked,
+// and the names that are not user IDs at all.
+//
+// Splitting on the domain rather than trying the local store first is the point: device IDs are chosen by
+// whoever registers them, so two servers hand out the same identifier all the time, and a lookup that
+// fell through to a stranger's device would spend a local key for a remote request and tell the client it
+// had started a session with somebody it has never met.
+func (s *Service) splitClaimByOwner(request map[string]map[string]string) (local map[string]map[string]string, remote map[string]map[string]map[string]string, unreadable []string) {
+	local = map[string]map[string]string{}
+	remote = map[string]map[string]map[string]string{}
+	for userID, devices := range request {
+		_, domain, err := matrix.ParseUserID(userID, s.cfg.ServerName)
+		if err != nil {
+			unreadable = append(unreadable, userID)
+			continue
+		}
+		if string(domain) == s.cfg.ServerName {
+			local[userID] = devices
+			continue
+		}
+		if remote[string(domain)] == nil {
+			remote[string(domain)] = map[string]map[string]string{}
+		}
+		remote[string(domain)][userID] = devices
+	}
+	return local, remote, unreadable
 }
 
 // PeerDeviceKeys answers another homeserver's question about the devices of *this* server's users,

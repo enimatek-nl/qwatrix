@@ -62,6 +62,61 @@ type RemoteDevices struct {
 // fails every question, which the key server turns into "their devices are unknown to us".
 func NewRemoteDevices(peer *Peer) *RemoteDevices { return &RemoteDevices{peer: peer} }
 
+// ClaimKeys asks `serverName` to spend one-time keys for the devices it names, which is how a session
+// started on this server reaches a device that lives elsewhere.
+//
+// Every user in the request has to live on the server being asked, and the check is stricter here than it
+// is for a device list. A device list that came back from the wrong server is merely useless; a one-time
+// key that came back from the wrong server has been *spent* somewhere, and the request that spent it
+// named both the user and the device, so a server willing to answer for another domain's users could be
+// talked into emptying a stock this server's own client is about to rely on.
+//
+// Nothing is retried here. The claim is already queued by nothing at all — it is an inline call, because
+// a claim that is retried after succeeding spends a second key, and a client whose session failed simply
+// asks again.
+func (d *RemoteDevices) ClaimKeys(ctx context.Context, serverName string,
+	oneTimeKeys map[string]map[string]string) (map[string]map[string]json.RawMessage, error) {
+	if d == nil || d.peer == nil {
+		return nil, matrix.NewUnknown("this homeserver is not federating")
+	}
+	for userID := range oneTimeKeys {
+		if _, domain, err := matrix.ParseUserID(userID, serverName); err != nil {
+			return nil, matrix.NewInvalidParam("%q is not a valid user ID", userID)
+		} else if string(spec.ServerName(domain)) != serverName {
+			return nil, matrix.NewInvalidParam("user %q does not live on %q", userID, serverName)
+		}
+	}
+	// The library names the *requesting* server `origin`: asking it to sign as the peer instead fails with
+	// "no signing identity for server name <peer>", which reads like a key problem and is an argument
+	// order one.
+	response, err := d.peer.Signed().ClaimKeys(ctx, d.peer.ServerName(), spec.ServerName(serverName), oneTimeKeys)
+	if err != nil {
+		return nil, err
+	}
+	// The peer answers user, then device, then a map of key ID to key. The key server wants the innermost
+	// map as one document, which is also how a locally claimed key is returned, so the two sources merge
+	// into one answer without either knowing about the other.
+	out := make(map[string]map[string]json.RawMessage, len(response.OneTimeKeys))
+	for userID, devices := range response.OneTimeKeys {
+		entries := make(map[string]json.RawMessage, len(devices))
+		for deviceID, keys := range devices {
+			encoded, err := json.Marshal(keys)
+			if err != nil {
+				// A key this server cannot encode is not a key its client can use either; leaving it out
+				// means the client asks again rather than building a session that cannot decrypt.
+				slog.Warn("fedapi: a claimed one-time key could not be re-encoded",
+					"server", serverName, "user_id", userID, "device_id", deviceID, "error", err)
+				continue
+			}
+			entries[deviceID] = json.RawMessage(encoded)
+		}
+		if len(entries) > 0 {
+			out[userID] = entries
+		}
+	}
+	return out, nil
+}
+
 // deviceListResponse is the peer's answer, read loosely on purpose.
 //
 // Two shapes are in the wild. The specification calls the array `device_lists`; the Go libraries that

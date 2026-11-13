@@ -368,6 +368,20 @@ leaking: reserving a key in case the asker comes back would let any peer freeze 
 key pools by asking and not finishing. A device notices its stock running low through
 `GET /keys/status`, which answers how many unsent one-time keys *this* device holds — keyed by algorithm,
 so a client that only knows `signed_curve25519` need not know what else exists.
+
+The sending side is the same pair of requests in the other direction, and it is the half that decides
+whether this server's own users can begin a conversation. A claim for a device that lives elsewhere is
+forwarded to the server named in that user ID, and only there: device IDs are chosen by whoever registers
+them, so two servers hand out the same identifier routinely, and a lookup that fell through to a local
+device with a stranger's name would spend a local key and tell the client it had started a session with
+somebody it has never met.
+
+A peer that cannot be asked is named in the response's `failures` map rather than left out of it. The two
+ways a claim comes back empty are not the same news — a device that has run out of prepaid keys needs its
+owner to open it, while a homeserver that was unreachable needs nothing from anybody and the client should
+ask again shortly — and an empty answer alone cannot tell them apart. Nothing is retried, either: a claim
+that is resent after it succeeded spends a second key, so the client that wants another attempt simply
+makes one.
 | `GET` | `/_matrix/federation/v1/media/download/{mediaID}` | [MSC2448](https://github.com/matrix-org/matrix-spec-proposals/pull/2448) — signed; files this server originates only |
 | `GET` | `/_matrix/federation/v1/download/{serverName}/{mediaID}` | [Download media from its origin](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1downloadservernamemediaid) — signed, and only for this server's own files; it is also the first path this server tries when fetching somebody else's, before the legacy `/_matrix/media/v3/download/...` and the MSC2448 draft it also serves |
 
