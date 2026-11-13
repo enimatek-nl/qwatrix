@@ -66,6 +66,15 @@ func (h *Handler) handleSendJoin(legacyEnvelope bool) http.HandlerFunc {
 			return
 		}
 
+		// Shape before anything that requires trusting the event. An event that is not a join whatever it
+		// turns out to be signed by is a bad event, and the answer to a bad event is "this is wrong, fix
+		// it" — not a 403 that reads as a policy about a server that could never join, which a peer
+		// answers by retrying the same broken event forever.
+		if reason := membershipShapeProblem(body, "send_join", "join"); reason != "" {
+			httpx.RespondError(w, r, matrix.NewInvalidParam("%s", reason))
+			return
+		}
+
 		roomID := r.PathValue("roomID")
 		eventID := r.PathValue("eventID")
 		room, err := h.opts.Join.RoomVersionFor(r.Context(), roomID)

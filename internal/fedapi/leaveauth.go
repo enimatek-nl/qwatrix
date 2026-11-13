@@ -6,7 +6,6 @@ import (
 
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
-	"github.com/tidwall/gjson"
 )
 
 // handleMakeLeave answers `GET /_matrix/federation/v1/make_leave/{roomID}/{userID}` and its v2 — the
@@ -83,6 +82,14 @@ func (h *Handler) handleSendLeave(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("roomID")
 	eventID := r.PathValue("eventID")
 
+	// Shape before signature. An event that could not be a leave no matter who signed it is a bad event,
+	// and a peer told "forbidden" about a bad event reads a permanent policy about something it could have
+	// built correctly — and will keep retrying it forever. The checks that need the verified event, that
+	// its ID and room match the path, follow below.
+	if reason := membershipShapeProblem(fedRequest.Content(), "send_leave", "leave"); reason != "" {
+		httpx.RespondError(w, r, matrix.NewInvalidParam("%s", reason))
+		return
+	}
 	// Content, not r.Body: verifying the request consumed the body.
 	event, reason := h.parseRelayedEvent(r.Context(), fedRequest.Content())
 	if reason != "" {
@@ -109,17 +116,14 @@ func (h *Handler) handleSendLeave(w http.ResponseWriter, r *http.Request) {
 			"send_leave takes a membership event, not %q", event.Type()))
 		return
 	}
-	// This endpoint takes a leave and nothing else. It used to take a ban or a knock as well, on the
+	// This endpoint takes a leave and nothing else; the shape gate above is where that is enforced.
+	//
+	// It used to take a ban or a knock as well, on the
 	// reasoning that all three end a membership — which is true of the effect and false of the protocol:
 	// a ban is state that travels in a transaction, a knock has its own endpoints, and neither has been
 	// through the handshake that makes the sender entitled to write that membership. `send_leave` is the
 	// narrow door with no state exchange and no co-signing behind it, so the narrower the promise the more
 	// it can be trusted; this is also exactly what the specification says and what Synapse enforces.
-	if membership := membershipOf(fedRequest.Content()); membership != "leave" {
-		httpx.RespondError(w, r, matrix.NewInvalidParam(
-			"send_leave takes a leave, not a membership of %q", membership))
-		return
-	}
 
 	// The same admission a relayed event goes through, gaps and all: a leave that arrives before
 	// the join it follows is still a leave the room needs, and refusing it for a missing
@@ -168,11 +172,4 @@ func (h *Handler) handleEventAuth(withRooms bool) http.HandlerFunc {
 		}
 		httpx.RespondJSON(w, http.StatusOK, answer)
 	}
-}
-
-// membershipOf reads the membership out of an event body. It is read from the raw JSON rather than
-// the parsed event because a membership content type would have to be trusted to be well-formed
-// first, and this is a refusal path as much as an accept path.
-func membershipOf(raw []byte) string {
-	return gjson.GetBytes(raw, "content.membership").String()
 }
