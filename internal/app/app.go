@@ -35,6 +35,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/media"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
 	"github.com/enimatek-nl/qwatrix/internal/presence"
+	"github.com/enimatek-nl/qwatrix/internal/push"
 	"github.com/enimatek-nl/qwatrix/internal/pushrules"
 	"github.com/enimatek-nl/qwatrix/internal/readstate"
 	"github.com/enimatek-nl/qwatrix/internal/roomserver"
@@ -62,6 +63,9 @@ type App struct {
 	// federation is the server-server API, served on its own TLS listener because it is a
 	// different protocol with a different way of proving who is asking.
 	federation http.Handler
+	// pusher is push delivery: the evaluator that decides what a device should be told, and the
+	// worker that owes the gateways their requests.
+	pusher *push.Service
 	// outbox delivers this server's queued peer copies. It is a ledger rather than an inline send so
 	// that an unreachable peer can neither fail a local user's message nor make it vanish.
 	outbox *fedapi.Outbox
@@ -136,6 +140,20 @@ func New(cfg *config.Config) (*App, error) {
 	// The unread badge is measured from receipts but decided by push rules, because "unread"
 	// means "worth reading", which is a question the reader answers and not the server.
 	readState.WithBadgeClassifier(pushRuleService)
+	// Push delivery is the consequence of those same rules: what a device should be told about,
+	// and how. It is given the rules it consults and the read receipts it needs in order to say
+	// whether something is still unread, so that a phone's badge and the app's room list cannot
+	// disagree about whether a room has been read.
+	pushService := push.New(st, push.Options{
+		ServerName: cfg.ServerName,
+		UserAgent:  "qwatrix/" + cfg.Version,
+	})
+	pushService.WithClassifier(pushRuleService).WithReader(readState).WithWakeup(changes)
+	if !cfg.PushEnabled {
+		// Nothing is queued up behind a worker that will never run, and the endpoints keep
+		// answering: a deployment that forbids egress should still see what it is not sending.
+		pushService.WithoutDelivery()
+	}
 	deviceListService := devicelists.New(st, changes, devicelists.Options{ServerName: cfg.ServerName})
 	keyService.WithDeviceListAnnouncer(func(ctx context.Context, userID string) error {
 		return deviceListService.Announce(ctx, userID, false)
@@ -166,7 +184,7 @@ func New(cfg *config.Config) (*App, error) {
 	rooms.WithNamePublisher(directoryService)
 	syncService := syncapi.New(st, cfg, rooms, presenceService, readState, pushRuleService, toDeviceService, deviceListService, changes)
 
-	app := &App{cfg: cfg, store: st, accounts: acc, identity: serverIdentity, events: eventService, notifier: changes, rooms: rooms, sync: syncService}
+	app := &App{cfg: cfg, store: st, accounts: acc, identity: serverIdentity, events: eventService, notifier: changes, rooms: rooms, sync: syncService, pusher: pushService}
 	app.handler = httpx.Chain(
 		csapi.NewMux(csapi.Deps{
 			Config: cfg,
@@ -189,6 +207,7 @@ func New(cfg *config.Config) (*App, error) {
 			Presence:      presenceService,
 			ReadState:     readState,
 			PushRules:     pushRuleService,
+			Push:          pushService,
 			ToDevice:      toDeviceService,
 			Media:         mediaService,
 			DeviceLists:   deviceListService,
@@ -315,6 +334,19 @@ func New(cfg *config.Config) (*App, error) {
 	return app, nil
 }
 
+// DrainPushes evaluates the events this server has not notified for yet and attempts the
+// deliveries that are due, reporting how many were considered and delivered.
+//
+// Like [App.DrainFederationOutbox], this exists because a test cannot make an assertion about a
+// goroutine it has no influence over, and because a notification whose arrival is "eventually" is a
+// notification nobody can debug.
+func (a *App) DrainPushes(ctx context.Context) (int, error) {
+	if a.pusher == nil {
+		return 0, nil
+	}
+	return a.pusher.DrainOnce(ctx)
+}
+
 // DrainFederationOutbox attempts the queued peer copies now and reports how many reached a peer.
 //
 // A production server does not need this — the delivery worker runs on a tick — but a test cannot be
@@ -422,6 +454,11 @@ func (a *App) Run(ctx context.Context) error {
 	// either way, so what a wrong condition here produces is silence rather than an error.
 	if a.outbox != nil {
 		group.Go(func() error { return a.outbox.Run(ctx) })
+		// Push delivery runs on the same shape as federation delivery: a wake-up when something was
+		// just written, and a tick to retry a gateway that was away. It is a sibling rather than part
+		// of the request that wrote the event, because a user's phone being unreachable is not a
+		// reason for their colleague's message to them to be slow.
+		group.Go(func() error { return a.pusher.Run(ctx) })
 	}
 
 	group.Go(func() error {

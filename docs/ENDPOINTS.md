@@ -244,6 +244,18 @@ sides have for "the same send", and the destination needs that to tell a retry f
 recipient naming every device with `*` is expanded by the server that owns those devices, since only it
 knows that the laptop was added an hour ago.
 
+## Pushers and notifications
+
+A pusher is a device asking to be told, and the door to it is client-supplied: the URL this server
+posts to is the one the app registered, so delivering to it is this server making a request somebody
+else chose. `-push=false` turns that part off while keeping everything else working; see README.
+
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/pushers` | [get pushers](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushers) | implemented |
+| `POST` | `/pushers/set` | [set pusher](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3pushersset) | implemented |
+| `GET` | `/notifications` | [get notifications](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3notifications) | implemented |
+
 ## Push rules
 
 | Method | Path | Spec | Status |

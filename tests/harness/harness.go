@@ -275,6 +275,21 @@ func (s *Server) DrainFederation(t *testing.T) int {
 	return sent
 }
 
+// DrainPushes evaluates the events this server has not notified for yet and attempts the push
+// deliveries that are due, reporting how many things it did.
+//
+// Push delivery runs on a wake-up and a tick like federation delivery, and for the same reason a
+// test needs to be able to say "now": a notification that arrives eventually is a notification whose
+// absence cannot be told apart from a notification that was never going to arrive.
+func (s *Server) DrainPushes(t *testing.T) int {
+	t.Helper()
+	done, err := s.instance.DrainPushes(context.Background())
+	if err != nil {
+		t.Fatalf("draining the push delivery queue: %v", err)
+	}
+	return done
+}
+
 // Logs returns everything the server has logged so far, for tests that assert that
 // secrets and internals stay out of the log.
 func (s *Server) Logs() string { return s.logCapture.String() }

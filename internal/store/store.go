@@ -70,6 +70,9 @@ type Store struct {
 	FederationOutbox FederationOutboxRepo
 	// PushRules are the per-account notification rules.
 	PushRules PushRuleRepo
+	// Push is push delivery: the devices that want to be told, the events worth telling them
+	// about, the deliveries still owed, and how far the evaluator has walked the stream.
+	Push PushRepo
 	// Directory is the user directory: the names local users go by, per room.
 	Directory DirectoryRepo
 
@@ -134,6 +137,7 @@ func Open(path string) (*Store, error) {
 		ToDevice:         NewToDeviceRepo(db),
 		FederationOutbox: NewFederationOutboxRepo(db),
 		PushRules:        NewPushRuleRepo(db),
+		Push:             NewPushRepo(db),
 		Directory:        NewDirectoryRepo(db),
 	}, nil
 }
@@ -234,6 +238,10 @@ func migrate(db *gorm.DB) error {
 		&OneTimeKey{},
 		&DirectoryEntry{},
 		&PushRule{},
+		&Pusher{},
+		&Notification{},
+		&PendingPush{},
+		&PushCursor{},
 		&ToDeviceMessage{},
 		&DeviceMessageReceipt{},
 		&MediaFile{},

@@ -109,9 +109,15 @@ runs beside the listeners rather than behind them.
 7. **`PUT /_matrix/key/v2/query` answers 404** even though a complement assertion would pass with 405,
    because this server does not implement the removed key-notary endpoint. Registering a route purely
    to change a status code would be a server lying about what it has.
-8. **Room upgrades, refresh tokens, threads-as-a-timeline, search, key backup, pushers, URL preview and
-   knocking are not implemented.** They are not on the mandatory complement set; each has an open task
-   and each failing test is listed below rather than smoothed over.
+8. **Room upgrades, refresh tokens, threads-as-a-timeline, search, key backup, server-side key backup
+   and URL preview are not implemented.** They are not on the mandatory complement set; each has an open
+   task and each failing test is listed below rather than smoothed over.
+
+   Two things were added after this list was first written, because an Element X client cannot work
+   without them: **pushers and push-gateway delivery** (`GET /pushers`, `POST /pushers/set`,
+   `GET /notifications`, and the delivery pass behind them — T810) and **knocking** (T752). Push is
+   `-push=false`-able because a pusher's gateway URL is client-supplied: delivering is this server
+   making requests its users chose, which not every operator wants.
 
 ## 4. Checks actually run
 
@@ -240,8 +246,11 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   authorised by this server (T751): a room can admit a user this server vouches for, but not yet a user
   another server vouches for.
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
-  search, URL preview, cross-signing verification flows, pushers and push gateway delivery, server ACLs,
-  sliding sync, OIDC/SSO.
+  search, URL preview, cross-signing verification flows, server-side key backup (T753), server ACLs,
+  sliding sync (T811), OIDC/SSO (T812). What *is* implemented from the Element X readiness list, after
+  this milestone's scope was written, is pushers with push-gateway delivery (T810) and knocking (T752);
+  Element X additionally needs Simplified Sliding Sync, and no amount of the rest substitutes for it,
+  because the Rust SDK in that app speaks no other sync protocol.
 - **Application services are supported on the receiving side**: registration files, `as_token`
   authentication, virtual users, acting as a namespaced user (`?user_id=`), and MSC3316 event import with a
   chosen `?ts=`. What is not implemented is the *outbound* half — no events or ephemeral data are pushed to

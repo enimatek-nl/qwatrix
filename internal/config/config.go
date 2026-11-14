@@ -79,6 +79,16 @@ type Config struct {
 	// ThumbnailsEnabled turns on on-the-fly thumbnail generation.
 	ThumbnailsEnabled bool
 
+	// PushEnabled lets this server make the outbound requests push delivery consists of.
+	//
+	// It is on by default, because a pusher exists precisely because a user asked for their
+	// messages to reach their phone. Turning it off is for a deployment whose network policy
+	// forbids egress to arbitrary addresses: a pusher's gateway URL is supplied by whoever
+	// registered it, so push delivery is, by design, this server making requests its users chose.
+	// With it off, pushers are still registered, notifications are still recorded, and
+	// /notifications and the unread badges keep working — only the outbound request is not made.
+	PushEnabled bool
+
 	// RateLimitEnabled turns rate limiting on. It is on by default; tests that need
 	// deterministic bursts of requests may disable it.
 	RateLimitEnabled bool
@@ -114,6 +124,7 @@ func Default() *Config {
 		DefaultRoomVersion:       "11",
 		MediaSizeLimitBytes:      100 << 20,
 		ThumbnailsEnabled:        true,
+		PushEnabled:              true,
 		RateLimitEnabled:         true,
 		RateLimitBurstsPerSecond: 20,
 		RateLimitBurst:           60,
@@ -158,6 +169,8 @@ func (c *Config) ApplyFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.DefaultRoomVersion, "room-version", c.DefaultRoomVersion, "default room version for POST /createRoom")
 	fs.Int64Var(&c.MediaSizeLimitBytes, "media-limit", c.MediaSizeLimitBytes, "maximum size in bytes of one uploaded file")
 	fs.BoolVar(&c.ThumbnailsEnabled, "thumbnails", c.ThumbnailsEnabled, "enable thumbnail generation")
+	fs.BoolVar(&c.PushEnabled, "push", c.PushEnabled,
+		"deliver notifications to the push gateways clients register (off: notifications are still recorded)")
 	fs.BoolVar(&c.RateLimitEnabled, "rate-limit", c.RateLimitEnabled, "enable rate limiting")
 	fs.Float64Var(&c.RateLimitBurstsPerSecond, "rate-limit-rate", c.RateLimitBurstsPerSecond, "sustained requests per second per subject")
 	fs.IntVar(&c.RateLimitBurst, "rate-limit-burst", c.RateLimitBurst, "burst size for a rate-limited subject")

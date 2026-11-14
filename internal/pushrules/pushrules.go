@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
@@ -113,9 +114,13 @@ func (s *Service) ensureSeeded(ctx context.Context, localpart string) error {
 // backfillDefaults writes the default rules an account is missing.
 //
 // Without this, a server upgrade that adds a default — a new kind of mention, say — would apply to
-// accounts created afterwards and silently not to everybody else's, which is the kind of difference
-// a person cannot see or explain. Defaults the account already has are left alone, including one it
-// has switched off: `default` means "the server wrote this", not "the server may rewrite this".
+// accounts created afterwards and silently not to everybody else's, which is the kind of difference a
+// person cannot see or explain. Defaults the account already has are left alone, including one it has
+// switched off: `default` means "the server wrote this", not "the server may rewrite this".
+//
+// The one exception is a default this server shipped *wrong* and can still recognise: see
+// [carriesStaleDefault] and the note there on why a rule nobody could have edited is what makes that
+// repair safe.
 func (s *Service) backfillDefaults(ctx context.Context, localpart string, rows []store.PushRule) error {
 	present := make(map[string]store.PushRule, len(rows))
 	for _, row := range rows {
@@ -129,6 +134,22 @@ func (s *Service) backfillDefaults(ctx context.Context, localpart string, rows [
 			// condition on it. Master with a condition is not master: it would
 			// selectively mute the message types it names while claiming to be the
 			// all-or-nothing switch the client renders as a single toggle.
+			// Two more repairs, of the same kind: this server once shipped the two rules that
+			// most messages reach with `notify` and no tweaks, which a push client reads as
+			// "say nothing". Replacing an account's actions wholesale would be worse than the
+			// original mistake — it would overwrite a choice the person made — so the repair
+			// fires only on a rule that still says exactly what this server used to ship.
+			if carriesStaleDefault(existing) {
+				corrected, err := json.Marshal(rule.actions)
+				if err != nil {
+					return fmt.Errorf("encoding the default actions of %q: %w", rule.ruleID, err)
+				}
+				existing.Actions = string(corrected)
+				if err := s.store.PushRules.Put(ctx, &existing); err != nil {
+					return err
+				}
+				changed = true
+			}
 			if rule.ruleID == RuleMaster && existing.Conditions != "" {
 				existing.Conditions = ""
 				existing.Actions = "[]"
@@ -428,11 +449,48 @@ func (s *Service) defaultRules(localpart string) []defaultRule {
 			actions:    []any{"notify", sound, highlight},
 			conditions: []any{match("type", "m.call.invite")}},
 		{kind: KindUnderride, ruleID: ".m.rule.encryption_encrypted_room_message", enabled: true,
-			actions:    []any{"notify"},
+			actions: []any{"notify", sound},
+			// The rules that name an event type and the catch-all below it are the two that most
+			// of a user's messages actually reach, and the tweaks are not decoration: a push
+			// client reads `set_tweak: sound` to decide whether to make a noise at all. Shipped
+			// without them, an account on a phone would be told about a message in silence, and
+			// there would be no setting anywhere that said otherwise.
+			//
+			// `highlight` deliberately does not belong here. A highlight means "this was aimed at
+			// you", which is what the mention rules say and nothing else does; putting it on the
+			// rule that matches every message would turn every room into a wall of mentions.
 			conditions: []any{match("type", "m.room.encrypted")}},
 		{kind: KindUnderride, ruleID: ".m.rule.fallback", enabled: true,
-			actions: []any{"notify"}},
+			actions: []any{"notify", sound}},
 	}
+}
+
+// staleDefaultActions are the actions this server used to ship as a default and has since corrected,
+// as the JSON it wrote at the time.
+//
+// Only the stale value is listed, because the replacement is not: the corrected actions come from
+// `defaultRules` below, so a rule can only ever be moved to what a new account would get. Duplicating
+// the corrected value here would leave two places to disagree about what the default is.
+var staleDefaultActions = map[string]string{
+	// Two rules that most of a user's messages actually reach used to ship with a bare `notify`,
+	// which a push client reads as "make no noise, and do not count it either".
+	".m.rule.fallback":                          `["notify"]`,
+	".m.rule.encryption_encrypted_room_message": `["notify"]`,
+}
+
+// carriesStaleDefault reports whether an account's rule still holds exactly the actions this server
+// once shipped for it.
+//
+// Only a rule the server wrote qualifies, which is what `Default` means here: a client can enable and
+// disable a default rule but cannot give it actions (see guardDefault), so a default rule holding the
+// stale value can only have been written by the version of this server that shipped it. Without that
+// condition this would be a server silently rewriting a setting somebody chose.
+func carriesStaleDefault(rule store.PushRule) bool {
+	if !rule.Default {
+		return false
+	}
+	stale, shipped := staleDefaultActions[rule.RuleID]
+	return shipped && strings.TrimSpace(rule.Actions) == stale
 }
 
 // priorityFor orders the defaults inside their kind. Gaps of 100 leave room for a client to move one

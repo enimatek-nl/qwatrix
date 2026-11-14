@@ -206,6 +206,21 @@ func countsTowardBadge(row store.EventRow, event pushrules.Event) bool {
 
 // readPositions reads this reader's receipts in one room, split into the unthreaded position and the
 // per-thread ones.
+// ReadPositions reports how far one reader has gone in a room: the room-wide position covered by an
+// unthreaded receipt, and the positions covered per thread.
+//
+// It is the same measurement a badge is computed from, exported for the one other question that
+// needs it: whether a notification somebody already has is read. A push delivery asks that per
+// notification rather than per room, and asking it here keeps the answer in the place that knows
+// what a receipt means — the alternative is two implementations of "has this person seen it", and
+// those disagree exactly once, in production, at which point a message is either silently marked
+// read or readably unread forever.
+//
+// Callers that ask about many notifications should call once per room and keep the result.
+func (s *Service) ReadPositions(ctx context.Context, roomID, localpart string) (int64, map[string]int64, error) {
+	return s.readPositions(ctx, roomID, localpart)
+}
+
 func (s *Service) readPositions(ctx context.Context, roomID, localpart string) (int64, map[string]int64, error) {
 	receipts, err := s.store.Receipts.ListByRoom(ctx, roomID, 0)
 	if err != nil {

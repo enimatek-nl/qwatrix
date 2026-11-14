@@ -20,6 +20,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/media"
 	"github.com/enimatek-nl/qwatrix/internal/presence"
+	"github.com/enimatek-nl/qwatrix/internal/push"
 	"github.com/enimatek-nl/qwatrix/internal/pushrules"
 	"github.com/enimatek-nl/qwatrix/internal/readstate"
 	"github.com/enimatek-nl/qwatrix/internal/roomserver"
@@ -65,6 +66,10 @@ type Deps struct {
 	// Directory is the user directory: who goes by what name, and who may know.
 	Directory *directory.Service
 	PushRules *pushrules.Service
+	// Push is push delivery. The endpoints here let a client register a device to be told about
+	// things and read back what this server said was worth telling; the rules that decide what is
+	// worth telling live in PushRules, and this is the consequence of them.
+	Push *push.Service
 	// ToDevice is the queue of messages addressed to devices.
 	ToDevice *todevice.Service
 	// Media is the file repository.
@@ -108,6 +113,7 @@ func NewMux(deps Deps) http.Handler {
 	registerFilterRoutes(routes, deps)
 	registerKeyRoutes(routes, deps)
 	registerPushRuleRoutes(routes, deps)
+	registerPusherRoutes(routes, deps)
 	registerToDeviceRoutes(routes, deps)
 	registerMediaRoutes(routes, deps)
 

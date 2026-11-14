@@ -58,6 +58,48 @@ type Evaluation struct {
 	// Matched reports that some rule matched at all. Master short-circuits with no actions, so
 	// this is not the same as Notifies.
 	Matched bool
+	// Actions is the winning rule's action list verbatim.
+	//
+	// The two booleans above are the answer "is this worth interrupting somebody for", which is
+	// what a badge needs. A push notification additionally needs *how*: whether it should make
+	// the phone play a sound, and which sound. That is written in the rule's actions as
+	// `set_tweak`, and it is the rule's own wording rather than something a caller can infer —
+	// which is why the list travels with the verdict instead of being re-derived from it.
+	Actions []any
+}
+
+// TweaksOf reads a rule's actions as the presentation tweaks a push gateway is told about.
+//
+// A tweak is how a rule says "and when you tell them, do it like this": `highlight` for a mention,
+// `sound` for a noise, and anything a client invents for a gateway that understands it. Passing
+// them through unchanged is the point — a server that understood only the two it knew about would
+// silently switch off a notification sound somebody configured on purpose.
+//
+// Returns nil when there is nothing to say, so that callers omit the field rather than sending an
+// empty object that a gateway reads as "present this silently".
+func TweaksOf(actions []any) map[string]any {
+	var tweaks map[string]any
+	for _, action := range actions {
+		object, ok := action.(map[string]any)
+		if !ok {
+			continue
+		}
+		tweak, _ := object["set_tweak"].(string)
+		if tweak == "" {
+			continue
+		}
+		if tweaks == nil {
+			tweaks = map[string]any{}
+		}
+		value, present := object["value"]
+		if !present {
+			// A tweak that names no value means "on", which is what a highlight means:
+			// "this one matters", not "this one is worth nothing".
+			value = true
+		}
+		tweaks[tweak] = value
+	}
+	return tweaks
 }
 
 // receiver is the person whose rules are being run, with the few things about them that the default
@@ -138,6 +180,7 @@ func (s *Service) evaluateWith(ctx context.Context, who receiver, ev Event) (*Ev
 			notifies, highlights := readActions(rule.Actions)
 			return &Evaluation{
 				Notifies: notifies, Highlights: highlights, RuleID: rule.RuleID, Matched: true,
+				Actions: rule.Actions,
 			}, nil
 		}
 	}

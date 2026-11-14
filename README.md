@@ -28,6 +28,7 @@ With no arguments it uses the development defaults:
 | Federation | **off** — set `-federation-addr` to enable it |
 | Data directory | `.` — holding `qwatrix.db`, `media/`, `signing.json` |
 | Registration | **on** (`-registration=false` to disable) |
+| Push delivery | **on** (`-push=false` to keep it in-process) |
 | Log level | `info` |
 
 It creates nothing outside its data directory, and `SIGTERM`/`SIGINT` finish in-flight requests
@@ -136,6 +137,7 @@ a flag you did not pass never overwrites an inherited environment variable.
 -federation-insecure-skip-tls-verify   disable peer TLS verification (test networks only)
 -registration                allow POST /register               (true)
 -registration-secret         shared secret for the admin endpoint (empty = disabled)
+-push                        deliver notifications to push gateways (true)
 -app-service-config-files      application service registrations to trust (comma-separated, globs ok)
 -room-version                default room version               (11)
 -sync-max-timeout            longest permitted /sync long-poll  (1m)
