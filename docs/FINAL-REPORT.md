@@ -122,7 +122,7 @@ runs beside the listeners rather than behind them.
 | AC-3 suite green | `make race` (`go test -race -count=1 -timeout 25m ./tests/...`) | exit 0, **no data race**: `tests/api` 719.8 s, `tests/runtime` 8.2 s, `tests/unit` 6.1 s. The explicit timeout is new: the suite outgrew `go test`'s default 10 m under `-race`, and a suite that fails by running out of clock reads like a failure |
 | AC-3 coverage | `go test ./tests/api ./tests/unit -count=1 -coverpkg=./internal/... -coverprofile=…` then `go tool cover -func` | **72.5 %** of `./internal/...` statements over the two suites together (71.5 % from `tests/api` alone) |
 | AC-4 container contract | `make complement-smoke` (5 tests in `tests/complement`) | pass: versions on the expected port, shared-secret registration, admin registration, room lifecycle, two-server deployment with complement's CA |
-| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at runs 115, 116, 118, 119 and 121; 126 of 197 recorded verdicts overall |
+| AC-5 upstream suite | `scripts/complement-sweep.sh` (both packages, per-test retries) | **met**: 95 of the 95 named mandatory tests pass at runs 115, 116, 118, 119, 121 and 123; 128 of 197 recorded verdicts overall |
 | AC-6 documentation | `docs/ENDPOINTS.md` + `TestEveryEndpointIsDocumented`, `README.md`, this file | present; the doc test checks both directions (no undocumented route, no advertised route that is not served) |
 | AC-7 runtime | `tests/runtime` against the compiled binary | pass: boots with no arguments and creates `qwatrix.db` in the working directory; creates **nothing** in a working directory when `-data-dir` is elsewhere; an in-flight `/sync` survives `SIGTERM` **and** `SIGINT` and answers 200 with a `next_batch`; exit code 0; boot and error-path output carries no shared secret, password or access token |
 | Release container | `podman build -f deploy/Dockerfile .`, then the published image: `podman run -e QWATRIX_SERVER_NAME=… ghcr.io/enimatek-nl/qwatrix:0.1.0` | builds; boots; `/versions` answers; the container reports the tag it was pulled with. Writing this line found the federation-key bug below |
@@ -173,7 +173,7 @@ records what its thirteen subtests took: application services, two history reads
 federation, and a place to keep a past this server was never told about.
 
 AC-5's 70-of-107 threshold is written against `tests/csapi` alone, where most of that package passes;
-this report scores the harder thing — the mandatory set, across both packages, 126 of 197 recorded
+this report scores the harder thing — the mandatory set, across both packages, 128 of 197 recorded
 verdicts.
 
 The 71 named tests still failing are not one undifferentiated pile, and grouping them is the useful
