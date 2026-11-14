@@ -62,6 +62,33 @@ for state in PASS FAIL SKIP CRASH; do
 done
 echo
 echo "=== AC-5 ==="
-python3 "$HERE/ac5-check.py" "$COMBINED"
+
+# Keep the verdicts. AC-5's regression clause — "any test that passed in an earlier recorded run
+# must still pass" — is a comparison, and a comparison needs both sides: a run whose verdicts
+# live only under /tmp cannot be the earlier run of anything, and one host reboot once took the
+# only copy of a run along with the run in flight, which left a four-name improvement
+# unreconcilable against a two-name net.
+ARCHIVE_DIR="${ARCHIVE_DIR:-$(cd "$HERE/.." && pwd)/.agent-work}"
+RUN_SLUG="$(basename "$OUT" | tr -cd '0-9')"
+[ -n "$RUN_SLUG" ] || RUN_SLUG="$(date +%Y%m%d-%H%M%S)"
+ARCHIVE="$ARCHIVE_DIR/complement-run-$RUN_SLUG.txt"
+mkdir -p "$ARCHIVE_DIR"
+cp "$COMBINED" "$ARCHIVE"
+echo "verdicts archived: $ARCHIVE"
+
+# Compare against the newest archived run that is not this one, so a sweep scores itself against
+# the state of the product a user last saw rather than against its own rerun.
+PREVIOUS=""
+for candidate in $(ls -1 "$ARCHIVE_DIR"/complement-run-*.txt 2>/dev/null | sort -V | tail -3); do
+  [ "$candidate" != "$ARCHIVE" ] && PREVIOUS="$candidate"
+done
+CHECK_ARGS=()
+if [ -n "$PREVIOUS" ]; then
+  echo "comparing against: $PREVIOUS"
+  CHECK_ARGS=(--previous "$PREVIOUS")
+else
+  echo "comparing against: nothing archived yet, so no regression check is possible"
+fi
+python3 "$HERE/ac5-check.py" "${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"}" "$COMBINED"
 echo
 echo "results: $COMBINED"

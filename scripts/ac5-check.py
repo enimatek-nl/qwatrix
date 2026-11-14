@@ -10,8 +10,10 @@ anything other than unmeasured.
 The mandatory names are parsed out of ACCEPTANCE-CRITERIA.md rather than duplicated here, so the two
 cannot drift apart and quietly redefine what "done" means.
 
-Usage:  scripts/ac5-check.py [results-file ...]
-Exit:   0 when every mandatory test passed, 1 otherwise.
+Usage:  scripts/ac5-check.py [--previous earlier-results.txt] [results-file ...]
+        scripts/ac5-check.py --regressions-only --previous earlier.txt current.txt
+            Score only AC-5's regression clause; the exit code then reflects nothing else.
+Exit:   0 when every mandatory test passed and nothing regressed, 1 otherwise.
 """
 import os
 import re
@@ -42,9 +44,75 @@ def recorded(paths):
     return results
 
 
+def regressions(previous, current):
+    """Every test that passed in an earlier run and does not pass now.
+
+    AC-5 requires this: "any test that passed in an earlier recorded run must still pass". It is
+    a separate rule from the mandatory set for a reason worth stating, because the two can point
+    in opposite directions. A run that fixes three tests and breaks one is an improvement by
+    count and a regression by requirement, and a scorecard that reports only the count reports
+    the improvement — which is exactly how a product gets worse while its scoreboard gets longer.
+
+    A test with no verdict this run is reported too, and separately: an inventory that quietly
+    stopped including a test keeps the pass rate intact while measuring less of the product, and
+    "we did not look" is not a pass.
+    """
+    broken, unmeasured = [], []
+    for name, verdict in sorted(previous.items()):
+        if verdict != "PASS":
+            continue
+        now = current.get(name)
+        if now is None:
+            unmeasured.append(name)
+        elif now != "PASS":
+            broken.append(f"{name} ({verdict} -> {now})")
+    return broken, unmeasured
+
+
+def report_regressions(previous_path, previous, current):
+    """Print the regression clause and report whether it holds."""
+    broken, unmeasured = regressions(previous, current)
+    print(f"\nregressions against {os.path.basename(previous_path)} "
+          f"({sum(1 for v in previous.values() if v == 'PASS')} passing there):")
+    if not broken and not unmeasured:
+        print("  none — every test that passed then passes now")
+        return True
+    for line in broken:
+        print(f"  REGRESSED   {line}")
+    for name in unmeasured:
+        print(f"  NOT MEASURED {name} passed in the earlier run and has no verdict in this one")
+    return False
+
+
 def main():
-    paths = sys.argv[1:] or [os.path.join(HERE, "complement-run-latest.txt")]
+    args = list(sys.argv[1:])
+    previous_path = None
+    if "--previous" in args:
+        index = args.index("--previous")
+        if index + 1 >= len(args):
+            print("--previous wants a verdict file from an earlier run", file=sys.stderr)
+            return 2
+        previous_path = args[index + 1]
+        del args[index:index + 2]
+    regressions_only = "--regressions-only" in args
+    if regressions_only:
+        args.remove("--regressions-only")
+
+    paths = args or [os.path.join(HERE, "complement-run-latest.txt")]
     results = recorded(paths)
+
+    if regressions_only:
+        # The mandatory set is deliberately not scored here. AC-5's regression clause has its own
+        # answer and its own exit code, so a caller asked about one gets only that — a mode that
+        # printed both would be a mode whose output somebody has to interpret by hand, and the
+        # point of this script is that nobody does.
+        if previous_path is None:
+            print("--regressions-only also needs --previous", file=sys.stderr)
+            return 2
+        counts = Counter(results.values())
+        print(f"recorded verdicts:   {len(results)} tests, {counts.get('PASS', 0)} passing")
+        return 0 if report_regressions(previous_path, recorded([previous_path]), results) else 1
+
     required = mandatory_names()
     missing = [name for name in required if name not in results]
     failing = [name for name in required if results.get(name) in ("FAIL", "CRASH")]
@@ -70,8 +138,17 @@ def main():
     if missing:
         print("\nA mandatory test that was never run is not a pass and not a failure; it is unknown."
               "\nRun the sweep over every package before scoring AC-5.")
-    ok = not failing and not missing and not skipped
-    print(f"\nAC-5 mandatory set: {'MET' if ok else 'NOT MET'}")
+    clean = True
+    if previous_path is not None:
+        clean = report_regressions(previous_path, recorded([previous_path]), results)
+    else:
+        print("\nregressions: not checked (no --previous run given). AC-5 requires that any test "
+              "\npassing in an earlier run still passes, so pass the archived verdicts of the "
+              "\nrun this one should be compared against.")
+
+    ok = not failing and not missing and not skipped and clean
+    verdict = "MET" if ok else "NOT MET"
+    print(f"\nAC-5 mandatory set: {verdict}" + ("" if clean else ", and this run regressed"))
     return 0 if ok else 1
 
 

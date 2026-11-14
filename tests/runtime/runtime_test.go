@@ -436,3 +436,126 @@ func names(entries []os.DirEntry) []string {
 	}
 	return out
 }
+
+// requestRaw sends bytes the caller chose, with an optional bearer token, and reports the status
+// and body. The API's own helpers encode JSON for you, which is exactly what a test of a malformed
+// request has to avoid.
+func requestRaw(t *testing.T, method, url, token string, body []byte) (int, string) {
+	t.Helper()
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	request, err := http.NewRequest(method, url, payload)
+	if err != nil {
+		t.Fatalf("building %s %s: %v", method, url, err)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+	return response.StatusCode, string(raw)
+}
+
+func requestJSON(t *testing.T, method, url, token string, body any) (int, string) {
+	t.Helper()
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("encoding the request: %v", err)
+	}
+	return requestRaw(t, method, url, token, payload)
+}
+
+// TestErrorPathsDoNotLogWhatTheyRefuse is AC-7's log claim on the branch where leaks actually
+// happen: the request a server says no to.
+//
+// "No secrets in the logs" is easy to satisfy at startup, where there is nothing to leak. The
+// interesting request knows several secrets at once and has just been told they are wrong: a
+// refused login knows the account name and the password somebody typed, a refused shared-secret
+// registration knows this server's registration secret *and* the password the caller wanted for
+// the new account, and a request carrying an invented token hands over that token in a header the
+// router may well log while explaining that it has no route to put it in. A debug line written to
+// explain one 401 to one operator turns an access log into a list of passwords that were tried —
+// which is worth more to an attacker than the logins it failed, because it also says which accounts
+// a real person was seen trying.
+//
+// The server therefore runs at debug rather than info. The level an operator chooses is not the
+// level a leak hides at.
+func TestErrorPathsDoNotLogWhatTheyRefuse(t *testing.T) {
+	dir := t.TempDir()
+	address := freeLoopback(t)
+	const (
+		sharedSecret    = "shared-secret-never-log-me"
+		guessedPassword = "guessed-password-never-log-me"
+		inventedToken   = "access-token-never-log-me"
+	)
+	server := start(t, dir, address,
+		"-addr", address, "-server-name", "runtime.test",
+		"-registration-secret", sharedSecret, "-log-level", "debug")
+
+	token, password := register(t, server.baseURL)
+
+	// A wrong password, and an unknown account: the two enumeration paths, both of which a
+	// verbose server is tempted to explain in full.
+	for _, account := range []string{"testuser", "nobody-on-this-server"} {
+		status, body := requestJSON(t, http.MethodPost, server.baseURL+"/_matrix/client/v3/login", "",
+			map[string]any{"type": "m.login.password",
+				"identifier": map[string]any{"type": "m.id.user", "user": account},
+				"password":   guessedPassword})
+		if status == http.StatusOK {
+			t.Fatalf("logging in as %q with a guessed password succeeded: %s", account, body)
+		}
+	}
+
+	// A shared-secret registration whose MAC does not verify. This request knows the secret it
+	// failed to satisfy and the password it wanted to create an account with.
+	status, body := requestJSON(t, http.MethodPost,
+		server.baseURL+"/_synapse/admin/v1/register", "", map[string]any{
+			"nonce": "a-nonce-this-server-never-issued", "username": "intruder",
+			"password": guessedPassword, "mac": "0123456789abcdef0123456789abcdef",
+		})
+	if status == http.StatusOK {
+		t.Fatalf("a shared-secret registration with a made-up MAC succeeded: %s", body)
+	}
+
+	// An invented bearer token, against a route that exists and one that does not. The second is
+	// the interesting one: the handler that could not place the request is the one most likely to
+	// log what it was carrying.
+	for _, path := range []string{"/_matrix/client/v3/account/whoami", "/_matrix/client/v3/not-a-real-route"} {
+		if status, _ := requestRaw(t, http.MethodGet, server.baseURL+path, inventedToken, nil); status == http.StatusOK {
+			t.Fatalf("%s accepted a token this server never issued", path)
+		}
+	}
+
+	// A body the server cannot read, on a route that has to read it.
+	if status, _ := requestRaw(t, http.MethodPost, server.baseURL+"/_matrix/client/v3/createRoom",
+		token, []byte(`{"preset": `)); status == http.StatusOK {
+		t.Fatal("a truncated JSON body created a room")
+	}
+
+	if _, err := server.stop(syscall.SIGTERM, 15*time.Second); err != nil {
+		t.Fatalf("stopping cleanly: %v\nSTDERR:\n%s", err, server.output())
+	}
+
+	logged := server.output()
+	for _, secret := range []struct{ name, value string }{
+		{"the shared registration secret", sharedSecret},
+		{"the account's real password", password},
+		{"the password that was guessed", guessedPassword},
+		{"the token that was refused", inventedToken},
+		{"the access token this server issued", token},
+	} {
+		if strings.Contains(logged, secret.value) {
+			t.Errorf("%s appears in the server's own output, and refusals are what an attacker reads:\n%s",
+				secret.name, logged)
+		}
+	}
+}

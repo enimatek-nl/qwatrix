@@ -30,7 +30,7 @@ IMAGE ?= qwatrix:latest
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build image test race vet fmt lint run clean complement-image complement complement-smoke
+.PHONY: help build image test race vet fmt lint run clean endpoints-check complement-image complement complement-smoke
 
 help: ## List the available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -59,6 +59,14 @@ lint: ## golangci-lint across every package
 		exit 1; \
 	}
 	golangci-lint run ./...
+
+# AC-6 promises that the endpoint table is "verified by `make endpoints-check`", so the command
+# has to exist and has to be the real check: it runs the test that reads the routes out of the
+# handlers and compares them against docs/ENDPOINTS.md in both directions. A documented-but-
+# unregistered row fails it as loudly as an undocumented route, which is the point — a table
+# that only grows when features ship is a table that lies about what shipped.
+endpoints-check: ## Check docs/ENDPOINTS.md against the routes the server registers
+	$(GO) test ./tests/api -count=1 -timeout=10m -v -run '^TestEveryEndpointIsDocumented$$'
 
 run: build ## Run a development server on loopback (see the variables above)
 	mkdir -p $(DATA_DIR)

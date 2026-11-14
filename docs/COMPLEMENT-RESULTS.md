@@ -47,6 +47,21 @@ partition ordering, partial state in `send_join`, unicode in remote alias names,
 Nothing in that list is a broken room, a lost message or a lost membership. They are features not built,
 in a specification considerably larger than this server, and the mandatory set is what says so.
 
+## How a run is compared with the one before it
+
+AC-5 requires that "any test that passed in an earlier recorded run must still pass", which is a
+comparison rather than a count — and a count is what hides a regression, because three tests newly
+passing and one newly failing makes the number go up. So each run writes its per-test verdicts to
+`.agent-work/complement-run-<run>.txt` before scoring anything, and
+`scripts/ac5-check.py --previous` refuses a run in which a previously passing test now fails or has
+no verdict at all (a test that quietly left the inventory keeps the pass rate and loses the
+coverage, so it counts too). The sweep passes the newest archive itself; a run with nothing to
+compare against says so instead of staying quiet.
+
+This exists because of a specific loss: an earlier run's verdicts lived under `/tmp`, a host reboot
+took them along with the run in flight, and a four-name improvement could not be reconciled against
+a two-name net. An acceptance criterion whose evidence can be deleted by a reboot is not evidence.
+
 ## The runs, most recent first
 
 `<img>` names the commit the container image was built from, which is the only thing a run can

@@ -17,7 +17,7 @@ import (
 	"github.com/matrix-org/complement/must"
 )
 
-// TestContainerAnswersVersionsOnTheExpectedPort is the container contract in its smallest
+// TestComplementCanDeployAndAnswerVersions is the container contract in its smallest
 // form: Complement waits for the health check and then for /versions. If this passes, the
 // image's ports, readiness signalling and start-up time are all right.
 //
@@ -25,7 +25,7 @@ import (
 // a client port other than 8008, an image without a HEALTHCHECK, a server that binds only
 // localhost inside the container, and an entrypoint that is not executable all fail here
 // and nowhere else.
-func TestContainerAnswersVersionsOnTheExpectedPort(t *testing.T) {
+func TestComplementCanDeployAndAnswerVersions(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -45,12 +45,12 @@ func TestContainerAnswersVersionsOnTheExpectedPort(t *testing.T) {
 	})
 }
 
-// TestSharedSecretRegistrationWorksInsideTheContainer asserts the Synapse-compatible
+// TestComplementSharedSecretRegistration asserts the Synapse-compatible
 // registration endpoint works against the *image*, with the secret the image sets by
 // default. It matters that this runs in the container rather than in-process: the entrypoint
 // is what sets QWATRIX_REGISTRATION_SECRET, and Complement treats a non-200 here as
 // "skip every test that needs a user" — a silently degrading suite.
-func TestSharedSecretRegistrationWorksInsideTheContainer(t *testing.T) {
+func TestComplementSharedSecretRegistration(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -92,10 +92,10 @@ func TestAdminRegistrationIsAccepted(t *testing.T) {
 	})
 }
 
-// TestRoomLifecycleInsideTheContainer is the shortest path that touches the database, the
+// TestComplementRoomLifecycle is the shortest path that touches the database, the
 // room server, the sync loop and the event pipeline, all through the public API: create a
 // room, send an event, and see it come back down /sync.
-func TestRoomLifecycleInsideTheContainer(t *testing.T) {
+func TestComplementRoomLifecycle(t *testing.T) {
 	deployment := complement.Deploy(t, 1)
 	defer deployment.Destroy(t)
 
@@ -155,11 +155,11 @@ func TestRoomLifecycleInsideTheContainer(t *testing.T) {
 // reports success on the first error: finding the create event is the pass condition.
 var errFoundCreate = errors.New("found m.room.create")
 
-// TestTwoServerDeploymentStarts is the federation precondition: Complement can stand up two
+// TestComplementTwoServerDeployment is the federation precondition: Complement can stand up two
 // containers of this image, both of which answer for the name they were given. The
 // server-server API itself is a later milestone; this proves the deployment machinery and
 // the per-container identity work, which is what every two-server test depends on.
-func TestTwoServerDeploymentStarts(t *testing.T) {
+func TestComplementTwoServerDeployment(t *testing.T) {
 	deployment := complement.Deploy(t, 2)
 	defer deployment.Destroy(t)
 

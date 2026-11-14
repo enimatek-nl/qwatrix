@@ -107,7 +107,7 @@ Rules for the recorded run:
   `./qwatrix.db`) and creates nothing outside its data path.
 - `SIGTERM`/`SIGINT` shuts down in-flight requests (graceful), and the process exits 0.
 - Restarting against an existing database preserves accounts, rooms, and sync tokens
-  (verified by `tests/api/restart_test.go`).
+  (verified by `tests/api/persistence_test.go` — six tests, `TestARestartKeeps…` and `TestRestartStopsTheServerItReplaced`; the path named here was written before the file was split and no longer existed).
 - No secrets, tokens, or password hashes in logs (verified by a test that captures startup
   and error-path logs).
 
@@ -122,3 +122,9 @@ backfill/gap-fill, federated media), sliding sync, OIDC/SSO, application service
 backup + cross-signing, knocking, ACLs, URL preview, search, push gateway delivery. These
 are listed in `REQUIREMENTS.md` §11/§8 with `L` priority and recorded as remaining work in
 `FINAL-REPORT.md`.
+
+**Update (2026-11-14).** That list is the milestone's scope, and the tree has since gone past parts
+of it: federation depth (joins, invites, leaves and knocks across homeservers, transaction PDU
+ingest, gap filling in both directions, federated media) and knocking are now implemented and
+tested. `FINAL-REPORT.md`'s limitations section is the live statement of what is still missing; this
+section stays as written so the milestone's boundary remains visible.
