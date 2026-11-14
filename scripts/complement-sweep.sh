@@ -61,6 +61,21 @@ for state in PASS FAIL SKIP CRASH; do
   printf '%-6s %s\n' "$state" "$(awk -v s="$state" '$1==s' "$COMBINED" | wc -l)"
 done
 echo
+echo "=== per package (AC-5 states its count threshold over tests/csapi, and its federation"
+echo "    reporting separately, so they are reported on their own denominators)"
+for pkg in $PKG_LIST; do
+  slug=$(echo "$pkg" | tr -d './')
+  file="$OUT/$slug.results"
+  [ -e "$file" ] || continue
+  total=$(wc -l < "$file")
+  passing=$(awk '$1=="PASS:"' "$file" | wc -l)
+  case "$slug" in
+    testscsapi) echo "  $pkg: $passing of $total passing (AC-5 threshold 70): $( [ "$passing" -ge 70 ] && echo OK || echo BELOW )" ;;
+    *)          echo "  $pkg: $passing of $total passing (federation, reported separately)" ;;
+  esac
+done
+
+echo
 echo "=== AC-5 ==="
 
 # Keep the verdicts. AC-5's regression clause — "any test that passed in an earlier recorded run
@@ -76,11 +91,20 @@ mkdir -p "$ARCHIVE_DIR"
 cp "$COMBINED" "$ARCHIVE"
 echo "verdicts archived: $ARCHIVE"
 
-# Compare against the newest archived run that is not this one, so a sweep scores itself against
-# the state of the product a user last saw rather than against its own rerun.
+# Compare against the previous *numbered* run, and only a numbered run. An earlier version of this
+# took the newest file in the directory, which found a hand-copied `complement-run-latest.txt`
+# covering 106 of the 197 tests — so a comparison that had checked almost nothing printed "no
+# regressions", which is the one thing this check is allowed never to do. Run numbers are the only
+# names with an order that means "before".
 PREVIOUS=""
-for candidate in $(ls -1 "$ARCHIVE_DIR"/complement-run-*.txt 2>/dev/null | sort -V | tail -3); do
-  [ "$candidate" != "$ARCHIVE" ] && PREVIOUS="$candidate"
+best=-1
+for candidate in "$ARCHIVE_DIR"/complement-run-[0-9]*.txt; do
+  [ -e "$candidate" ] || continue
+  label="$(basename "$candidate" .txt)"; label="${label#complement-run-}"
+  number="${label%%[!0-9]*}"
+  [ -n "$number" ] || continue
+  [ "$candidate" = "$ARCHIVE" ] && continue
+  if [ "$number" -lt "$RUN_SLUG" ] && [ "$number" -gt "$best" ]; then best="$number"; PREVIOUS="$candidate"; fi
 done
 CHECK_ARGS=()
 if [ -n "$PREVIOUS" ]; then

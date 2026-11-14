@@ -276,6 +276,26 @@ func TestTheScorecardRefusesToCallARegressionAPass(t *testing.T) {
 		}
 	})
 
+	t.Run("an earlier run that measured less", func(t *testing.T) {
+		// The one way this check can be wrong without being obviously wrong. A shorter earlier list
+		// still reports "none" truthfully about the tests it can see, and silently about everything
+		// else — so it has to say how much of the surface was comparable at all. An earlier version
+		// of the sweep compared against a hand-copied file covering 106 of 197 tests and printed a
+		// clean bill of health.
+		short := filepath.Join(dir, "previous-partial.txt")
+		if err := os.WriteFile(short, []byte("PASS: TestSteadilyGreen\n"), 0o644); err != nil {
+			t.Fatalf("write the partial earlier run: %v", err)
+		}
+		out, err := exec.Command("python3", scorecard, "--regressions-only",
+			"--previous", short, filepath.Join(dir, "current.txt")).CombinedOutput()
+		if err != nil {
+			t.Fatalf("a smaller earlier run was refused: %v\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "PARTIAL COMPARISON") {
+			t.Fatalf("comparing against a run that measured one test did not say so:\n%s", out)
+		}
+	})
+
 	t.Run("nothing got worse", func(t *testing.T) {
 		out, err := run(t, strings.Join([]string{
 			"PASS: TestSteadilyGreen",

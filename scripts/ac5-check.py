@@ -72,8 +72,16 @@ def regressions(previous, current):
 def report_regressions(previous_path, previous, current):
     """Print the regression clause and report whether it holds."""
     broken, unmeasured = regressions(previous, current)
+    shared = sum(1 for name in previous if name in current)
     print(f"\nregressions against {os.path.basename(previous_path)} "
           f"({sum(1 for v in previous.values() if v == 'PASS')} passing there):")
+    if len(previous) < len(current):
+        # Say what was not compared. A shorter earlier list can only find a subset of the
+        # regressions — a test it never measured cannot be seen to go backwards — and "none" printed
+        # over a subset is how a green light gets a bad name.
+        print(f"  PARTIAL COMPARISON: that run recorded {len(previous)} verdicts and this one "
+              f"{len(current)}; {shared} names are comparable, and anything the earlier run did not "
+              f"measure cannot regress there")
     if not broken and not unmeasured:
         print("  none — every test that passed then passes now")
         return True
@@ -98,7 +106,14 @@ def main():
     if regressions_only:
         args.remove("--regressions-only")
 
-    paths = args or [os.path.join(HERE, "complement-run-latest.txt")]
+    if args:
+        paths = args
+    else:
+        # No silent default, and no default pointing at a file that may or may not exist: scoring a
+        # run is not something to do against whatever is lying around.
+        print("name the verdict file to score (a complement results.txt); this script does not "
+              "guess which run you mean", file=sys.stderr)
+        return 2
     results = recorded(paths)
 
     if regressions_only:

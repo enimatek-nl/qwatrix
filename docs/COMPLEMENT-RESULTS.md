@@ -47,6 +47,37 @@ partition ordering, partial state in `send_join`, unicode in remote alias names,
 Nothing in that list is a broken room, a lost message or a lost membership. They are features not built,
 in a specification considerably larger than this server, and the mandatory set is what says so.
 
+## The two packages, counted apart
+
+AC-5 measures the client-facing package and the two-server federation package on separate terms:
+the count threshold is stated over `tests/csapi`, and the federation result is "measured and
+reported separately; each federation test that passes is listed". So a run is scored per package as
+well as in total, and the sweep prints both.
+
+At run 124: **93 of 106 in `tests/csapi`** (AC-5's bar is 70 — and the criteria say 107 because that
+package contains 107 `Test…` functions, one of which is `TestMain`, which is not a test: 106 exist
+and 106 were run), and **35 of 91 in the root package**.
+
+The root package is where federation lives, but it is not all federation, and saying "35 federation
+tests pass" would be a claim about a number rather than about the protocol. Only **eleven of them
+stand up two homeservers** — those are the real server-to-server round trips, and they are named
+here because AC-5 asks for the federation passes to be listed:
+
+`TestContentMediaV1`, `TestJoinFederatedRoomFailOver`,
+`TestJoinFederatedRoomFromApplicationServiceBridgeUser`, `TestJoinViaRoomIDAndServerName`,
+`TestJumpToDateEndpoint`, `TestMediaFilenames`, `TestMediaWithoutFileNameCSMediaV1`,
+`TestRemotePngThumbnail`, `TestToDeviceMessagesOverFederation`, `TestUnbanViaInvite`,
+`TestUserAppearsInChangedDeviceListOnJoinOverFederation`.
+
+The other twenty-four run against a single homeserver. Some of them reach the server-server API
+anyway, by signing a request as a peer and checking what the door answers —
+`TestCannotSendNonJoinViaSendJoinV1` and its three siblings, `TestInboundFederationKeys`,
+`TestGetMissingEventsGapFilling`, `TestEventAuth`, `TestBannedUserCannotSendJoin`,
+`TestUnrejectRejectedEvents`, the two knock-shape tests — and the rest are client behaviour that
+happens to live in that package (`TestLocalPngThumbnail`, `TestWriteMDirectAccountData`,
+`TestClientSpacesSummary`, `TestUnknownEndpoints`, and others). Both halves are real, but they are
+different claims, and only the first pair of lists shows the difference.
+
 ## How a run is compared with the one before it
 
 AC-5 requires that "any test that passed in an earlier recorded run must still pass", which is a
@@ -58,9 +89,18 @@ no verdict at all (a test that quietly left the inventory keeps the pass rate an
 coverage, so it counts too). The sweep passes the newest archive itself; a run with nothing to
 compare against says so instead of staying quiet.
 
-This exists because of a specific loss: an earlier run's verdicts lived under `/tmp`, a host reboot
-took them along with the run in flight, and a four-name improvement could not be reconciled against
-a two-name net. An acceptance criterion whose evidence can be deleted by a reboot is not evidence.
+Two mistakes are encoded here, both real. The first is a loss: run 121's verdicts existed only under
+`/tmp`, a host reboot took the directory and the run in flight with it, and a four-name improvement
+could not be reconciled against a two-name net — an acceptance criterion whose evidence a reboot can
+delete is not evidence. Per-run archives existed before that, but under one rolling name plus a few
+hand copies, so only whichever run was newest survived; the numbered file per run is the fix.
+
+The second was found while writing the comparison. "The newest file in the directory" was the rule
+for picking what to compare against, and the newest file was a hand copy of a *partial* run — 106
+verdicts out of 197 — so the first real comparison printed "no regressions" having checked barely
+half the suite. A comparison that quietly covers less than it claims is worse than no comparison,
+because it is read as a clean bill of health. So the earlier run is chosen by run *number*, and a
+comparison that covers fewer tests than this run measured has to say so on its own line.
 
 ## The runs, most recent first
 
@@ -72,6 +112,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 124 | `95b60fc` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **128 / 197** — no test changed state | **Nothing changed, which is the point.** This is the first run scored against its predecessor by AC-5's regression clause rather than by somebody remembering to look: all 197 names compared, none went backwards, and the server had only lost a documentation column and gained a few tests in between. Choosing the predecessor is now done by run number — before that it took the newest file in the directory, and the newest file was a hand copy of an old partial run, so the first comparison printed "no regressions" over 106 of 197 tests. A comparison that covers less than it claims now says so (`PARTIAL COMPARISON`) instead of looking like a clean bill of health. |
 | 123 | `b00114d` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **128 / 197** — `TestCannotSendNonKnockViaSendKnock`, `TestCannotSendKnockViaSendKnockInMSC3787Room`, `TestKnockRoomsInPublicRoomsDirectory` and `TestKnockRoomsInPublicRoomsDirectoryInMSC3787Room` FAIL → PASS, nothing mandatory regressed | **The first run after knocking, and the first after a knock stopped being room state.** The four tests above are what knocking measures upstream: `send_knock` answers a wrong membership with 400, and a `knock`-rule room appears in the public rooms directory. `TestKnocking` and its MSC3787 twin stay red on two named federated assertions (T806: the knock is not yet relayed to the room's other servers; T807: a user invited to another server's `knock` room is refused when joining through their own), and every subtest a single homeserver can check now passes — which is what the out-of-band membership change bought. That change touched the core event write, so this run's value is mostly negative: 95 of 95 mandatory tests still pass when a knock is stored outside the room's state. The net is +2 of 197 against four names newly passing; the name-for-name diff could not be completed because run 121's per-test list lived under `/tmp` and a host reboot took it, so this run and every later one is archived at `.agent-work/complement-run<run>.txt` instead. |
 | 121 | `06e1573` + docs | 2026-11-13 | **95 / 95** | **0** | **0** | **0** | **126 / 197** — `TestCannotSendNonJoinViaSendJoinV1`, `TestCannotSendNonJoinViaSendJoinV2`, `TestCannotSendNonLeaveViaSendLeaveV1`, `TestCannotSendNonLeaveViaSendLeaveV2` FAIL → PASS (24 subtests between them), nothing regressed | **The four membership-validation tests turned on the status code alone.** They ask that a malformed event be answered 400, and this server answered 403 for a `m.room.member` with no state key and for a `state_key` naming somebody other than the sender — because signature verification, which answers 403, ran first and because the room server treats a mismatched state key as a question of authority. The doors now read shape before signatures: `membershipShapeProblem` in `internal/fedapi/membershipshape.go` answers 400 for what no signature could rescue, and 403 stays for standing (a sender whose domain is not the server that signed, an event ID or room that does not match the path). This image also carries `make_leave` and the `get_missing_events` answer, which complement measures nothing else: `TestInboundCanReturnMissingEvents` now reaches its per-event assertions instead of its 404, and still fails on one positional expectation — its expected gap list contains no `m.room.guest_access` and ours does (T754) |
 | 119 | `f7ea442` | **95 / 95** | Confirms the outbound half of the key work: a client of this server can now claim a one-time key from a device on another homeserver — a claim that used to go to the *local* store and answer `{}`, which is indistinguishable from an exhausted device, so nothing looked broken — and an unreachable server is named in `failures`. Verdict-for-verdict identical to run 118, which is the expected result: no upstream test crosses that particular border, so the measurement here is that nothing else moved. |
