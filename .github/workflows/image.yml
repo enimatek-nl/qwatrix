@@ -1,0 +1,105 @@
+name: image
+
+# The release is a tag, so the image is built here rather than by hand. A pull
+# request builds the same image and discards it: the point of that build is to find a
+# Dockerfile that no longer compiles before a release depends on it, not to publish a
+# build of an unreleased tree.
+
+on:
+  push:
+    tags:
+      # v0.1.0, and v0.2.0-rc1 while a release is being prepared.
+      - "v*.*.*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Only needed to push; a pull request build reads this and pushes nothing.
+  packages: write
+
+# A new push to a branch makes the running pull-request build pointless.
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The image tag and the version the server reports are the same fact, and a
+      # release should not state it twice by hand. A container tagged 0.2.0 that answers
+      # 0.1.0-dev to `GET /_matrix/federation/v1/version` is the kind of thing an operator
+      # spends a week blaming on their proxy — and every peer that logs the `Server:`
+      # header records the same wrong fact about this deployment.
+      #
+      # The fact lives in internal/config/config.go, where a `-dev` suffix means "this
+      # tree is developing 0.1.0". So a tag of v0.1.0 or v0.1.0-rc1 belongs to a tree
+      # saying 0.1.0-dev, and a tag of anything else is a release nobody made.
+      - name: A tag is the version the binary reports
+        id: version
+        if: github.event_name == 'push'
+        run: |
+          set -eu
+          reported=$(sed -n 's/^[[:space:]]*Version:[[:space:]]*"\([^"]*\)".*/\1/p' \
+            internal/config/config.go | head -1)
+          test -n "$reported" || { echo "no Version string in internal/config/config.go" >&2; exit 1; }
+          developing=${reported%-dev}
+          tag=${GITHUB_REF_NAME#v}
+          case "$tag" in
+            "$developing"|"$developing"-*) ;;
+            *)
+              echo "tag $GITHUB_REF_NAME does not match: internal/config/config.go is developing $reported" >&2
+              exit 1
+              ;;
+          esac
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "publishing $IMAGE:$tag as qwatrix $tag"
+
+      # Cross-compilation only has to run the compiler natively; this is what lets an
+      # arm64 image be assembled on an amd64 runner without emulating the build.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Sign in to ghcr.io
+        if: github.event_name == 'push'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
+          # v0.1.0 publishes 0.1.0, 0.1 and latest. `latest` comes from the action's
+          # own auto flavour rather than a line here, which is what keeps it off a
+          # release candidate: v0.2.0-rc1 publishes 0.2.0-rc1 and moves nothing that
+          # anybody would mistake for the current release.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/Dockerfile
+          # Both architectures, because the machine a homeserver runs on is as often
+          # a Raspberry Pi as it is a VPS. A pull request only proves the image
+          # builds, so it builds one.
+          platforms: ${{ github.event_name == 'push' && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args:
+            VERSION=${{ steps.version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

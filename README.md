@@ -38,12 +38,29 @@ curl -s http://127.0.0.1:8008/_matrix/client/versions   # readiness probe
 
 ## Run it in a container
 
+The published image needs nothing but a name to answer for:
+
 ```sh
-podman build -t ghcr.io/enimatek-nl/qwatrix:latest -f deploy/Dockerfile .
 podman run -d --name qwatrix -p 8008:8008 -p 8448:8448 \
   -v qwatrix-data:/data \
   -e QWATRIX_SERVER_NAME=example.org \
   ghcr.io/enimatek-nl/qwatrix:latest
+```
+
+(`docker run` with the same arguments, and `podman pull`/`docker pull` first if your runtime
+prefers to fetch separately.) It is built for `linux/amd64` and `linux/arm64`, so the same tag
+runs on a Raspberry Pi and on a VPS.
+
+Tags are the release versions: `0.1.0` and `0.1` for a release, plus `latest`. A release
+candidate such as `v0.2.0-rc1` publishes `0.2.0-rc1` and moves nothing that looks like the
+current release. Whatever tag a container was pulled with, that is the version it reports to
+clients and to federation peers — `docker run --rm ghcr.io/enimatek-nl/qwatrix:0.1.0 -h | head -1`
+prints `qwatrix 0.1.0`.
+
+To build the image from a source tree instead:
+
+```sh
+podman build -t ghcr.io/enimatek-nl/qwatrix:latest -f deploy/Dockerfile .
 ```
 
 `QWATRIX_SERVER_NAME` (or `-server-name`) is required: it is the identity the server signs
@@ -55,6 +72,26 @@ volume, because that is where the room state, the media and the signing key live
 
 The other image, `deploy/complement/Dockerfile`, is the one the test suite runs: it copies in a
 binary built outside the image, because complement rebuilds the image for every deployment.
+
+### Cutting a release
+
+The release *is* a git tag, and the image is built by the tag rather than by hand:
+
+1. Set the version in `internal/config/config.go` — the one place the version is written. A
+   tree at `0.2.0-dev` is developing `0.2.0`.
+2. `git tag v0.2.0 && git push origin v0.2.0`.
+
+`.github/workflows/image.yml` then checks that the tag belongs to the version the source is
+developing, builds both architectures, and publishes to `ghcr.io/enimatek-nl/qwatrix`. A pull
+request builds the same image and throws it away, which is where a Dockerfile that no longer
+compiles is supposed to be found. A tag that does not match the source is refused rather than
+published with a version nobody made.
+
+| Command | Does |
+|---|---|
+| `git tag v0.2.0 -m "qwatrix 0.2.0"` | Names the release |
+| `git push origin v0.2.0` | Builds and publishes the image |
+| `git push --delete origin v0.2.0` | Unsays it (also delete the package version in the UI) |
 
 ## Register a user
 

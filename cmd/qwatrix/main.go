@@ -20,6 +20,15 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/config"
 )
 
+// version is the build-time version stamp, injected by `-ldflags -X main.version=...`.
+//
+// It is empty in a tree built without them, which is the state a developer is in, and the
+// compiled-in default in config.Default then speaks. The Dockerfile passes the release tag
+// through this, so a container tagged 0.2.0 reports 0.2.0 to a federation peer instead of
+// shipping the source tree's development default — the kind of mismatch an operator spends a
+// week blaming on their proxy.
+var version string
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "qwatrix: %v\n", err)
@@ -29,6 +38,13 @@ func main() {
 
 func run() error {
 	cfg := config.Default()
+
+	// A build stamp outranks the compiled-in default but not the operator: this is applied
+	// before the environment and the flags are bound, so `QWATRIX_VERSION` and `-version`
+	// still win over whatever the release was built with.
+	if version != "" {
+		cfg.Version = version
+	}
 
 	// The environment first, so an explicit flag always wins over an inherited variable.
 	if err := cfg.ApplyEnv(os.LookupEnv); err != nil {

@@ -25,10 +25,19 @@ RUN go mod download
 COPY cmd ./cmd
 COPY internal ./internal
 
-ARG VERSION=0.1.0-dev
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath \
-		-ldflags "-s -w -X main.version=${VERSION}" \
-		-o /out/qwatrix ./cmd/qwatrix
+# The version is stated once, in internal/config/config.go, and read out of it here. Passing
+# --build-arg VERSION=... publishes exactly that version; leaving it empty takes the source's
+# own default. A literal here would be the same fact stated twice, and twice is how a container
+# tagged 0.2.0 comes to answer 0.1.0-dev to a federation peer.
+ARG VERSION=
+RUN set -eu; \
+    if [ -z "$VERSION" ]; then \
+      VERSION=$(sed -n 's/^[[:space:]]*Version:[[:space:]]*"\([^"]*\)".*/\1/p' internal/config/config.go | head -1); \
+    fi; \
+    echo "building qwatrix $VERSION"; \
+    CGO_ENABLED=0 GOOS=linux go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION}" \
+      -o /out/qwatrix ./cmd/qwatrix
 
 FROM alpine:3.23
 
