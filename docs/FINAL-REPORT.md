@@ -24,7 +24,7 @@ storage, bundled aggregates), membership with invites and third-party invites, a
 levels, sync with long-polling and lazy loading, filters, read markers, receipts, typing, presence,
 to-device messages, device and cross-signing key management with key claims and OTK tracking,
 account data, push rules, media upload/download/thumbnails with capability URLs, profiles,
-aliases and the published-room directory, room summaries, search, generated thumbnails,
+aliases and the published-room directory, room summaries, user-directory search, generated thumbnails,
 UIA-driven registration/login/logout/password/deactivation, and the Synapse-compatible shared-secret
 admin endpoint.
 
@@ -214,10 +214,15 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
 
 - **This server sends its own events; it does not forward another server's.** A room spanning three
   homeservers hears each participant from the servers its members are directly connected to (T705b).
-- **`GET /backfill`, `/state_ids`, `/state`, `/event`, `/event_auth`, `/timestamp_to_event`,
-  `/media/thumbnail` are not implemented** (T704, T719, T721). `/state_ids` honestly needs per-event
-  state snapshots, which the current schema does not keep: `RoomState` is keyed by
-  `(room_id, type, state_key)` and overwritten in place.
+- **The federation reads a peer needs are served; three are not.** `GET /event`, `/event_auth`,
+  `/state`, `/state_ids`, `/backfill` and `/timestamp_to_event` answer, which is what a server that
+  joined a room yesterday needs in order to say anything about today. Missing: the federation media
+  thumbnail (`GET /media/thumbnail/{serverName}/{mediaID}`), and the two identity queries
+  `GET /query/profile` and `GET /query/user/info` (T708) — so a peer cannot ask this server what a
+  local user's display name or avatar is, and a remote user's profile is only ever what a client was
+  told when it last saw them. `/state_ids` answers the room's *current* state, which is what the
+  specification asks of it; a per-event state snapshot is a different question and this schema
+  cannot answer it, since `RoomState` is keyed by `(room_id, type, state_key)` and written in place.
 - **No outlier events in the graph.** An event whose history cannot be connected is refused rather than
   joined into the room's DAG, which is the correct safety property: a partial bridge would split the
   room's history in two. Events fetched from a peer to answer a question about the past are stored

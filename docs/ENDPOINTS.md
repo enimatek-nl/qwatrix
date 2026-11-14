@@ -5,7 +5,15 @@ implements. The list is checked by `go test ./tests/api -run TestEveryEndpointIs
 registers a route that is not listed here or lists one the code no longer serves — a hand-maintained table is worth
 nothing if it can drift from the server it describes.
 
-Two conventions apply to every row and are not repeated:
+Every row also carries a **Status**, in the words `docs/ACCEPTANCE-CRITERIA.md` AC-6 asks for:
+`implemented` means the endpoint does the whole of the linked spec section, `partial` means it
+answers usefully with a named limitation, and `stub` would mean it answers and does nothing. There
+are no stubs, because the document test refuses a row the server does not register: an endpoint
+cannot hide here. The `partial` rows are few and each one is explained in
+[`FINAL-REPORT.md`](FINAL-REPORT.md) §6, which is where the limitation itself is written up — the
+column points at the reason rather than restating it, so the two cannot disagree.
+
+Two further conventions apply to every row and are not repeated:
 
 * **Version prefixes.** Unless marked "exact", an endpoint is served under `/_matrix/client/v3/`, `/_matrix/client/v1/`
   and the legacy `/_matrix/client/r0/` and `/_matrix/client/r0.6.1/` prefixes. Clients in the wild still ask for all
@@ -17,10 +25,10 @@ Two conventions apply to every row and are not repeated:
 
 ## Discovery and versions
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/_matrix/client/versions` (exact) | [Application versions](https://spec.matrix.org/latest/client-server-api/#matrix-versions) |
-| `GET` | `/capabilities` | [Capabilities](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3capabilities) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/_matrix/client/versions` (exact) | [Application versions](https://spec.matrix.org/latest/client-server-api/#matrix-versions) | implemented |
+| `GET` | `/capabilities` | [Capabilities](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3capabilities) | implemented |
 
 `/capabilities` requires a device — capabilities can describe what the caller may do — and reports
 `m.room_versions` (default plus the versions this server creates rooms in), `m.change_password`
@@ -32,22 +40,22 @@ unstable flag is a promise that the unstable endpoint prefix works, so a flag ap
 
 ## Sessions and accounts
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET`, `POST` | `/login` | [Login](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login) |
-| `GET` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3register) — the flows a client builds its registration screen from |
-| `POST` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3register) |
-| `GET` | `/register/available` | [Check username availability](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3registeravailable) |
-| `GET` | `/account/whoami` | [Whoami](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3accountwhoami) |
-| `POST` | `/logout` | [Logout](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3logout) |
-| `POST` | `/logout/all` | [Logout all](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3logoutall) |
-| `POST` | `/account/password` | [Change password](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3accountpassword) |
-| `POST` | `/account/deactivate` | [Deactivate account](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3accountdeactivate) |
-| `GET` | `/devices` | [List devices](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3devices) |
-| `POST` | `/delete_devices` | [Delete devices](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3delete_devices) |
-| `GET`, `PUT`, `DELETE` | `/devices/{deviceID}` | [Query / update / delete a device](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3devicesdeviceid) |
-| `GET`, `PUT` | `/profile/{userID}/displayname` | [Display name](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseriddisplayname) |
-| `GET`, `PUT` | `/profile/{userID}/avatar_url` | [Avatar URL](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseridavatar_url) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET`, `POST` | `/login` | [Login](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3login) | implemented |
+| `GET` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3register) — the flows a client builds its registration screen from | implemented |
+| `POST` | `/register` | [Registration](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3register) | implemented |
+| `GET` | `/register/available` | [Check username availability](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3registeravailable) | implemented |
+| `GET` | `/account/whoami` | [Whoami](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3accountwhoami) | implemented |
+| `POST` | `/logout` | [Logout](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3logout) | implemented |
+| `POST` | `/logout/all` | [Logout all](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3logoutall) | implemented |
+| `POST` | `/account/password` | [Change password](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3accountpassword) | implemented |
+| `POST` | `/account/deactivate` | [Deactivate account](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3accountdeactivate) | implemented |
+| `GET` | `/devices` | [List devices](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3devices) | implemented |
+| `POST` | `/delete_devices` | [Delete devices](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3delete_devices) | implemented |
+| `GET`, `PUT`, `DELETE` | `/devices/{deviceID}` | [Query / update / delete a device](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3devicesdeviceid) | implemented |
+| `GET`, `PUT` | `/profile/{userID}/displayname` | [Display name](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseriddisplayname) | implemented |
+| `GET`, `PUT` | `/profile/{userID}/avatar_url` | [Avatar URL](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3profileuseridavatar_url) | implemented |
 
 Registration uses [User-Interactive API Authentication](https://spec.matrix.org/latest/client-server-api/#user-interactive-api-authentication);
 the only stage offered is `m.login.dummy`, and a failed `m.login.password` answers `401` with a body carrying `flows`,
@@ -56,10 +64,10 @@ the only stage offered is `m.login.dummy`, and a failed `m.login.password` answe
 
 ## Shared-secret registration (Synapse-compatible admin API)
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/_synapse/admin/v1/register` (exact) | not in the Matrix spec — the de-facto admin API Complement drives |
-| `POST` | `/_synapse/admin/v1/register` (exact) | as above |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/_synapse/admin/v1/register` (exact) | not in the Matrix spec — the de-facto admin API Complement drives | implemented |
+| `POST` | `/_synapse/admin/v1/register` (exact) | as above | implemented |
 
 This is not standardised, so it is documented here rather than linked away to a document that would only ever
 duplicate this paragraph: the `GET` answers a single-use nonce, and the `POST` requires the HMAC-SHA1 `mac` over
@@ -69,20 +77,20 @@ against a server that has deliberately not enabled it.
 
 ## Rooms: creation, events and state
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `POST` | `/createRoom` | [Create room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3createroom) |
-| `PUT` | `/rooms/{roomID}/send/{eventType}/{txnID}` | [Sending events](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid) |
-| `GET`, `PUT` | `/rooms/{roomID}/state/{eventType}/{stateKey}` | [Getting / sending state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekey) |
-| `GET`, `PUT` | `/rooms/{roomID}/state/{eventType}` | the empty-state-key form of the row above |
-| `GET` | `/rooms/{roomID}/state` | [Full state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstate) |
-| `GET` | `/rooms/{roomID}/event/{eventID}` | [Getting an event](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomideventeventid) |
-| `GET` | `/rooms/{roomID}/messages` | [Message pagination](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmessages) |
-| `GET` | `/rooms/{roomID}/context/{eventID}` | [Event context](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidcontexteventid) |
-| `GET` | `/rooms/{roomID}/timestamp_to_event` | [Get the event at a point in time](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event) |
-| `POST` | `/rooms/{roomID}/redact/{eventID}` | [Redaction](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidredacteventid) |
-| `PUT` | `/rooms/{roomID}/redact/{eventID}/{txnID}` | the transaction-scoped form of the row above |
-| `GET` | `/rooms/{roomID}/aliases` | [Room aliases](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidualiases) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/createRoom` | [Create room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3createroom) | implemented |
+| `PUT` | `/rooms/{roomID}/send/{eventType}/{txnID}` | [Sending events](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid) | implemented |
+| `GET`, `PUT` | `/rooms/{roomID}/state/{eventType}/{stateKey}` | [Getting / sending state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekey) | implemented |
+| `GET`, `PUT` | `/rooms/{roomID}/state/{eventType}` | the empty-state-key form of the row above | implemented |
+| `GET` | `/rooms/{roomID}/state` | [Full state](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidstate) | implemented |
+| `GET` | `/rooms/{roomID}/event/{eventID}` | [Getting an event](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomideventeventid) | implemented |
+| `GET` | `/rooms/{roomID}/messages` | [Message pagination](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmessages) | implemented |
+| `GET` | `/rooms/{roomID}/context/{eventID}` | [Event context](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidcontexteventid) | implemented |
+| `GET` | `/rooms/{roomID}/timestamp_to_event` | [Get the event at a point in time](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidtimestamp_to_event) | implemented |
+| `POST` | `/rooms/{roomID}/redact/{eventID}` | [Redaction](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidredacteventid) | implemented |
+| `PUT` | `/rooms/{roomID}/redact/{eventID}/{txnID}` | the transaction-scoped form of the row above | implemented |
+| `GET` | `/rooms/{roomID}/aliases` | [Room aliases](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidualiases) | implemented |
 
 `PUT /send/{eventType}/{txnID}` is idempotent per device: a retry answers with the event ID the first attempt created.
 `PUT /state/...` takes its payload under a `content` key, while `PUT /send/...` takes the content *as* the body — the
@@ -90,21 +98,21 @@ two differ in the specification and the server does not accept them interchangea
 
 ## Rooms: membership
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `POST` | `/rooms/{roomID}/join` | [Join room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidjoin) |
-| `POST` | `/join/{roomIDOrAlias}` | [Join by ID or alias](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3joinroomidoralias) |
-| `POST` | `/rooms/{roomID}/leave` | [Leave room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidleave) |
-| `POST` | `/rooms/{roomID}/forget` | [Forget room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidforget) |
-| `POST` | `/rooms/{roomID}/invite` | [Invite](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite) |
-| `POST` | `/rooms/{roomID}/kick` | [Kick](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidkick) |
-| `POST` | `/rooms/{roomID}/knock` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidknock) |
-| `POST` | `knock/{roomIDOrAlias}` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3knockroomidoralias) |
-| `POST` | `/rooms/{roomID}/ban` | [Ban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidban) |
-| `POST` | `/rooms/{roomID}/unban` | [Unban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidunban) |
-| `GET` | `/rooms/{roomID}/members` | [List members](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmembers) |
-| `GET` | `/rooms/{roomID}/joined_members` | [Joined members](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidjoined_members) |
-| `GET` | `/joined_rooms` | [Joined rooms](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3joined_rooms) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/rooms/{roomID}/join` | [Join room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidjoin) | implemented |
+| `POST` | `/join/{roomIDOrAlias}` | [Join by ID or alias](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3joinroomidoralias) | implemented |
+| `POST` | `/rooms/{roomID}/leave` | [Leave room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidleave) | implemented |
+| `POST` | `/rooms/{roomID}/forget` | [Forget room](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidforget) | implemented |
+| `POST` | `/rooms/{roomID}/invite` | [Invite](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidinvite) | implemented |
+| `POST` | `/rooms/{roomID}/kick` | [Kick](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidkick) | implemented |
+| `POST` | `/rooms/{roomID}/knock` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidknock) | implemented |
+| `POST` | `knock/{roomIDOrAlias}` | [Knock](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3knockroomidoralias) | implemented |
+| `POST` | `/rooms/{roomID}/ban` | [Ban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidban) | implemented |
+| `POST` | `/rooms/{roomID}/unban` | [Unban](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3roomsroomidunban) | implemented |
+| `GET` | `/rooms/{roomID}/members` | [List members](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidmembers) | implemented |
+| `GET` | `/rooms/{roomID}/joined_members` | [Joined members](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3roomsroomidjoined_members) | implemented |
+| `GET` | `/joined_rooms` | [Joined rooms](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3joined_rooms) | implemented |
 
 `/rooms/{roomID}/join` accepts a room ID or a local alias. Who may perform a membership change is decided by the
 room's own events through the authorization rules — never by a special case in a handler.
@@ -152,19 +160,19 @@ slash are served by the same route.
 
 ## Aliases and the room directory
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/directory/room/{alias}` | [Resolve alias](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomalias) |
-| `PUT`, `DELETE` | `/directory/room/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoryroomroomalias) |
-| `PUT`, `DELETE` | `/directories/alias/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoriesaliasalias) |
-| `GET`, `POST` | `/publicRooms` | [Public rooms](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms) |
-| `GET`, `PUT` | `/directory/list/room/{roomID}` | [Room directory visibility](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directorylistroomroomid) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/directory/room/{alias}` | [Resolve alias](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomalias) | implemented |
+| `PUT`, `DELETE` | `/directory/room/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoryroomroomalias) | implemented |
+| `PUT`, `DELETE` | `/directories/alias/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoriesaliasalias) | implemented |
+| `GET`, `POST` | `/publicRooms` | [Public rooms](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms) | implemented |
+| `GET`, `PUT` | `/directory/list/room/{roomID}` | [Room directory visibility](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directorylistroomroomid) | implemented |
 
 ## Presence
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET`, `PUT` | `/presence/{userID}/status` | [Get presence](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3presenceuseridsstatus), [set presence](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3presenceuseridsstatus) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET`, `PUT` | `/presence/{userID}/status` | [Get presence](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3presenceuseridsstatus), [set presence](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3presenceuseridsstatus) | implemented |
 
 Both require a device, and `PUT` only ever acts on the caller. Presence is stored per local
 user and travels on the same stream as events, so a client's single `since` token decides
@@ -174,37 +182,37 @@ a room with the subject, which is the privacy rule of the feature.
 
 ## End-to-end encryption keys
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `POST` | `/keys/upload` | [upload keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysupload) |
-| `POST` | `/keys/query` | [query keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysquery) |
-| `GET` | `/keys/changes` | [key changes](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3keyschanges) |
-| `GET` | `/keys/status` | [key status](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3keysstatus) |
-| `POST` | `/keys/claim` | [claim keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysclaim) |
-| `POST` | `/user_directory/search` | [search user directory](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3user_directorysearch) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/keys/upload` | [upload keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysupload) | implemented |
+| `POST` | `/keys/query` | [query keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysquery) | implemented |
+| `GET` | `/keys/changes` | [key changes](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3keyschanges) | implemented |
+| `GET` | `/keys/status` | [key status](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3keysstatus) | implemented |
+| `POST` | `/keys/claim` | [claim keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysclaim) | implemented |
+| `POST` | `/user_directory/search` | [search user directory](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3user_directorysearch) | implemented |
 
 ## Media
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `POST` | `/_matrix/media/v3/upload` | [upload](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) |
-| `POST` | `/_matrix/media/v1/upload` | [upload (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) |
-| `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) |
-| `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | Legacy download naming the file the client wants it saved as — the name comes from the request, the media ID is the only lookup key |
-| `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}/{fileName}` | Authenticated download with the same filename rule |
-| `GET` | `/_matrix/media/v1/download/{serverName}/{mediaID}` | [download (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) |
-| `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download headers](https://spec.matrix.org/latest/client-server-api/#head_matrixmediav3downloadservernamemediaid) |
-| `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | The same, headers only |
-| `GET` | `/_matrix/media/v3/config` | [config](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) |
-| `GET` | `/_matrix/media/v1/config` | [config (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) |
-| `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}` | [authenticated download](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediadownloadservernamemediaid) |
-| `GET` | `/_matrix/media/v3/thumbnail/{serverName}/{mediaID}` | [thumbnail](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3thumbnailservernamemediaid) — `width`, `height`, `method=scale|crop`; PNG out, generated once and cached |
-| `HEAD` | `/_matrix/media/v3/thumbnail/{serverName}/{mediaID}` | The same, headers only |
-| `GET` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | [authenticated thumbnail](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediathumbnailservernamemediaid) |
-| `HEAD` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | The same, headers only |
-| `GET` | `/_matrix/client/v1/room_summary/{roomIDOrAlias}` | [Get a summary of a room](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1room_summaryroomidoralias) — a room ID or an alias, and the join rule plus the rooms a restricted join admits |
-| `GET` | `/_matrix/client/v1/rooms/{roomID}/hierarchy` | [Get a hierarchy of space rooms](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidhierarchy) — depth-first walk of the `m.space.child` tree, permission-filtered per room, with `limit`/`max_depth`/`suggested_only` and `next_batch` |
-| `GET` | `/_matrix/client/v1/media/config` | [authenticated config](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediaconfig) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/_matrix/media/v3/upload` | [upload](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) | implemented |
+| `POST` | `/_matrix/media/v1/upload` | [upload (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#post_matrixmediav3upload) | implemented |
+| `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) | implemented |
+| `GET` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | Legacy download naming the file the client wants it saved as — the name comes from the request, the media ID is the only lookup key | implemented |
+| `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}/{fileName}` | Authenticated download with the same filename rule | implemented |
+| `GET` | `/_matrix/media/v1/download/{serverName}/{mediaID}` | [download (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3downloadservernamemediaid) | implemented |
+| `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}` | [download headers](https://spec.matrix.org/latest/client-server-api/#head_matrixmediav3downloadservernamemediaid) | implemented |
+| `HEAD` | `/_matrix/media/v3/download/{serverName}/{mediaID}/{fileName}` | The same, headers only | implemented |
+| `GET` | `/_matrix/media/v3/config` | [config](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) | implemented |
+| `GET` | `/_matrix/media/v1/config` | [config (legacy prefix)](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3config) | implemented |
+| `GET` | `/_matrix/client/v1/media/download/{serverName}/{mediaID}` | [authenticated download](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediadownloadservernamemediaid) | implemented |
+| `GET` | `/_matrix/media/v3/thumbnail/{serverName}/{mediaID}` | [thumbnail](https://spec.matrix.org/latest/client-server-api/#get_matrixmediav3thumbnailservernamemediaid) — `width`, `height`, ``scale` or `crop``; PNG out, generated once and cached | implemented |
+| `HEAD` | `/_matrix/media/v3/thumbnail/{serverName}/{mediaID}` | The same, headers only | implemented |
+| `GET` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | [authenticated thumbnail](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediathumbnailservernamemediaid) | implemented |
+| `HEAD` | `/_matrix/client/v1/media/thumbnail/{serverName}/{mediaID}` | The same, headers only | implemented |
+| `GET` | `/_matrix/client/v1/room_summary/{roomIDOrAlias}` | [Get a summary of a room](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1room_summaryroomidoralias) — a room ID or an alias, and the join rule plus the rooms a restricted join admits | implemented |
+| `GET` | `/_matrix/client/v1/rooms/{roomID}/hierarchy` | [Get a hierarchy of space rooms](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidhierarchy) — depth-first walk of the `m.space.child` tree, permission-filtered per room, with `limit`/`max_depth`/`suggested_only` and `next_batch` | implemented |
+| `GET` | `/_matrix/client/v1/media/config` | [authenticated config](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1mediaconfig) | implemented |
 
 Media is stored on disk under `<data-dir>/media` with its metadata in the database; uploads are
 capped by `-media-limit` and served with `Content-Security-Policy: default-src 'none'` and
@@ -213,17 +221,17 @@ media from another server is answered with 404 rather than fetched.
 
 ## Event relations
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/rooms/{roomID}/relations/{eventID}` | [relations](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventid) |
-| `GET` | `/rooms/{roomID}/relations/{eventID}/{relType}` | [relations of one type](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventidreltype) |
-| `GET` | `/rooms/{roomID}/relations/{eventID}/{relType}/{eventType}` | [relations of one type and event type](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventidreldtypeeventtype) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/rooms/{roomID}/relations/{eventID}` | [relations](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventid) | implemented |
+| `GET` | `/rooms/{roomID}/relations/{eventID}/{relType}` | [relations of one type](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventidreltype) | implemented |
+| `GET` | `/rooms/{roomID}/relations/{eventID}/{relType}/{eventType}` | [relations of one type and event type](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv1roomsroomidrelationseventidreldtypeeventtype) | implemented |
 
 ## To-device messages
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `PUT` | `/sendToDevice/{eventType}/{txnID}` | [send to device](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3sendtodeviceeventtypetxnid) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `PUT` | `/sendToDevice/{eventType}/{txnID}` | [send to device](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3sendtodeviceeventtypetxnid) | implemented |
 
 Queued messages are delivered in the `to_device` section of `/sync`.
 
@@ -238,33 +246,33 @@ knows that the laptop was added an hour ago.
 
 ## Push rules
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/pushrules/` | [get all push rules](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrules) |
-| `GET` | `/pushrules` | [get all push rules](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrules) |
-| `GET` | `/pushrules/{scope}/{kind}/{ruleID}` | [get a push rule](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleid) |
-| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}` | [set a push rule](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleid) |
-| `DELETE` | `/pushrules/{scope}/{kind}/{ruleID}` | [delete a push rule](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3pushrulesscopekindruleid) |
-| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/actions` | [get actions](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidactions) |
-| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/actions` | [set actions](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidactions) |
-| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/enabled` | [is enabled](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidenabled) |
-| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/enabled` | [set enabled](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidenabled) |
-| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/pattern` | [get pattern](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidpattern) |
-| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/pattern` | [set pattern](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidpattern) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/pushrules/` | [get all push rules](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrules) | implemented |
+| `GET` | `/pushrules` | [get all push rules](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrules) | implemented |
+| `GET` | `/pushrules/{scope}/{kind}/{ruleID}` | [get a push rule](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleid) | implemented |
+| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}` | [set a push rule](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleid) | implemented |
+| `DELETE` | `/pushrules/{scope}/{kind}/{ruleID}` | [delete a push rule](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3pushrulesscopekindruleid) | implemented |
+| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/actions` | [get actions](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidactions) | implemented |
+| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/actions` | [set actions](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidactions) | implemented |
+| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/enabled` | [is enabled](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidenabled) | implemented |
+| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/enabled` | [set enabled](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidenabled) | implemented |
+| `GET` | `/pushrules/{scope}/{kind}/{ruleID}/pattern` | [get pattern](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3pushrulesscopekindruleidpattern) | implemented |
+| `PUT` | `/pushrules/{scope}/{kind}/{ruleID}/pattern` | [set pattern](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3pushrulesscopekindruleidpattern) | implemented |
 
 Accounts are seeded with the specification's default rules on first use, and the whole set is
 delivered as `m.push_rules` account data in `/sync`.
 
 ## Read state, typing, and account data
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `PUT` | `/rooms/{roomID}/typing/{userID}` | [send typing](https://spec.matrix.org/latest/client-server-api#put_matrixclientv3roomsroomidtypinguserid) |
-| `POST` | `/rooms/{roomID}/receipt/{receiptType}/{eventID}` | [receipt](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3roomsroomidreceiptreceipttypeeventid) |
-| `POST` | `/rooms/{roomID}/read_markers` | [read markers](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3roomsroomidread_markers) |
-| `GET`, `PUT`, `DELETE` | `/user/{userID}/account_data/{type}` | [global account data](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3useruseridaccount_datatype) |
-| `GET`, `PUT`, `DELETE` | `/rooms/{roomID}/account_data/{type}` | [room account data](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3roomsroomidaccount_datatype) |
-| `GET`, `PUT`, `DELETE` | `/user/{userID}/rooms/{roomID}/account_data/{type}` | same, older spelling |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `PUT` | `/rooms/{roomID}/typing/{userID}` | [send typing](https://spec.matrix.org/latest/client-server-api#put_matrixclientv3roomsroomidtypinguserid) | implemented |
+| `POST` | `/rooms/{roomID}/receipt/{receiptType}/{eventID}` | [receipt](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3roomsroomidreceiptreceipttypeeventid) | implemented |
+| `POST` | `/rooms/{roomID}/read_markers` | [read markers](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3roomsroomidread_markers) | implemented |
+| `GET`, `PUT`, `DELETE` | `/user/{userID}/account_data/{type}` | [global account data](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3useruseridaccount_datatype) | implemented |
+| `GET`, `PUT`, `DELETE` | `/rooms/{roomID}/account_data/{type}` | [room account data](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3roomsroomidaccount_datatype) | implemented |
+| `GET`, `PUT`, `DELETE` | `/user/{userID}/rooms/{roomID}/account_data/{type}` | same, older spelling | implemented |
 
 None of this is room history, and none of it may reach a member who is not the reader — which is
 why receipts, typing indicators, and account data are not events. They travel on `/sync` all the
@@ -290,10 +298,10 @@ so they are being shown their own absent entry rather than being refused somebod
 
 ## Filters
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `POST` | `/user/{userID}/filter` | [create filter](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3useruseridfilter) |
-| `GET` | `/user/{userID}/filter/{filterID}` | [get filter](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3useruseridfilterfilterid) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/user/{userID}/filter` | [create filter](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3useruseridfilter) | implemented |
+| `GET` | `/user/{userID}/filter/{filterID}` | [get filter](https://spec.matrix.org/latest/client-server-api#get_matrixclientv3useruseridfilterfilterid) | implemented |
 
 `GET /sync?filter=` accepts both spellings the specification allows: a filter ID returned here, or
 the filter object inlined as JSON. An ID that names no filter of this account is a `400`, because
@@ -310,9 +318,9 @@ them a stream shaped by somebody else's rules.
 
 ## Sync
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/sync` | [Sync](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3sync) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/sync` | [Sync](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3sync) | implemented |
 
 `since` tokens are `s` followed by a global stream position; an unparsable token answers `401 M_UNKNOWN_TOKEN`, which
 is the specification's signal for a client to discard its token and start again. `timeout` long-polls on an
@@ -324,40 +332,40 @@ Federation is served over HTTPS on its own address (`-federation-addr`), because
 protocol with a second trust model: nothing here is authenticated by an access token, and a request
 that arrives unauthenticated is a peer asking who this server is.
 
-| Method | Path | Spec |
-| --- | --- | --- |
-| `GET` | `/_matrix/federation/v1/version` | [GET federation version](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1version) |
-| `POST` | `/_matrix/key/v2/query` | [Query keys in a batch](https://spec.matrix.org/latest/server-server-api/#post_matrixkeyv2query) — served for this server's own name; other names are left out of the result, as the specification allows, because holding another server's keys is a notary cache this server does not have |
-| `GET` | `/_matrix/key/v2/server` | [Get server keys](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2server) |
-| `GET` | `/_matrix/key/v2/server/{keyID}` | [Get specific server key](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2serverkeyid) |
-| `GET` | `/_matrix/federation/v1/make_join/{roomID}/{userID}` | [Make a join event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1make_joinroomiduserid) |
-| `PUT` | `/_matrix/federation/v1/send_join/{roomID}/{eventID}` | [Send a join event (legacy envelope)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1send_joinroomideventid) |
-| `PUT` | `/_matrix/federation/v2/send_join/{roomID}/{eventID}` | [Send a join event](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2send_joinroomideventid) |
-| `PUT` | `/_matrix/federation/v1/send_leave/{roomID}/{eventID}` | [Send a leave event (legacy)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1send_leaveroomideventid) — a membership ended by a peer, verified like a relayed event
-| `PUT` | `/_matrix/federation/v2/send_leave/{roomID}/{eventID}` | [Send a leave event (v2)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2send_leaveroomideventid) — as v1, with the answer as an object rather than the legacy unsigned pair |
-| `GET` | `/_matrix/federation/v1/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1event_authroomideventid) — the events that authorised one event, transitively
-| `GET` | `/_matrix/federation/v1/event/{eventID}` | [Get a single event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1eventeventid) |
-| `GET` | `/_matrix/federation/v1/timestamp_to_event/{roomID}` | [MSC3059 — get the event closest to a timestamp](https://github.com/matrix-org/matrix-spec-proposals/pull/3059) |
-| `GET` | `/_matrix/federation/v1/state_ids/{roomID}` | [Get the current state of a room by ID](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1state_idsroomid) |
-| `GET` | `/_matrix/federation/v2/state_ids/{roomID}` | [Get the current state of a room by ID, with presentation](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2state_idsroomid) |
-| `GET` | `/_matrix/federation/v1/state/{roomID}` | [Get the current state of a room](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1stateroomid) |
-| `GET` | `/_matrix/federation/v2/state/{roomID}` | [Get the current state of a room, signed](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2stateroomid) |
-| `GET` | `/_matrix/federation/v1/backfill/{roomID}` | [Backfill](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1backfillroomid) |
-| `GET` | `/_matrix/federation/v2/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event (v2)](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2event_authroomideventid) — as v1, plus the `rooms` set for auth events missing from the room (always empty here)
-| `PUT` | `/_matrix/federation/v1/invite/{roomID}/{eventID}` | [Sign an invite for our user (legacy)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1inviteroomideventid) |
-| `PUT` | `/_matrix/federation/v2/invite/{roomID}/{eventID}` | [Sign an invite for our user](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2inviteroomideventid) |
-| `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) |
-| `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) |
-| `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users |
-| `POST` | `/_matrix/federation/v1/get_missing_events/{roomID}` | [Get missing events](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1get_missing_eventsroomid) |
-| `GET` | `/_matrix/federation/v1/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) |
-| `GET` | `/_matrix/federation/v1/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) |
-| `GET` | `/_matrix/federation/v2/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) |
-| `PUT` | `/_matrix/federation/v1/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) |
-| `PUT` | `/_matrix/federation/v2/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) |
-| `GET` | `/_matrix/federation/v2/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) |
-| `POST` | `/_matrix/federation/v1/user/keys/query` | [query user device keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysquery) |
-| `POST` | `/_matrix/federation/v1/user/keys/claim` | [claim user keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysclaim) |
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/_matrix/federation/v1/version` | [GET federation version](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1version) | implemented |
+| `POST` | `/_matrix/key/v2/query` | [Query keys in a batch](https://spec.matrix.org/latest/server-server-api/#post_matrixkeyv2query) — served for this server's own name; other names are left out of the result, as the specification allows, because holding another server's keys is a notary cache this server does not have | implemented |
+| `GET` | `/_matrix/key/v2/server` | [Get server keys](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2server) | implemented |
+| `GET` | `/_matrix/key/v2/server/{keyID}` | [Get specific server key](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2serverkeyid) | implemented |
+| `GET` | `/_matrix/federation/v1/make_join/{roomID}/{userID}` | [Make a join event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1make_joinroomiduserid) | implemented |
+| `PUT` | `/_matrix/federation/v1/send_join/{roomID}/{eventID}` | [Send a join event (legacy envelope)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1send_joinroomideventid) | implemented |
+| `PUT` | `/_matrix/federation/v2/send_join/{roomID}/{eventID}` | [Send a join event](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2send_joinroomideventid) | implemented |
+| `PUT` | `/_matrix/federation/v1/send_leave/{roomID}/{eventID}` | [Send a leave event (legacy)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1send_leaveroomideventid) — a membership ended by a peer, verified like a relayed event | implemented |
+| `PUT` | `/_matrix/federation/v2/send_leave/{roomID}/{eventID}` | [Send a leave event (v2)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2send_leaveroomideventid) — as v1, with the answer as an object rather than the legacy unsigned pair | implemented |
+| `GET` | `/_matrix/federation/v1/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1event_authroomideventid) — the events that authorised one event, transitively | implemented |
+| `GET` | `/_matrix/federation/v1/event/{eventID}` | [Get a single event](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1eventeventid) | implemented |
+| `GET` | `/_matrix/federation/v1/timestamp_to_event/{roomID}` | [MSC3059 — get the event closest to a timestamp](https://github.com/matrix-org/matrix-spec-proposals/pull/3059) | implemented |
+| `GET` | `/_matrix/federation/v1/state_ids/{roomID}` | [Get the current state of a room by ID](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1state_idsroomid) | implemented |
+| `GET` | `/_matrix/federation/v2/state_ids/{roomID}` | [Get the current state of a room by ID, with presentation](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2state_idsroomid) | implemented |
+| `GET` | `/_matrix/federation/v1/state/{roomID}` | [Get the current state of a room](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1stateroomid) | implemented |
+| `GET` | `/_matrix/federation/v2/state/{roomID}` | [Get the current state of a room, signed](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2stateroomid) | implemented |
+| `GET` | `/_matrix/federation/v1/backfill/{roomID}` | [Backfill](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1backfillroomid) | implemented |
+| `GET` | `/_matrix/federation/v2/event_auth/{roomID}/{eventID}` | [Get the auth chain of an event (v2)](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv2event_authroomideventid) — as v1, plus the `rooms` set for auth events missing from the room (always empty here) | implemented |
+| `PUT` | `/_matrix/federation/v1/invite/{roomID}/{eventID}` | [Sign an invite for our user (legacy)](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1inviteroomideventid) | implemented |
+| `PUT` | `/_matrix/federation/v2/invite/{roomID}/{eventID}` | [Sign an invite for our user](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2inviteroomideventid) | implemented |
+| `PUT` | `/_matrix/federation/v1/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv1sendtransactionid) | partial |
+| `PUT` | `/_matrix/federation/v2/send/{transactionID}` | [Send a transaction](https://spec.matrix.org/latest/server-server-api/#put_matrixfederationv2sendtransactionid) | partial |
+| `GET` | `/_matrix/federation/v1/user/devices/{userID}` | [Get device lists](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1userdevicesuserid) — only for this server's own users | implemented |
+| `POST` | `/_matrix/federation/v1/get_missing_events/{roomID}` | [Get missing events](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1get_missing_eventsroomid) | implemented |
+| `GET` | `/_matrix/federation/v1/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) | implemented |
+| `GET` | `/_matrix/federation/v1/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) | implemented |
+| `GET` | `/_matrix/federation/v2/make_knock/{roomID}/{userID}` | [Make knock event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_knockroomiduserid) | implemented |
+| `PUT` | `/_matrix/federation/v1/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) | implemented |
+| `PUT` | `/_matrix/federation/v2/send_knock/{roomID}/{eventID}` | [Send a knock event](https://spec.matrix.org/latest/server-server-api#put_matrixfederationv1send_knockroomideventid) | implemented |
+| `GET` | `/_matrix/federation/v2/make_leave/{roomID}/{userID}` | [Make leave event](https://spec.matrix.org/latest/server-server-api#get_matrixfederationv1make_leaveroomiduserid) | implemented |
+| `POST` | `/_matrix/federation/v1/user/keys/query` | [query user device keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysquery) | implemented |
+| `POST` | `/_matrix/federation/v1/user/keys/claim` | [claim user keys](https://spec.matrix.org/latest/server-server-api#post_matrixfederationv1userkeysclaim) | implemented |
 
 These two are what an encrypted conversation between two homeservers needs before it can start: the
 first returns the device key documents of this server's users, and the second *spends* a one-time key so

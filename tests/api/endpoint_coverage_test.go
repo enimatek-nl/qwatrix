@@ -406,6 +406,84 @@ func loadDocumentedRoutes(t *testing.T) map[string]bool {
 	return documented
 }
 
+// endpointStatuses are the only words the document's Status column may use, and they are AC-6's
+// vocabulary: `implemented`, `partial`, `stub`.
+var endpointStatuses = map[string]bool{
+	"implemented": true,
+	"partial":     true,
+	"stub":        true,
+}
+
+// TestEveryDocumentedEndpointCarriesAStatus checks the second half of AC-6, which is the half a
+// generated table does not give you for free.
+//
+// Listing an endpoint says the server answers it. Saying *how completely* it answers is the part a
+// client plans around: an endpoint that accepts a request and quietly ignores half of it is worse
+// than a 404, because the client has already committed to using it. So every row states its status
+// in the criteria's own words, and a row that omits the column is a row whose completeness nobody
+// has claimed — which is the state this catches, rather than letting the column decay into
+// decoration.
+func TestEveryDocumentedEndpointCarriesAStatus(t *testing.T) {
+	raw, err := os.ReadFile(endpointsDocument)
+	if err != nil {
+		t.Fatalf("reading %s: %v", endpointsDocument, err)
+	}
+	missing := []string{}
+	unexpected := []string{}
+	rows := 0
+	// Only the endpoint tables count. The document has other tables — an explanation of what an
+	// application service may do, a list of what a refresh token is refused — whose first column is
+	// also backticked, and demanding a status from a sentence would be a test that argues with the
+	// wrong thing. A blank line ends a table.
+	inEndpointTable := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case line == "":
+			inEndpointTable = false
+		case strings.HasPrefix(line, "| Method | Path | Spec | Status |"):
+			inEndpointTable = true
+		case !strings.HasPrefix(line, "| `"):
+		default:
+			if !inEndpointTable {
+				continue
+			}
+		}
+		if !inEndpointTable || !strings.HasPrefix(line, "| `") {
+			continue
+		}
+		columns := strings.Split(line, "|")
+		if len(columns) < 4 {
+			continue
+		}
+		methods := parseBackticks(columns[1])
+		targets := parseBackticks(columns[2])
+		if len(methods) == 0 || len(targets) == 0 {
+			continue
+		}
+		rows++
+		status := strings.ToLower(strings.TrimSpace(columns[len(columns)-2]))
+		switch {
+		case status == "":
+			missing = append(missing, strings.Join([]string{columns[1], columns[2]}, " "))
+		case !endpointStatuses[status]:
+			unexpected = append(unexpected, status+" ("+strings.TrimSpace(columns[2])+")")
+		}
+	}
+	if rows < 100 {
+		t.Fatalf("only %d endpoint rows were read, which is not the documented surface: is the "+
+			"Status column missing a separator cell so the rows no longer parse?", rows)
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("%d endpoint rows state no status: %s", len(missing), strings.Join(missing[:min(len(missing), 6)], "; "))
+	}
+	if len(unexpected) > 0 {
+		sort.Strings(unexpected)
+		t.Fatalf("the Status column uses words outside AC-6's vocabulary: %s", strings.Join(unexpected[:min(len(unexpected), 6)], "; "))
+	}
+}
+
 // parseBackticks returns the backtick-quoted values of a markdown cell, in order.
 func parseBackticks(cell string) []string {
 	values := []string{}
