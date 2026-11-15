@@ -73,6 +73,9 @@ type Store struct {
 	// Push is push delivery: the devices that want to be told, the events worth telling them
 	// about, the deliveries still owed, and how far the evaluator has walked the stream.
 	Push PushRepo
+	// KeyBackup is server-side room key backup: the containers a user creates and the encrypted
+	// Megolm sessions inside them.
+	KeyBackup KeyBackupRepo
 	// Directory is the user directory: the names local users go by, per room.
 	Directory DirectoryRepo
 
@@ -138,6 +141,7 @@ func Open(path string) (*Store, error) {
 		FederationOutbox: NewFederationOutboxRepo(db),
 		PushRules:        NewPushRuleRepo(db),
 		Push:             NewPushRepo(db),
+		KeyBackup:        NewKeyBackupRepo(db),
 		Directory:        NewDirectoryRepo(db),
 	}, nil
 }
@@ -242,6 +246,7 @@ func migrate(db *gorm.DB) error {
 		&Notification{},
 		&PendingPush{},
 		&PushCursor{},
+		&KeyBackupVersion{}, &KeyBackupKey{},
 		&ToDeviceMessage{},
 		&DeviceMessageReceipt{},
 		&MediaFile{},

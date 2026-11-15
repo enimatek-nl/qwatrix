@@ -246,8 +246,11 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   authorised by this server (T751): a room can admit a user this server vouches for, but not yet a user
   another server vouches for.
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
-  search, URL preview, cross-signing verification flows, server-side key backup (T753), server ACLs,
-  sliding sync (T811), OIDC/SSO (T812). What *is* implemented from the Element X readiness list, after
+  search, URL preview, cross-signing verification flows, server ACLs, sliding sync (T811), OIDC/SSO
+  (T812).
+- Server-side room key backup (T753) is implemented and complement-tested, and belongs on this list
+  only as a note about what it deliberately does not do: MSC3270's `?replacement_room=` is absent, and
+  the server holds recovery keys that let it say nothing about the sessions it stores. What *is* implemented from the Element X readiness list, after
   this milestone's scope was written, is pushers with push-gateway delivery (T810) and knocking (T752);
   Element X additionally needs Simplified Sliding Sync, and no amount of the rest substitutes for it,
   because the Rust SDK in that app speaks no other sync protocol.

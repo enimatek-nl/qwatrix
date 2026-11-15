@@ -660,7 +660,16 @@ func (s *Service) Deactivate(ctx context.Context, localpart string, erase bool) 
 	if err != nil {
 		return err
 	}
+	// A backed-up key bundle is the exception to that rule, and it is deleted here rather than
+	// queued: it is a person's encrypted conversation history handed to this server for safekeeping,
+	// and `erase` is the explicit instruction that they want it back gone. Leaving it behind would
+	// keep a permanently undecryptable-to-anybody-else blob addressed to an account that can never be
+	// used again, which is all cost and no service.
 	if erase {
+		if err := s.store.KeyBackup.DeleteKeyBackupForUser(ctx, localpart); err != nil {
+			slog.Error("could not delete the key backup of a deactivated account",
+				"localpart", localpart, "error", err)
+		}
 		slog.Info("account deactivated with erase request", "localpart", localpart,
 			"note", "history retention is governed by the erasure policy; content is not deleted synchronously")
 	}

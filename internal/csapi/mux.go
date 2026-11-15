@@ -9,6 +9,7 @@
 package csapi
 
 import (
+	"github.com/enimatek-nl/qwatrix/internal/roomkeys"
 	"net/http"
 
 	"github.com/enimatek-nl/qwatrix/internal/accounts"
@@ -70,6 +71,9 @@ type Deps struct {
 	// things and read back what this server said was worth telling; the rules that decide what is
 	// worth telling live in PushRules, and this is the consequence of them.
 	Push *push.Service
+	// KeyBackup is server-side room key backup: the containers a user creates and the encrypted
+	// Megolm sessions inside them.
+	KeyBackup *roomkeys.Service
 	// ToDevice is the queue of messages addressed to devices.
 	ToDevice *todevice.Service
 	// Media is the file repository.
@@ -114,6 +118,7 @@ func NewMux(deps Deps) http.Handler {
 	registerKeyRoutes(routes, deps)
 	registerPushRuleRoutes(routes, deps)
 	registerPusherRoutes(routes, deps)
+	registerRoomKeyRoutes(routes, deps)
 	registerToDeviceRoutes(routes, deps)
 	registerMediaRoutes(routes, deps)
 

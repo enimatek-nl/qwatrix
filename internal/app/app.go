@@ -11,6 +11,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"github.com/enimatek-nl/qwatrix/internal/roomkeys"
 	"log/slog"
 	"net"
 	"net/http"
@@ -148,6 +149,7 @@ func New(cfg *config.Config) (*App, error) {
 		ServerName: cfg.ServerName,
 		UserAgent:  "qwatrix/" + cfg.Version,
 	})
+	keyBackup := roomkeys.New(st)
 	pushService.WithClassifier(pushRuleService).WithReader(readState).WithWakeup(changes)
 	if !cfg.PushEnabled {
 		// Nothing is queued up behind a worker that will never run, and the endpoints keep
@@ -208,6 +210,7 @@ func New(cfg *config.Config) (*App, error) {
 			ReadState:     readState,
 			PushRules:     pushRuleService,
 			Push:          pushService,
+			KeyBackup:     keyBackup,
 			ToDevice:      toDeviceService,
 			Media:         mediaService,
 			DeviceLists:   deviceListService,

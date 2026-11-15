@@ -155,6 +155,9 @@ func RespondError(w http.ResponseWriter, r *http.Request, err error) {
 	if apiErr.RoomVersion != "" {
 		body.RoomVersion = apiErr.RoomVersion
 	}
+	if apiErr.CurrentVersion != "" {
+		body.CurrentVersion = apiErr.CurrentVersion
+	}
 	w.Header().Set("WWW-Authenticate", `Bearer realm="matrix"`)
 	RespondJSON(w, apiErr.Status, body)
 }
@@ -168,6 +171,8 @@ type errorBody struct {
 	Links        []map[string]string `json:"links,omitempty"`
 	// RoomVersion accompanies M_INCOMPATIBLE_ROOM_VERSION, naming the version to move to.
 	RoomVersion string `json:"room_version,omitempty"`
+	// CurrentVersion accompanies M_WRONG_VERSION, naming the key backup to write to instead.
+	CurrentVersion string `json:"current_version,omitempty"`
 }
 
 // DecodeJSON reads a JSON request body into dst, translating every failure mode into the

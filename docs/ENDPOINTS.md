@@ -244,6 +244,31 @@ sides have for "the same send", and the destination needs that to tell a retry f
 recipient naming every device with `*` is expanded by the server that owns those devices, since only it
 knows that the laptop was added an hour ago.
 
+## Room key backup
+
+A user's encrypted Megolm sessions, stored as opaque blobs: the recovery key never reaches this
+server, so it can say whether a backup exists and how full it is, and nothing else. MSC3270's
+`?replacement_room=` (copying a room's sessions forward during an upgrade) is not implemented — it is
+an optimisation over re-uploading, and the one part of these endpoints where a server would write keys
+into a room the client did not name.
+
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `GET` | `/room_keys/version` | [get latest backup version](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3room_keysversion) | implemented |
+| `POST` | `/room_keys/version` | [create a new backup version](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3room_keysversion) | implemented |
+| `GET` | `/room_keys/version/{version}` | [get backup version](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3room_keysversionversion) | implemented |
+| `PUT` | `/room_keys/version/{version}` | [update backup version](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3room_keysversionversion) | implemented |
+| `DELETE` | `/room_keys/version/{version}` | [delete backup version](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3room_keysversionversion) | implemented |
+| `GET` | `/room_keys/keys` | [retrieve all keys](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3room_keyskeys) | implemented |
+| `PUT` | `/room_keys/keys` | [store keys](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3room_keyskeys) | implemented |
+| `DELETE` | `/room_keys/keys` | [delete keys](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3room_keyskeys) | implemented |
+| `GET` | `/room_keys/keys/{roomID}` | [retrieve keys from a room](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3room_keyskeysroomid) | implemented |
+| `PUT` | `/room_keys/keys/{roomID}` | [store keys for a room](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3room_keyskeysroomid) | implemented |
+| `DELETE` | `/room_keys/keys/{roomID}` | [delete keys for a room](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3room_keyskeysroomid) | implemented |
+| `GET` | `/room_keys/keys/{roomID}/{sessionID}` | [retrieve a single key](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3room_keyskeysroomidsessionid) | implemented |
+| `PUT` | `/room_keys/keys/{roomID}/{sessionID}` | [store a single key](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3room_keyskeysroomidsessionid) | implemented |
+| `DELETE` | `/room_keys/keys/{roomID}/{sessionID}` | [delete a single key](https://spec.matrix.org/latest/client-server-api/#delete_matrixclientv3room_keyskeysroomidsessionid) | implemented |
+
 ## Pushers and notifications
 
 A pusher is a device asking to be told, and the door to it is client-supplied: the URL this server

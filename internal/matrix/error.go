@@ -59,6 +59,10 @@ const (
 	// is about the room, not about the syntax, and a client correcting the syntax would retry
 	// the same wrong claim.
 	ErrBadAlias ErrCode = "M_BAD_ALIAS"
+	// ErrWrongVersion is the backup endpoints' refusal to write to a backup that is not the
+	// current one. It is paired with `current_version` in the body, because the client's next move
+	// is mechanical: switch to the version named there rather than retry into the same refusal.
+	ErrWrongVersion ErrCode = "M_WRONG_VERSION"
 )
 
 // APIError is a Matrix error response: an HTTP status, an error code and a human-readable
@@ -85,6 +89,10 @@ type APIError struct {
 	// RoomVersion is the room version a peer has to move to, carried by
 	// M_INCOMPATIBLE_ROOM_VERSION responses as the specification requires.
 	RoomVersion string
+	// CurrentVersion is the backup version a client should have been writing to, carried by
+	// M_WRONG_VERSION responses. Like RoomVersion it exists because the client cannot recover by
+	// retrying the same request, and the prose telling it so is not something code can read.
+	CurrentVersion string
 }
 
 // Error implements error.
@@ -147,6 +155,17 @@ func NewIncompatibleRoomVersion(version string) *APIError {
 		Code:        ErrIncompatibleRoomVersion,
 		Message:     "This room is not using a room version that this server can speak",
 		RoomVersion: version,
+	}
+}
+
+// NewWrongVersion answers a write to a key backup that is not the current one, naming the version
+// that is so the client can move to it in one step.
+func NewWrongVersion(current string) *APIError {
+	return &APIError{
+		Status:         http.StatusForbidden,
+		Code:           ErrWrongVersion,
+		Message:        "The backup version supplied is invalid; check /room_keys/version for the current version",
+		CurrentVersion: current,
 	}
 }
 
