@@ -36,6 +36,13 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 )
 
+// One cost is worth knowing before reading the room-shaped extensions: they read per room, over the
+// window the client asked for, because that is the set the client can act on. /v3/sync does the same
+// per joined room, and batching receipts and typing into one query each is a possible improvement that
+// does not change an answer. What would change an answer is reporting only the rooms that happened to
+// change — a client would stop seeing read markers for rooms it was shown three answers ago, and there
+// is no way for it to notice.
+//
 // The extension names this server serves. They are wire values, and they are the names a client
 // already sends.
 const (
