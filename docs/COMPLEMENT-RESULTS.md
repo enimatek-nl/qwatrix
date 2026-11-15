@@ -54,12 +54,20 @@ the count threshold is stated over `tests/csapi`, and the federation result is "
 reported separately; each federation test that passes is listed". So a run is scored per package as
 well as in total, and the sweep prints both.
 
-At run 126: **95 of 106 in `tests/csapi`** (AC-5's bar is 70 — and the criteria say 107 because that
+At run 127: **95 of 106 in `tests/csapi`** (AC-5's bar is 70 — and the criteria say 107 because that
 package contains 107 `Test…` functions, one of which is `TestMain`, which is not a test: 106 exist
-and 106 were run), and **35 of 91 in the root package**. The root package has not moved since run 124 and will not
-move on its own: 56 of its 91 tests exercise things on this milestone's deferred list — search,
-threads, refresh tokens, notifications — while `tests/csapi` has gained two since: `TestChangePasswordPushers`
-when pushers landed, and `TestE2EKeyBackupReplaceRoomKeyRules` when server-side key backup did.
+and 106 were run), and **35 of 91 in the root package**. Nothing moved between run 126 and run 127,
+which is the expected result and worth stating anyway: run 127 added an entire second sync endpoint
+(MSC4186), and complement has no test that speaks it — the one test in the suite that posts to
+`org.matrix.simplified_msc3575/sync` is `TestMSC4308ThreadSubscriptionsSlidingSync`, which asks for an
+extension this server does not implement. So sliding sync is measured by this repository's own 33 tests
+in `tests/api/slidingsync_test.go` and not by complement, and `scripts/ac5-check.py` confirms that every
+test which passed at run 126 still passes.
+
+The root package will not move on its own: 56 of its 91 tests exercise things on this milestone's
+deferred list — search, threads, refresh tokens, notifications — while `tests/csapi` has gained two
+since: `TestChangePasswordPushers` when pushers landed, and `TestE2EKeyBackupReplaceRoomKeyRules` when
+server-side key backup did.
 
 The root package is where federation lives, but it is not all federation, and saying "35 federation
 tests pass" would be a claim about a number rather than about the protocol. Only **eleven of them
@@ -115,6 +123,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 127 | `e1b7f41` | 2026-11-15 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — no test changed state | **Simplified Sliding Sync (MSC4186), all four milestones.** A run whose value is that nothing moved: this added a second sync endpoint, its own connection state in the write path, and five extension streams that read the device inbox, the key tables and the receipt and account-data stores, all of which /v3/sync also reads. complement measures none of it — the one test that posts to `org.matrix.simplified_msc3575/sync` asks for an MSC4308 extension this server does not serve — so the criterion is proven untouched rather than the feature proven working, and the feature rests on the 33 tests in `tests/api/slidingsync_test.go`. |
 | 126 | `d0e9f27` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — `TestE2EKeyBackupReplaceRoomKeyRules` moves from failing to passing, and nothing else moved | **Room key backup.** The second Element X readiness item, and the first new feature to be measured rather than asserted: that test had been failing since it was first run, and it pins the rule for which of two devices' copies of a session a backup keeps. The mandatory set was never going to change — complement does not put key backup in it — so this run is the evidence that the criterion survives a new subsystem in the write path. |
 | 125 | `1ec9ae9` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **129 / 197** — `TestChangePasswordPushers` moves from failing to passing, and nothing else moved | **Pushers, and the reason this run exists.** That test was the one complement gate for pusher registration and revocation, and it had been failing on a 404 at `POST /pushers/set`; it now passes in 7.90 s, along with the push-rule tests that already passed. AC-5's mandatory set was already met without it, so this run proves the criterion still holds after a feature went into the write path rather than into a document — the delivery pass runs beside event persistence, and `make race` found no race between them. |
 | 124 | `95b60fc` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **128 / 197** — no test changed state | **Nothing changed, which is the point.** This is the first run scored against its predecessor by AC-5's regression clause rather than by somebody remembering to look: all 197 names compared, none went backwards, and the server had only lost a documentation column and gained a few tests in between. Choosing the predecessor is now done by run number — before that it took the newest file in the directory, and the newest file was a hand copy of an old partial run, so the first comparison printed "no regressions" over 106 of 197 tests. A comparison that covers less than it claims now says so (`PARTIAL COMPARISON`) instead of looking like a clean bill of health. |
