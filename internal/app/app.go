@@ -186,7 +186,8 @@ func New(cfg *config.Config) (*App, error) {
 	})
 	rooms.WithNamePublisher(directoryService)
 	syncService := syncapi.New(st, cfg, rooms, presenceService, readState, pushRuleService, toDeviceService, deviceListService, changes)
-	slidingSyncService := slidingsync.New(st, rooms, presenceService, changes, cfg.ServerName)
+	slidingSyncService := slidingsync.New(st, rooms, presenceService, readState, toDeviceService,
+		deviceListService, changes, cfg.ServerName)
 
 	app := &App{cfg: cfg, store: st, accounts: acc, identity: serverIdentity, events: eventService, notifier: changes, rooms: rooms, sync: syncService, pusher: pushService}
 	app.handler = httpx.Chain(

@@ -37,11 +37,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/enimatek-nl/qwatrix/internal/devicelists"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/internal/notifier"
 	"github.com/enimatek-nl/qwatrix/internal/presence"
+	"github.com/enimatek-nl/qwatrix/internal/readstate"
 	"github.com/enimatek-nl/qwatrix/internal/roomserver"
 	"github.com/enimatek-nl/qwatrix/internal/store"
+	"github.com/enimatek-nl/qwatrix/internal/todevice"
 )
 
 // Bounds the server enforces on one request or one connection.
@@ -83,13 +86,23 @@ type Service struct {
 	presence   *presence.Service
 	notifier   *notifier.Notifier
 	serverName string
+	// The extension sources. Each is nil-tolerant: a server built without one answers without that
+	// extension rather than failing the connection, because a device that cannot be told who is typing
+	// should still be told what its rooms contain.
+	readState   *readstate.Service
+	toDevice    *todevice.Service
+	deviceLists *devicelists.Service
 	// now is a seam for expiry tests; production reads the wall clock.
 	now func() time.Time
 }
 
 // New builds the service.
-func New(st *store.Store, rooms *roomserver.Service, pres *presence.Service, nf *notifier.Notifier, serverName string) *Service {
-	return &Service{store: st, rooms: rooms, presence: pres, notifier: nf, serverName: serverName, now: time.Now}
+func New(st *store.Store, rooms *roomserver.Service, pres *presence.Service, read *readstate.Service,
+	toDevice *todevice.Service, deviceLists *devicelists.Service, nf *notifier.Notifier, serverName string) *Service {
+	return &Service{
+		store: st, rooms: rooms, presence: pres, readState: read, toDevice: toDevice,
+		deviceLists: deviceLists, notifier: nf, serverName: serverName, now: time.Now,
+	}
 }
 
 // Request is a parsed POST /v4/sync body, with the identity of the caller already filled in by the
@@ -105,9 +118,9 @@ type Request struct {
 	SetPresence   *string                      `json:"set_presence,omitempty"`
 	Lists         map[string]*ListConfig       `json:"lists,omitempty"`
 	Subscriptions map[string]*RoomSubscription `json:"room_subscriptions,omitempty"`
-	// Extensions is decoded but unused until the extension milestone; keeping the field here means
-	// a client asking for an extension gets a server that understands the shape it sent.
-	Extensions map[string]json.RawMessage `json:"extensions,omitempty"`
+	// Extensions are the streams that are not rooms: to-device messages, encryption bookkeeping,
+	// typing, receipts and account data.
+	Extensions map[string]*ExtensionConfig `json:"extensions,omitempty"`
 
 	// MaxTimeout is the server's cap on a long-poll, set by the handler from its configuration: a
 	// client may ask for an hour, and every proxy between here and it will have given up long before.

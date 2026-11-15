@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -84,6 +85,10 @@ type KeyRepo interface {
 	// OneTimeKeyCounts returns the stored-key count per algorithm, and the count of keys
 	// that may still be claimed.
 	OneTimeKeyCounts(ctx context.Context, userID, deviceID string) (map[string]int64, error)
+	// FallbackKeyTypes returns the algorithms for which the device still holds a usable MSC3391
+	// fallback key. It is a separate question from the counts because a fallback key is reusable:
+	// "how many" would tell a client to upload more when the answer is "one, and that is enough".
+	FallbackKeyTypes(ctx context.Context, userID, deviceID string) ([]string, error)
 	// ClaimOneTimeKeys spends and returns up to limit keys of one algorithm, oldest first.
 	ClaimOneTimeKeys(ctx context.Context, userID, deviceID, algorithm string, limit int) ([]OneTimeKey, error)
 	// DeleteDevices removes the published keys of sessions that have been logged out.
@@ -163,6 +168,27 @@ func (r *KeyRepoImpl) AddOneTimeKeys(ctx context.Context, keys []OneTimeKey) (in
 		added++
 	}
 	return added, nil
+}
+
+// OneTimeKeyCounts implements [KeyRepo].
+// FallbackKeyTypes implements [KeyRepo].
+func (r *KeyRepoImpl) FallbackKeyTypes(ctx context.Context, userID, deviceID string) ([]string, error) {
+	var rows []OneTimeKey
+	if err := session(ctx, r.db).
+		Where("user_id = ? AND device_id = ? AND fallback = ?", userID, deviceID, true).
+		Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("reading fallback keys of %s/%s: %w", userID, deviceID, err)
+	}
+	seen := map[string]bool{}
+	types := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if !seen[row.Algorithm] {
+			seen[row.Algorithm] = true
+			types = append(types, row.Algorithm)
+		}
+	}
+	sort.Strings(types)
+	return types, nil
 }
 
 // OneTimeKeyCounts implements [KeyRepo].

@@ -370,11 +370,18 @@ and how far, so a second answer is a diff. Its `pos` is a position in the same g
 `/messages` and `/relations`. A `pos` this server did not issue to this user and device — or has since expired — answers
 `400 M_UNKNOWN_POS`, which tells the client to start again rather than quietly resynchronising it. Served on the stable
 `/_matrix/client/v4/sync` and the unstable `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, both of which
-collapse to the row above. The `org.matrix.simplified_msc3575` flag in `/versions` is not advertised yet: that flag is
-what makes a client commit to the endpoint, and it goes in when the whole endpoint — including its extensions and list
-filters — is complete. Not implemented yet: list `filters` (`is_dm`, `spaces`, `tags`, `room_types`, `is_encrypted`,
-`is_invited`) and the extensions (`to_device`, `e2ee`, `typing`, `receipts`, `account_data`); a client that asks for
-either gets rooms it did not ask for, or no extension section at all, rather than a wrong answer.
+collapse to the row above, and advertised by the `org.matrix.simplified_msc3575` flag in `GET /versions`, which is what
+makes matrix-rust-sdk use this endpoint instead of looking for a proxy.
+
+A list is a query rather than a bag of rooms: `range` and `count` slide a window over rooms ordered by the last event
+received, and the `filters` (`is_dm`, `is_encrypted`, `is_invited`, `spaces`, `room_types`/`not_room_types`,
+`tags`/`not_tags`) are applied before that window, so `count` reports what matches and a client can ask for the next
+twenty. The extensions are served too: `to_device` (which drains the device's queue, so a key shared with one device
+rather than a room arrives), `e2ee` (one-time-key counts, fallback keys, and whose devices changed), `typing`,
+`receipts` and `account_data` (global and per room). An extension the request does not enable is not answered, and an
+extension this server does not implement — MSC4308 thread subscriptions, MSC4262 profiles, MSC4354 sticky events, and
+the MSC3575 ops and `sliding_sync_proxy` well-known that MSC4186 replaced — is ignored rather than refused, so a client
+that grew a new extension keeps syncing.
 
 ## Server-server (federation) API
 

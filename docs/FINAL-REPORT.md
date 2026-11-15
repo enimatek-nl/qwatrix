@@ -246,14 +246,19 @@ it back — which is what the container suite is for. `tests/csapi` has been **9
   authorised by this server (T751): a room can admit a user this server vouches for, but not yet a user
   another server vouches for.
 - Not implemented at all: room upgrades (T608), refresh tokens (MSC2918), threads timeline endpoint,
-  search, URL preview, cross-signing verification flows, server ACLs, sliding sync (T811), OIDC/SSO
-  (T812).
+  search, URL preview, cross-signing verification flows, server ACLs, OIDC/SSO (T812).
 - Server-side room key backup (T753) is implemented and complement-tested, and belongs on this list
   only as a note about what it deliberately does not do: MSC3270's `?replacement_room=` is absent, and
   the server holds recovery keys that let it say nothing about the sessions it stores. What *is* implemented from the Element X readiness list, after
-  this milestone's scope was written, is pushers with push-gateway delivery (T810) and knocking (T752);
-  Element X additionally needs Simplified Sliding Sync, and no amount of the rest substitutes for it,
-  because the Rust SDK in that app speaks no other sync protocol.
+  this milestone's scope was written, is pushers with push-gateway delivery (T810), knocking (T752),
+  server-side key backup (T753), and Simplified Sliding Sync (T811) — the last of those being the one
+  nothing substitutes for, because the Rust SDK in that app speaks no other sync protocol. MSC4186 is
+  served at `POST /_matrix/client/v4/sync` and its `org.matrix.simplified_msc3575` unstable prefix, with
+  stateful connections kept in the database (so a deploy is not a re-sync of every device), filtered and
+  windowed room lists, and the five extension streams a client needs: `to_device`, `e2ee`, `typing`,
+  `receipts` and `account_data`. Their shapes are the ones matrix-rust-sdk parses today rather than the
+  ones MSC4186's text defers to a future MSC, because a server that answers a nicer shape of its own is a
+  server that app cannot use. Running the app itself against a local qwatrix remains a human step.
 - **Application services are supported on the receiving side**: registration files, `as_token`
   authentication, virtual users, acting as a namespaced user (`?user_id=`), and MSC3316 event import with a
   chosen `?ts=`. What is not implemented is the *outbound* half — no events or ephemeral data are pushed to

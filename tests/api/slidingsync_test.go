@@ -908,3 +908,710 @@ func rawString(value *string) string {
 	}
 	return *value
 }
+
+// A list's filters are what turns "my rooms" into "the rooms a client is drawing", and they are the
+// difference between an app that opens onto a room list and one that opens onto a room list plus every
+// space, bridge and abandoned experiment the account ever joined.
+//
+// Two properties run through these cases. Filters are applied *before* the range, so a window of twenty
+// is twenty matching rooms rather than whatever twenty happened to be recent; and `count` reports the
+// rooms that match, not the rooms sent, because that is the number a client uses to decide whether to
+// ask for more.
+
+// putGlobalAccountData writes one account-data type, which is how a client records `m.direct`.
+func putGlobalAccountData(t *testing.T, server *harness.Server, who *harness.Account, dataType string, value any) {
+	t.Helper()
+	who.MustPutJSON(t, server, "/_matrix/client/v3/user/"+harness.PathEscape(who.UserID)+
+		"/account_data/"+dataType, value).MustStatus(t, 200)
+}
+
+// putRoomAccountData writes one room's account data, which is where a room's `m.tag` lives.
+func putRoomAccountData(t *testing.T, server *harness.Server, who *harness.Account, roomID, dataType string, value any) {
+	t.Helper()
+	who.MustPutJSON(t, server, "/_matrix/client/v3/rooms/"+harness.PathEscape(roomID)+
+		"/account_data/"+dataType, value).MustStatus(t, 200)
+}
+
+// listWithFilter is a one-list request whose filters are given by the caller.
+func listWithFilter(filters map[string]any, from, to int) map[string]any {
+	config := map[string]any{
+		"timeline_limit": 1,
+		"required_state": map[string]any{"include": []any{}},
+		"range":          []int{from, to},
+	}
+	if filters != nil {
+		config["filters"] = filters
+	}
+	return map[string]any{"all_rooms": config}
+}
+
+// TestAListOfOnlyDirectRooms is the filter Element X uses for its people tab: `m.direct` is account
+// data the client owns, so the server reads it rather than keeping its own notion of who is a
+// contact.
+func TestAListOfOnlyDirectRooms(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	direct := alice.MustCreateRoom(t, server, map[string]any{"preset": "trusted_private_chat"})
+	ordinary := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	sendContent(t, server, alice, ordinary, map[string]any{"msgtype": "m.text", "body": "team"})
+	sendContent(t, server, alice, direct, map[string]any{"msgtype": "m.text", "body": "hi"})
+	putGlobalAccountData(t, server, alice, "m.direct", map[string]any{bob.UserID: []string{direct}})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "dm-list",
+		"lists":   listWithFilter(map[string]any{"is_dm": true}, 0, 9),
+	}))
+	if _, ok := answer.Rooms[direct]; !ok {
+		t.Errorf("the direct room was left out of the direct list: %v", roomIDsOf(answer))
+	}
+	if _, ok := answer.Rooms[ordinary]; ok {
+		t.Errorf("a room nobody tagged as direct was in the direct list: %v", roomIDsOf(answer))
+	}
+	if answer.listCount(t, "all_rooms") != 1 {
+		t.Errorf("count = %d, want 1: the count is the rooms matching the filter, not the rooms sent",
+			answer.listCount(t, "all_rooms"))
+	}
+
+	inverse := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "room-list",
+		"lists":   listWithFilter(map[string]any{"is_dm": false}, 0, 9),
+	}))
+	if _, ok := inverse.Rooms[ordinary]; !ok {
+		t.Errorf("is_dm false should have kept the ordinary room: %v", roomIDsOf(inverse))
+	}
+	if _, ok := inverse.Rooms[direct]; ok {
+		t.Error("is_dm false kept the direct room as well, which makes the filter do nothing")
+	}
+}
+
+// TestAListOfOnlyEncryptedRooms reads the room's encryption state, which a client needs before it can
+// offer to start a secure conversation from the list at all.
+func TestAListOfOnlyEncryptedRooms(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	secure := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat"})
+	outInTheOpen := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	alice.MustSetState(t, server, secure, "m.room.encryption", "", map[string]any{
+		"algorithm": "m.megolm.v1.aes-sha2",
+	})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "secure",
+		"lists":   listWithFilter(map[string]any{"is_encrypted": true}, 0, 9),
+	}))
+	if _, ok := answer.Rooms[secure]; !ok {
+		t.Errorf("the encrypted room was not in the encrypted list: %v", roomIDsOf(answer))
+	}
+	if _, ok := answer.Rooms[outInTheOpen]; ok {
+		t.Errorf("an unencrypted room was in the encrypted list: %v", roomIDsOf(answer))
+	}
+}
+
+// TestAListOfRoomsWaitingForAnAnswer is `is_invited`: the invites a client badges are drawn from the
+// same endpoint as the rooms, so that a device shows one list rather than two sources of truth.
+func TestAListOfRoomsWaitingForAnAnswer(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	waiting := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat"})
+	answered := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, answered)
+	alice.MustInvite(t, server, waiting, bob.UserID)
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, bob, map[string]any{
+		"conn_id": "invites",
+		"lists":   listWithFilter(map[string]any{"is_invited": true}, 0, 9),
+	}))
+	if _, ok := answer.Rooms[waiting]; !ok {
+		t.Errorf("the outstanding invite was not in the invite list: %v", roomIDsOf(answer))
+	}
+	if _, ok := answer.Rooms[answered]; ok {
+		t.Errorf("a room bob already joined was in the invite list: %v", roomIDsOf(answer))
+	}
+}
+
+// TestAListOfSpacesAndAListOfEverythingElse is the room-type pair, including the rule that
+// `not_room_types` wins over `room_types` when both name the same thing: a client's general list is
+// "everything except spaces", and it must not have to know how the two interact.
+func TestAListOfSpacesAndAListOfEverythingElse(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	space := alice.MustCreateRoom(t, server, map[string]any{"room_version": "11", "creation_content": map[string]any{
+		"type": "m.space",
+	}, "preset": "private_chat"})
+	room := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+
+	spaces := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "spaces",
+		"lists":   listWithFilter(map[string]any{"room_types": []any{"m.space"}}, 0, 9),
+	}))
+	if _, ok := spaces.Rooms[space]; !ok {
+		t.Errorf("the space was not in the space list: %v", roomIDsOf(spaces))
+	}
+	if _, ok := spaces.Rooms[room]; ok {
+		t.Errorf("an ordinary room was in the space list: %v", roomIDsOf(spaces))
+	}
+
+	everythingElse := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "rooms",
+		"lists":   listWithFilter(map[string]any{"not_room_types": []any{"m.space"}}, 0, 9),
+	}))
+	if _, ok := everythingElse.Rooms[room]; !ok {
+		t.Errorf("an ordinary room was left out of the not-a-space list: %v", roomIDsOf(everythingElse))
+	}
+	if _, ok := everythingElse.Rooms[space]; ok {
+		t.Errorf("the space was in the not-a-space list: %v", roomIDsOf(everythingElse))
+	}
+
+	both := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "both",
+		"lists": listWithFilter(map[string]any{
+			"room_types":     []any{"m.space"},
+			"not_room_types": []any{"m.space"},
+		}, 0, 9),
+	}))
+	if len(both.Rooms) != 0 {
+		t.Errorf("naming a type in both lists should keep nothing, kept %v", roomIDsOf(both))
+	}
+}
+
+// TestAListFilteredByTag is room tagging, which lives in the room's own `m.tag` account data: a client
+// draws a favourites list from it, and the list must not repeat the favourites in the general one.
+func TestAListFilteredByTag(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	favourite := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	plain := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	putRoomAccountData(t, server, alice, favourite, "m.tag", map[string]any{
+		"tags": map[string]any{"m.favourite": map[string]any{"order": 1.0}},
+	})
+
+	favourites := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "fav",
+		"lists":   listWithFilter(map[string]any{"tags": []any{"m.favourite"}}, 0, 9),
+	}))
+	if _, ok := favourites.Rooms[favourite]; !ok {
+		t.Errorf("the tagged room was not in the tagged list: %v", roomIDsOf(favourites))
+	}
+	if _, ok := favourites.Rooms[plain]; ok {
+		t.Errorf("an untagged room was in the favourites list: %v", roomIDsOf(favourites))
+	}
+
+	general := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "general",
+		"lists":   listWithFilter(map[string]any{"not_tags": []any{"m.favourite"}}, 0, 9),
+	}))
+	if _, ok := general.Rooms[plain]; !ok {
+		t.Errorf("the untagged room was left out of the list that excludes favourites: %v", roomIDsOf(general))
+	}
+	if _, ok := general.Rooms[favourite]; ok {
+		t.Error("not_tags did not exclude the tagged room, so a client would show it twice")
+	}
+}
+
+// TestAListOfOneSpacesRooms reads the space's own `m.space.child` state: the server looks only in the
+// spaces the client named and the user is joined to, and never walks into subspaces — that is the MSC's
+// rule, and it is what keeps a list of one space's rooms from becoming a recursive federation crawl.
+func TestAListOfOneSpacesRooms(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	carol := server.Register(t, "carol", "pw-carol", false)
+	space := alice.MustCreateRoom(t, server, map[string]any{
+		"room_version": "11", "preset": "private_chat",
+		"creation_content": map[string]any{"type": "m.space"},
+	})
+	child := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	elsewhere := carol.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	alice.MustSetState(t, server, space, "m.space.child", child, map[string]any{"via": []string{}})
+	// A space alice is not in names a child she may not be told about; the MSC says to ignore the
+	// space, which also stops a filter being a way to enumerate rooms over somebody's shoulder.
+	carol.MustSetState(t, server, elsewhere, "m.space.child", child, map[string]any{})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "space-children",
+		"lists":   listWithFilter(map[string]any{"spaces": []any{space}}, 0, 9),
+	}))
+	if _, ok := answer.Rooms[child]; !ok {
+		t.Errorf("the room named as a child of the space was not in the space list: %v", roomIDsOf(answer))
+	}
+	if _, ok := answer.Rooms[elsewhere]; ok {
+		t.Errorf("the space filter returned a room the space does not name: %v", roomIDsOf(answer))
+	}
+
+	unknown := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "unknown-space",
+		"lists":   listWithFilter(map[string]any{"spaces": []any{"!no-such-space:test"}}, 0, 9),
+	}))
+	if len(unknown.Rooms) != 0 {
+		t.Errorf("a space this server has never heard of should match nothing, matched %v", roomIDsOf(unknown))
+	}
+}
+
+// TestFiltersAreAppliedBeforeTheRange is the ordering that makes a sliding window work at all: a client
+// asking for twenty direct chats wants twenty direct chats, not twenty rooms of which it is then told
+// three are direct.
+func TestFiltersAreAppliedBeforeTheRange(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	direct := make([]string, 0, 3)
+	for i := 0; i < 3; i++ {
+		roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "trusted_private_chat"})
+		sendContent(t, server, alice, roomID, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("dm %d", i)})
+		direct = append(direct, roomID)
+	}
+	for i := 0; i < 4; i++ {
+		roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+		sendContent(t, server, alice, roomID, map[string]any{"msgtype": "m.text", "body": fmt.Sprintf("room %d", i)})
+	}
+	putGlobalAccountData(t, server, alice, "m.direct", map[string]any{bob.UserID: direct})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "two-dms",
+		"lists":   listWithFilter(map[string]any{"is_dm": true}, 0, 1),
+	}))
+	if len(answer.Rooms) != 2 {
+		t.Fatalf("range [0,1] of the direct list sent %d rooms: %v", len(answer.Rooms), roomIDsOf(answer))
+	}
+	if answer.listCount(t, "all_rooms") != 3 {
+		t.Errorf("count = %d, want 3: the filter matches three rooms even though two were sent",
+			answer.listCount(t, "all_rooms"))
+	}
+	for roomID := range answer.Rooms {
+		if !containsString(direct, roomID) {
+			t.Errorf("a non-direct room %s was in the window of a filtered list", roomID)
+		}
+	}
+}
+
+// roomIDsOf renders an answer's rooms for a failure message.
+func roomIDsOf(answer syncAnswer) []string {
+	out := make([]string, 0, len(answer.Rooms))
+	for roomID := range answer.Rooms {
+		out = append(out, roomID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// The extensions: the streams that are not rooms.
+//
+// MSC4186 leaves the shape of an extension to a future MSC, so these tests pin the shapes the clients
+// actually speak — the ones matrix-rust-sdk parses against Synapse today. A server that answers
+// `typing` with a nicer shape of its own is a server Element X cannot use.
+
+// extensionOf decodes one extension out of an answer, or reports that it was not sent at all.
+func extensionOf(t *testing.T, answer syncAnswer, name string) map[string]any {
+	t.Helper()
+	raw, ok := answer.Raw["extensions"]
+	if !ok {
+		t.Fatalf("the answer carried no extensions at all: %s", answer.Raw["pos"])
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &extensions); err != nil {
+		t.Fatalf("extensions is not an object: %v", err)
+	}
+	body, ok := extensions[name]
+	if !ok {
+		t.Fatalf("extension %q was not answered (answered: %s)", name, raw)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(body, &value); err != nil {
+		t.Fatalf("extension %q is not an object: %v", name, err)
+	}
+	return value
+}
+
+// enableAll turns on every extension this server serves, which is what a client does.
+func enableAll() map[string]any {
+	on := map[string]any{"enabled": true}
+	return map[string]any{
+		"to_device":    on,
+		"e2ee":         on,
+		"typing":       on,
+		"receipts":     on,
+		"account_data": on,
+	}
+}
+
+// TestAConnectionWithoutExtensionsIsNotGivenAny is the cheap case that has to keep working: an app that
+// asks only for rooms should not pay for, or be told about, five streams it did not ask for.
+func TestAConnectionWithoutExtensionsIsNotGivenAny(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	sendContent(t, server, alice, roomID, map[string]any{"msgtype": "m.text", "body": "hello"})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id": "no-extensions",
+		"lists":   listWithFilter(nil, 0, 4),
+	}))
+	if _, ok := answer.Raw["extensions"]; ok {
+		t.Errorf("an answer to a request with no extensions carried %s", answer.Raw["extensions"])
+	}
+}
+
+// TestTypingReachesASlidingSyncConnection is the typing indicator: the room-shaped extension reports
+// who is typing now, in the rooms this answer is about.
+func TestTypingReachesASlidingSyncConnection(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, roomID)
+
+	first := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "typing",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	// A connection that has just been opened has not missed anything, so the first answer says nobody
+	// is typing rather than reporting whoever happens to be mid-sentence.
+	typing := extensionOf(t, first, "typing")
+	if rooms, ok := typing["rooms"].(map[string]any); !ok || len(rooms) != 0 {
+		t.Errorf("a new connection was told people were typing: %v", typing)
+	}
+
+	bob.MustPutJSON(t, server, "/_matrix/client/v3/rooms/"+harness.PathEscape(roomID)+
+		"/typing/"+harness.PathEscape(bob.UserID), map[string]any{"typing": true, "timeout": 30000})
+	second := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "typing",
+		"pos":        first.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	typing = extensionOf(t, second, "typing")
+	rooms, ok := typing["rooms"].(map[string]any)
+	if !ok {
+		t.Fatalf("typing extension has no rooms object: %v", typing)
+	}
+	content, ok := rooms[roomID].(map[string]any)
+	if !ok {
+		t.Fatalf("this room's typing was not reported: %v", rooms)
+	}
+	users, _ := content["user_ids"].([]any)
+	if len(users) != 1 || users[0] != bob.UserID {
+		t.Errorf("typing reported %v, want just %s", users, bob.UserID)
+	}
+}
+
+// TestAReceiptReachesASlidingSyncConnection is the read marker. A receipt is a fact that outlives the
+// moment it was sent, so unlike typing it must survive a reconnect: it is how a second device learns
+// that the notifications it was showing have been read on the first.
+func TestAReceiptReachesASlidingSyncConnection(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	bob.MustJoinRoom(t, server, roomID)
+	sendContent(t, server, alice, roomID, map[string]any{"msgtype": "m.text", "body": "read me"})
+
+	first := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "receipts",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	if len(first.Rooms[roomID].Timeline) == 0 {
+		t.Fatal("the test's premise is wrong: the answer carried no timeline to acknowledge")
+	}
+	eventID := first.Rooms[roomID].Timeline[len(first.Rooms[roomID].Timeline)-1].EventID
+
+	bob.MustPostJSON(t, server, "/_matrix/client/v3/rooms/"+harness.PathEscape(roomID)+
+		"/receipt/m.read/"+harness.PathEscape(eventID), map[string]any{})
+
+	second := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "receipts",
+		"pos":        first.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	receipts := extensionOf(t, second, "receipts")
+	rooms, ok := receipts["rooms"].(map[string]any)
+	if !ok {
+		t.Fatalf("receipts extension has no rooms object: %v", receipts)
+	}
+	content, ok := rooms[roomID].(map[string]any)
+	if !ok {
+		t.Fatalf("this room's receipts were not reported: %v", rooms)
+	}
+	// A receipt content is keyed by the event it acknowledges, then by the receipt type, then by the
+	// user who sent it — the shape m.receipt has always had, and the shape a client walks to move a
+	// read marker to the right place.
+	acknowledged, ok := content[eventID].(map[string]any)
+	if !ok {
+		t.Fatalf("the receipt did not acknowledge the event it was sent for (%s): %v", eventID, content)
+	}
+	read, ok := acknowledged["m.read"].(map[string]any)
+	if !ok {
+		t.Fatalf("the receipt is not an m.read: %v", acknowledged)
+	}
+	if _, ok := read[bob.UserID]; !ok {
+		t.Errorf("the receipt did not name %s: %v", bob.UserID, read)
+	}
+}
+
+// TestAToDeviceMessageReachesASlidingSyncConnection is the one extension that decides whether
+// encryption works: a room key shared with one device rather than a room travels through the device's
+// queue, and a connection that never drained it would leave a device able to encrypt and unable to
+// read.
+func TestAToDeviceMessageReachesASlidingSyncConnection(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "to-device",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	if _, ok := answer.Raw["extensions"]; !ok {
+		t.Fatal("an answer to a request that enabled to_device carried no extensions")
+	}
+	// Nothing is queued yet, but the shape has to be there: a client tracks a cursor here and cannot
+	// be made to guess one.
+	first := extensionOf(t, answer, "to_device")
+	if _, ok := first["next_batch"]; !ok {
+		t.Errorf("the to_device extension answered %v without a cursor", first)
+	}
+
+	response := sendToDevice(t, bob, server, "extension-share-1",
+		map[string]map[string]any{alice.UserID: {alice.DeviceID: map[string]any{"session_id": "shared-one"}}})
+	if response.StatusCode != 200 {
+		t.Fatalf("sending a to-device message: got %d\n%s", response.StatusCode, response.Body)
+	}
+
+	second := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "to-device",
+		"pos":        answer.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	payload := extensionOf(t, second, "to_device")
+	events, _ := payload["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("the queued message did not reach the connection: %v", payload)
+	}
+	message, _ := events[0].(map[string]any)
+	if message["type"] != "m.room_key" {
+		t.Errorf("the delivered to-device message is %v", message)
+	}
+	content, _ := message["content"].(map[string]any)
+	if content["session_id"] != "shared-one" {
+		t.Errorf("the delivered message carries %v", content)
+	}
+
+	// A queue is consumed, not positioned: the same message must not be delivered twice, because a
+	// room key shared twice is a key two sessions could use.
+	third := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "to-device",
+		"pos":        second.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	if events, _ := extensionOf(t, third, "to_device")["events"].([]any); len(events) != 0 {
+		t.Errorf("a delivered to-device message was delivered again: %v", events)
+	}
+}
+
+// TestEncryptionCountsRideAlong is the e2ee extension: a device that has run out of one-time keys
+// cannot be told so by an event, so the count has to be in every answer that asks for it.
+func TestEncryptionCountsRideAlong(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	upload(t, alice, server, map[string]any{"one_time_keys": oneTimeKeysSet(3)})
+	// The same number two endpoints report has to be the same number, or a client that reads one and
+	// writes the other is going to be told to upload keys it just uploaded.
+	status := alice.Do(t, server, harness.Request{Method: http.MethodGet, Path: "/_matrix/client/v3/keys/status"})
+	status.MustStatus(t, 200)
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "e2ee",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	e2ee := extensionOf(t, answer, "e2ee")
+	if text := string(status.Body); text == "" {
+		t.Fatal("the key status endpoint answered nothing")
+	}
+	counts, ok := e2ee["device_one_time_keys_count"].(map[string]any)
+	if !ok {
+		t.Fatalf("the e2ee extension has no key counts: %v", e2ee)
+	}
+	if counts["signed_curve25519"] != float64(3) {
+		t.Errorf("one-time key counts = %v, want three signed_curve25519; GET /keys/status said %s",
+			counts, status.Body)
+	}
+	if _, ok := e2ee["device_unused_fallback_key_types"].([]any); !ok {
+		t.Errorf("the e2ee extension omitted the fallback key types, which MSC3391 says are always included: %v", e2ee)
+	}
+	lists, ok := e2ee["device_lists"].(map[string]any)
+	if !ok {
+		t.Fatalf("the e2ee extension has no device_lists: %v", e2ee)
+	}
+	if changed, _ := lists["changed"].([]any); len(changed) != 0 {
+		t.Errorf("a new connection was told devices changed: %v", changed)
+	}
+}
+
+// TestDevicesThatAppearAreReportedToASlidingSyncConnection is the other half of the same extension: a
+// colleague who buys a phone is invisible to a sender that keeps encrypting for the old set of
+// devices, and the symptom — one device never receiving anything — is not something the sender can see.
+func TestDevicesThatAppearAreReportedToASlidingSyncConnection(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	bob := server.Register(t, "bob", "pw-bob", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+
+	first := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "device-lists",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+
+	// Bob joins the room, which is the moment alice's client needs his device set: a message she
+	// encrypts now has to reach him, and he was not in the room she last looked at.
+	bob.MustJoinRoom(t, server, roomID)
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "device-lists",
+		"pos":        first.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	lists := extensionOf(t, answer, "e2ee")["device_lists"].(map[string]any)
+	changed, _ := lists["changed"].([]any)
+	if !containsString(stringsOf(changed), bob.UserID) {
+		t.Errorf("device_lists.changed = %v, want it to include %s", changed, bob.UserID)
+	}
+}
+
+// TestAccountDataReachesASlidingSyncConnection is how a device learns that a room was marked read,
+// that a push rule changed, or that its own user added a contact: all three are account data, and all
+// three are invisible to the room lists.
+func TestAccountDataReachesASlidingSyncConnection(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+
+	first := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "account-data",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	global, _ := extensionOf(t, first, "account_data")["global"].([]any)
+	if len(global) != 0 {
+		t.Errorf("a new connection was told account data had changed: %v", global)
+	}
+
+	putRoomAccountData(t, server, alice, roomID, "m.tag", map[string]any{
+		"tags": map[string]any{"m.favourite": map[string]any{"order": 1.0}},
+	})
+	putGlobalAccountData(t, server, alice, "m.direct", map[string]any{})
+
+	second := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "account-data",
+		"pos":        first.Pos,
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": enableAll(),
+	}))
+	accountData := extensionOf(t, second, "account_data")
+	rooms, ok := accountData["rooms"].(map[string]any)
+	if !ok {
+		t.Fatalf("the account_data extension has no rooms object: %v", accountData)
+	}
+	events, ok := rooms[roomID].([]any)
+	if !ok || len(events) != 1 {
+		t.Fatalf("this room's account data was not reported: %v", rooms)
+	}
+	entry, _ := events[0].(map[string]any)
+	if entry["type"] != "m.tag" {
+		t.Errorf("the reported room account data is %v", entry)
+	}
+	global, _ = accountData["global"].([]any)
+	found := false
+	for _, raw := range global {
+		if entry, _ := raw.(map[string]any); entry["type"] == "m.direct" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("the global batch did not include the m.direct write: %v", global)
+	}
+}
+
+// TestAnUnknownExtensionIsIgnoredRatherThanRefused is the compatibility rule that lets clients grow: a
+// server that met an extension name for the first time has to keep serving the rooms, because refusing
+// the whole request would leave an app that enabled one new extension unable to sync at all.
+func TestAnUnknownExtensionIsIgnoredRatherThanRefused(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "public_chat"})
+	sendContent(t, server, alice, roomID, map[string]any{"msgtype": "m.text", "body": "hello"})
+
+	answer := decodeSyncAnswer(t, slidingSync(t, server, alice, map[string]any{
+		"conn_id":    "unknown-extension",
+		"lists":      listWithFilter(nil, 0, 4),
+		"extensions": map[string]any{"org.example.some_future_thing": map[string]any{"enabled": true}},
+	}))
+	if _, ok := answer.Rooms[roomID]; !ok {
+		t.Errorf("a request naming an unknown extension was not given its rooms: %v", roomIDsOf(answer))
+	}
+	if !extensionAbsent(answer, "org.example.some_future_thing") {
+		t.Errorf("the server answered an extension it does not implement: %s", answer.Raw["extensions"])
+	}
+}
+
+// extensionAbsent reports whether an extension was left out of an answer.
+func extensionAbsent(answer syncAnswer, name string) bool {
+	raw, ok := answer.Raw["extensions"]
+	if !ok {
+		return true
+	}
+	var extensions map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &extensions); err != nil {
+		return false
+	}
+	_, ok = extensions[name]
+	return !ok
+}
+
+// stringsOf turns a decoded JSON array into strings for a membership test.
+func stringsOf(values []any) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if text, ok := value.(string); ok {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// TestTheVersionsEndpointAdvertisesSlidingSync pins the flag that makes the commitment.
+//
+// matrix-rust-sdk — the library Element X is built from — reads this flag to decide between a
+// sliding-sync proxy and this server's own endpoint. Advertising it is therefore not documentation: it
+// is a client giving up /sync's answers and holding this server to its own, which is why the flag is
+// set once the endpoint can carry a client and not before, and why it is tested rather than mentioned.
+func TestTheVersionsEndpointAdvertisesSlidingSync(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	body := server.Do(t, harness.Request{Method: http.MethodGet, Path: "/_matrix/client/versions"})
+	body.MustStatus(t, 200)
+	var versions struct {
+		Versions         []string        `json:"versions"`
+		UnstableFeatures map[string]bool `json:"unstable_features"`
+	}
+	body.JSON(t, &versions)
+	if !versions.UnstableFeatures["org.matrix.simplified_msc3575"] {
+		t.Errorf("GET /versions does not advertise simplified sliding sync: %v", versions.UnstableFeatures)
+	}
+	// The flag and the route have to agree, in both directions: a flag with no route is a client that
+	// cannot sync, and a route with no flag is a client that never finds it.
+	answer := decodeSyncAnswer(t, slidingSync(t, server, server.Register(t, "alice", "pw-alice", false), map[string]any{
+		"conn_id": "flagged",
+		"lists":   listWithFilter(nil, 0, 1),
+	}))
+	if answer.Pos == "" {
+		t.Error("the endpoint behind the advertised flag did not answer with a position")
+	}
+}

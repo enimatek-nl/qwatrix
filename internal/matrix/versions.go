@@ -24,5 +24,15 @@ func SupportsClientVersion(v string) bool {
 // that the corresponding unstable endpoint prefix works, and a homeserver that promises
 // MSCs it does not speak confuses clients in ways that look like client bugs.
 func UnstableFeatures() map[string]bool {
-	return map[string]bool{}
+	return map[string]bool{
+		// Simplified Sliding Sync (MSC4186), served at POST /_matrix/client/v4/sync and at its
+		// unstable prefix. This particular flag is what makes matrix-rust-sdk — and therefore
+		// Element X — pick this server's own endpoint over a sliding-sync proxy, so it is a promise
+		// about the whole endpoint rather than about one route: connections that keep their place
+		// across a restart, lists that filter, and the extension streams a client needs for typing,
+		// receipts, to-device messages, encryption bookkeeping and account data. It is advertised
+		// only when all of that holds, because a client that has committed to this endpoint has
+		// given up /sync's version of the same answers and will not fall back.
+		"org.matrix.simplified_msc3575": true,
+	}
 }

@@ -74,6 +74,13 @@ type RoomRepo interface {
 	Create(ctx context.Context, room *Room) error
 	Get(ctx context.Context, roomID string) (*Room, error)
 	Update(ctx context.Context, roomID string, updates map[string]any) error
+	// GetMany returns the given rooms in one query, keyed by room ID. IDs this server has no row
+	// for are absent from the result.
+	//
+	// It exists because a room list needs a fact from the room row — its name, its encryption, its
+	// member counts — for every room in a window at once, and one query per room in a window turns a
+	// client's scroll into a thousand reads.
+	GetMany(ctx context.Context, roomIDs []string) (map[string]*Room, error)
 	// ListLocal returns every room this server is in (not left), ordered by room ID with
 	// a cursor for paging.
 	ListLocal(ctx context.Context, limit int, after string) ([]Room, error)
@@ -136,6 +143,22 @@ func (r *RoomRepoImpl) ListLocal(ctx context.Context, limit int, after string) (
 	var rooms []Room
 	if err := q.Find(&rooms).Error; err != nil {
 		return nil, fmt.Errorf("listing rooms: %w", err)
+	}
+	return rooms, nil
+}
+
+// GetMany implements [RoomRepo].
+func (r *RoomRepoImpl) GetMany(ctx context.Context, roomIDs []string) (map[string]*Room, error) {
+	rooms := make(map[string]*Room, len(roomIDs))
+	if len(roomIDs) == 0 {
+		return rooms, nil
+	}
+	var rows []Room
+	if err := session(ctx, r.db).Where("id IN ?", roomIDs).Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("reading %d rooms: %w", len(roomIDs), err)
+	}
+	for i := range rows {
+		rooms[rows[i].ID] = &rows[i]
 	}
 	return rooms, nil
 }

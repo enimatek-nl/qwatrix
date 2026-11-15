@@ -82,8 +82,15 @@ func (s *Service) build(ctx context.Context, req *Request, conn *store.SlidingSy
 		return job
 	}
 
+	// What the filters need about these rooms, read once for the request: the caller's m.direct, its
+	// room tags, the rooms' create events and encryption. A request with no filters reads none of it.
+	filterSet, err := s.gather(ctx, req.Localpart, candidates, filtersNeeded(req.Lists))
+	if err != nil {
+		return nil, false, err
+	}
+
 	for name, list := range req.Lists {
-		filtered, err := s.filter(ctx, req.Localpart, candidates, list)
+		filtered, err := s.filter(ctx, req.Localpart, candidates, list, filterSet)
 		if err != nil {
 			return nil, false, err
 		}
@@ -178,8 +185,16 @@ func (s *Service) build(ctx context.Context, req *Request, conn *store.SlidingSy
 			StateConfig:   job.selector.encodes(),
 		}
 	}
-	response.Extensions = s.extensions(ctx, req, conn, currentPos)
-	if len(response.Extensions) > 0 {
+	// The streams that are not rooms. They are read over the rooms this answer was *asked about* —
+	// the window and the subscriptions, whether or not the rooms themselves changed — because a read
+	// marker or a typing indicator is precisely the news that leaves a room otherwise untouched, and a
+	// client cannot show either for a room it was told about three answers ago.
+	extensions, hasNews, err := s.extensions(ctx, req, order, liveFrom, currentPos)
+	if err != nil {
+		return nil, false, err
+	}
+	response.Extensions = extensions
+	if hasNews {
 		empty = false
 	}
 	return response, empty, nil
@@ -297,15 +312,29 @@ func (s *Service) everJoined(ctx context.Context, membership store.Membership) (
 	return false, nil
 }
 
-// filter applies a list's filters to the candidate sequence.
+// filter applies one list's filters to the candidate sequence, before the range is cut.
 //
-// It is the M2 milestone's job: MSC4186's filters are a set of independent predicates over room state
-// and account data, and applying them is what makes a DM list and a spaces list possible. Until then
-// this returns the sequence untouched, which is the one behaviour that cannot be wrong in a way a
-// client cannot see — a client that asked for `is_dm` and got every room will show rooms it did not
-// ask for, and say so in a bug report, rather than hiding rooms it cannot know are missing.
-func (s *Service) filter(ctx context.Context, localpart string, candidates []candidate, list *ListConfig) ([]candidate, error) {
-	return candidates, nil
+// The whole filtered sequence is kept, not just the window, because the response has to report `count`:
+// the number of rooms matching the filters is what tells a client whether to widen its range.
+func (s *Service) filter(ctx context.Context, localpart string, candidates []candidate, list *ListConfig, set *filterSet) ([]candidate, error) {
+	if list == nil || list.Filters == nil {
+		return candidates, nil
+	}
+	children, err := s.spaceChildren(ctx, localpart, list.Filters.Spaces)
+	if err != nil {
+		return nil, err
+	}
+	kept := make([]candidate, 0, len(candidates))
+	for _, room := range candidates {
+		if children != nil && !children[room.roomID] {
+			continue
+		}
+		if !set.matches(list.Filters, room) {
+			continue
+		}
+		kept = append(kept, room)
+	}
+	return kept, nil
 }
 
 // listBounds reads a list's range, defaulting to "from the start, as far as this server will go".
@@ -336,13 +365,6 @@ func activityOf(candidates []candidate, roomID string) int64 {
 		}
 	}
 	return 0
-}
-
-// extensions is the seam MSC4186 provides for everything that is not a room. It answers nothing until
-// the extension milestone, and answering nothing is a complete answer rather than a partial one: a
-// client that asked for typing notifications and got no `typing` key knows it was not served.
-func (s *Service) extensions(ctx context.Context, req *Request, conn *store.SlidingSyncConn, currentPos int64) map[string]any {
-	return nil
 }
 
 // ErrNothingToSend documents the case a caller may want to distinguish: a build that produced a legal,
