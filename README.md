@@ -56,8 +56,8 @@ runs on a Raspberry Pi and on a VPS.
 Tags are the release versions: `0.2.0` and `0.2` for a release, plus `latest`. A release
 candidate such as `v0.3.0-rc1` publishes `0.3.0-rc1` and moves nothing that looks like the
 current release. Whatever tag a container was pulled with, that is the version it reports to
-clients and to federation peers — `docker run --rm ghcr.io/enimatek-nl/qwatrix:0.2.0 -h | head -1`
-prints `qwatrix 0.2.0`.
+clients and to federation peers — `docker run --rm ghcr.io/enimatek-nl/qwatrix:0.2.0 -h 2>&1 | head -1`
+prints `qwatrix 0.2.0` (the usage banner goes to stderr, which is why that `2>&1` is load-bearing).
 
 To build the image from a source tree instead:
 
