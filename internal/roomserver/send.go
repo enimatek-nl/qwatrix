@@ -414,7 +414,18 @@ func (s *Service) Forget(ctx context.Context, localpart, roomID string) error {
 func (s *Service) membershipTarget(targetUserID string) (string, error) {
 	localpart, domain, err := matrix.ParseUserID(targetUserID, s.cfg.ServerName)
 	if err != nil {
+		// Already an M_INVALID_PARAM: ParseUserID answers a malformed ID as the caller's mistake
+		// rather than as this server's, which is the difference between a client fixing its request
+		// and a client retrying a fault that was never here.
 		return "", err
+	}
+	if localpart == "" {
+		// "@" with no localpart parses, and is not anybody: writing a membership event for it puts
+		// a user in a room's history who can never sign into a server, and every later read of that
+		// room has to explain it. Checked here rather than in the parser because this is the door
+		// where a human or a client is naming somebody; a peer server's events are not refused for
+		// this, since refusing an event a federation partner already accepted only splits the room.
+		return "", matrix.NewInvalidParam("%q has no user name to act on", targetUserID)
 	}
 	if domain != "" && domain != s.cfg.ServerName {
 		return targetUserID, nil

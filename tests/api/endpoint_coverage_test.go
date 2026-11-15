@@ -357,6 +357,10 @@ func normalizeSuffix(pattern string) string {
 	pattern = strings.ReplaceAll(pattern, "/state/{tail...}", "/state/{eventType}")
 	for _, prefix := range []string{
 		"/_matrix/client/v3/", "/_matrix/client/v1/", "/_matrix/client/r0.6.1/", "/_matrix/client/r0/",
+		// MSC4186 is served under a version the rest of this server does not use, and under the
+		// unstable prefix clients still call. Both name the same endpoint as each other, so both
+		// collapse to the one row in the document, exactly as the v3 aliases do.
+		"/_matrix/client/v4/", "/_matrix/client/unstable/org.matrix.simplified_msc3575/",
 	} {
 		if strings.HasPrefix(pattern, prefix) {
 			return strings.TrimPrefix(pattern, prefix)

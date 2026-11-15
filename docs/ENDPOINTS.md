@@ -358,10 +358,23 @@ them a stream shaped by somebody else's rules.
 | Method | Path | Spec | Status |
 | --- | --- | --- | --- |
 | `GET` | `/sync` | [Sync](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3sync) | implemented |
+| `POST` | `/sync` | [MSC4186 Simplified Sliding Sync](https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md) | implemented |
 
 `since` tokens are `s` followed by a global stream position; an unparsable token answers `401 M_UNKNOWN_TOKEN`, which
 is the specification's signal for a client to discard its token and start again. `timeout` long-polls on an
 in-process notification rather than by polling the database.
+
+`POST /sync` is a different endpoint, not a variant: MSC4186's sliding sync is what Element X's Rust SDK speaks, and it
+is *stateful* — a connection (`conn_id`, scoped to the user and device) remembers which rooms it has already described
+and how far, so a second answer is a diff. Its `pos` is a position in the same global stream and so works unchanged in
+`/messages` and `/relations`. A `pos` this server did not issue to this user and device — or has since expired — answers
+`400 M_UNKNOWN_POS`, which tells the client to start again rather than quietly resynchronising it. Served on the stable
+`/_matrix/client/v4/sync` and the unstable `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, both of which
+collapse to the row above. The `org.matrix.simplified_msc3575` flag in `/versions` is not advertised yet: that flag is
+what makes a client commit to the endpoint, and it goes in when the whole endpoint — including its extensions and list
+filters — is complete. Not implemented yet: list `filters` (`is_dm`, `spaces`, `tags`, `room_types`, `is_encrypted`,
+`is_invited`) and the extensions (`to_device`, `e2ee`, `typing`, `receipts`, `account_data`); a client that asks for
+either gets rooms it did not ask for, or no extension section at all, rather than a wrong answer.
 
 ## Server-server (federation) API
 

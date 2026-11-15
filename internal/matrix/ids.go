@@ -47,10 +47,16 @@ func UserID(localpart, serverName string) string {
 }
 
 // ParseUserID validates a user ID and returns its localpart and domain.
+//
+// A refusal is an M_INVALID_PARAM, not a bare error, because the callers are endpoints and the
+// alternative is a lie: the library explains a bad ID as "length 3 is not within the bounds 4-255",
+// which is true of the caller's string and reads as a server fault to anything that has to guess. A
+// client that typed `bob` instead of `@bob:example.org` should be told its user ID is not valid, and
+// should not have this server's health questioned on its behalf.
 func ParseUserID(id, serverName string) (localpart, domain string, err error) {
 	parsed, err := spec.NewUserID(id, true)
 	if err != nil {
-		return "", "", fmt.Errorf("user ID %q: %w", id, err)
+		return "", "", NewInvalidParam("%q is not a valid user ID", id)
 	}
 	return parsed.Local(), string(parsed.Domain()), nil
 }

@@ -10,6 +10,7 @@ package csapi
 
 import (
 	"github.com/enimatek-nl/qwatrix/internal/roomkeys"
+	"github.com/enimatek-nl/qwatrix/internal/slidingsync"
 	"net/http"
 
 	"github.com/enimatek-nl/qwatrix/internal/accounts"
@@ -74,6 +75,9 @@ type Deps struct {
 	// KeyBackup is server-side room key backup: the containers a user creates and the encrypted
 	// Megolm sessions inside them.
 	KeyBackup *roomkeys.Service
+	// SlidingSync is MSC4186: the stateful sync Element X speaks, where a connection remembers what
+	// this device has already been shown.
+	SlidingSync *slidingsync.Service
 	// ToDevice is the queue of messages addressed to devices.
 	ToDevice *todevice.Service
 	// Media is the file repository.
@@ -119,6 +123,7 @@ func NewMux(deps Deps) http.Handler {
 	registerPushRuleRoutes(routes, deps)
 	registerPusherRoutes(routes, deps)
 	registerRoomKeyRoutes(routes, deps)
+	registerSlidingSyncRoutes(routes, deps)
 	registerToDeviceRoutes(routes, deps)
 	registerMediaRoutes(routes, deps)
 

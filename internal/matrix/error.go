@@ -27,6 +27,10 @@ const (
 	ErrForbidden    ErrCode = "M_FORBIDDEN"
 	ErrUnknown      ErrCode = "M_UNKNOWN"
 	ErrUnrecognized ErrCode = "M_UNRECOGNIZED"
+	// ErrUnknownPos is MSC4186's own code: the sliding-sync `pos` a client sent is not one this
+	// server issued to this user and device, or has since expired. It tells a client to start the
+	// connection again, which is not a complaint about credentials — hence 400, not 401.
+	ErrUnknownPos ErrCode = "M_UNKNOWN_POS"
 	// ErrIncompatibleRoomVersion is the federation answer when a peer asks for something in a
 	// room version it has not agreed to speak. The response names the version the room actually
 	// is, because that is the only thing the peer can act on.
@@ -166,6 +170,18 @@ func NewWrongVersion(current string) *APIError {
 		Code:           ErrWrongVersion,
 		Message:        "The backup version supplied is invalid; check /room_keys/version for the current version",
 		CurrentVersion: current,
+	}
+}
+
+// NewUnknownPos answers a sliding-sync request whose `pos` this server does not accept. The message
+// says what to do rather than what was wrong, because a client holding a token this server will not
+// honour cannot act on the difference between somebody else's connection and one expired an hour
+// ago: in both cases the answer is to begin again without a pos.
+func NewUnknownPos() *APIError {
+	return &APIError{
+		Status:  http.StatusBadRequest,
+		Code:    ErrUnknownPos,
+		Message: "This sync connection's pos is unknown to this server; start a new connection without a pos",
 	}
 }
 

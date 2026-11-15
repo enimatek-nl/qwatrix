@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/enimatek-nl/qwatrix/tests/harness"
 )
 
@@ -441,5 +442,43 @@ func TestAQueryStringEncodingTokenIsNotLogged(t *testing.T) {
 	// The request still has to be diagnosable, which is why the path is logged without it.
 	if !strings.Contains(server.Logs(), "/_matrix/client/v3/rooms/") {
 		t.Errorf("the request log does not name the path, so there is nothing left to diagnose with")
+	}
+}
+
+// A malformed user ID in a membership endpoint is the caller's mistake, and has to reach it as one.
+//
+// The parser under this reports "length 3 is not within the bounds 4-255", which is true and which
+// this server's error mapping can only read as a fault of its own — so a client that typed `bob`
+// where it meant `@bob:example.org` was told the server was broken, and retried. Defects like this
+// are invisible in the happy path of every test, because they are only reachable by being wrong
+// first.
+func TestAMalformedUserIDIsRefusedAsTheRequestsFault(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "alice", "pw-alice", false)
+	roomID := alice.MustCreateRoom(t, server, map[string]any{"preset": "private_chat"})
+
+	targets := []string{"bob", "not-a-user-id", "@:test.local:8444"}
+	// /invite, /kick and /ban each resolve the person they name, so each is the same mistake once.
+	for _, endpoint := range []string{"invite", "kick", "ban"} {
+		for _, userID := range targets {
+			t.Run(endpoint+"/"+userID, func(t *testing.T) {
+				resp := alice.Do(t, server, harness.Request{
+					Method: http.MethodPost,
+					Path:   "/_matrix/client/v3/rooms/" + harness.PathEscape(roomID) + "/" + endpoint,
+					Token:  alice.AccessToken,
+					Body:   map[string]any{"user_id": userID, "reason": "testing"},
+				})
+				if resp.StatusCode >= 500 {
+					t.Errorf("a malformed user ID was reported as this server's fault: %d %s",
+						resp.StatusCode, resp.Body)
+				}
+				if resp.StatusCode != http.StatusBadRequest {
+					t.Errorf("status = %d, want 400: %s", resp.StatusCode, resp.Body)
+				}
+				if !strings.Contains(string(resp.Body), string(matrix.ErrInvalidParam)) {
+					t.Errorf("body = %s, want %s", resp.Body, matrix.ErrInvalidParam)
+				}
+			})
+		}
 	}
 }

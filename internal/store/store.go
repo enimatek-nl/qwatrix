@@ -76,6 +76,9 @@ type Store struct {
 	// KeyBackup is server-side room key backup: the containers a user creates and the encrypted
 	// Megolm sessions inside them.
 	KeyBackup KeyBackupRepo
+	// SlidingSync is the memory of sliding-sync connections: which device asked for which rooms,
+	// how far each was shown to it, and the position it was last handed.
+	SlidingSync SlidingSyncRepo
 	// Directory is the user directory: the names local users go by, per room.
 	Directory DirectoryRepo
 
@@ -142,6 +145,7 @@ func Open(path string) (*Store, error) {
 		PushRules:        NewPushRuleRepo(db),
 		Push:             NewPushRepo(db),
 		KeyBackup:        NewKeyBackupRepo(db),
+		SlidingSync:      NewSlidingSyncRepo(db),
 		Directory:        NewDirectoryRepo(db),
 	}, nil
 }
@@ -247,6 +251,7 @@ func migrate(db *gorm.DB) error {
 		&PendingPush{},
 		&PushCursor{},
 		&KeyBackupVersion{}, &KeyBackupKey{},
+		&SlidingSyncConn{}, &SlidingSyncRoom{},
 		&ToDeviceMessage{},
 		&DeviceMessageReceipt{},
 		&MediaFile{},

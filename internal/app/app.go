@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/enimatek-nl/qwatrix/internal/roomkeys"
+	"github.com/enimatek-nl/qwatrix/internal/slidingsync"
 	"log/slog"
 	"net"
 	"net/http"
@@ -185,6 +186,7 @@ func New(cfg *config.Config) (*App, error) {
 	})
 	rooms.WithNamePublisher(directoryService)
 	syncService := syncapi.New(st, cfg, rooms, presenceService, readState, pushRuleService, toDeviceService, deviceListService, changes)
+	slidingSyncService := slidingsync.New(st, rooms, presenceService, changes, cfg.ServerName)
 
 	app := &App{cfg: cfg, store: st, accounts: acc, identity: serverIdentity, events: eventService, notifier: changes, rooms: rooms, sync: syncService, pusher: pushService}
 	app.handler = httpx.Chain(
@@ -211,6 +213,7 @@ func New(cfg *config.Config) (*App, error) {
 			PushRules:     pushRuleService,
 			Push:          pushService,
 			KeyBackup:     keyBackup,
+			SlidingSync:   slidingSyncService,
 			ToDevice:      toDeviceService,
 			Media:         mediaService,
 			DeviceLists:   deviceListService,

@@ -177,6 +177,14 @@ type EventRepo interface {
 	MaxPosition(ctx context.Context) (int64, error)
 	// MaxPositionInRoom returns the highest stream position of a room, or 0.
 	MaxPositionInRoom(ctx context.Context, roomID string) (int64, error)
+	// LatestActivityByRoom returns, per room, the highest stream position of an event in it —
+	// over every event, or over only the given types when they are supplied. An empty result for a
+	// room means it has no matching events.
+	//
+	// It exists because a room list needs this number for every room an account has, and needs it
+	// on every sync: one call per room would make a thousand-room account cost a thousand queries
+	// per poll. Rooms the caller does not pass in are absent from the result.
+	LatestActivityByRoom(ctx context.Context, roomIDs []string, types []string) (map[string]int64, error)
 	// MinPositionInRoom returns the lowest stream position of a room, or 0.
 	MinPositionInRoom(ctx context.Context, roomID string) (int64, error)
 	// Tip returns the event with the greatest depth in a room, which is where the next
@@ -371,6 +379,36 @@ func (r *EventRepoImpl) MaxPositionInRoom(ctx context.Context, roomID string) (i
 		return 0, fmt.Errorf("reading maximum stream position of %q: %w", roomID, err)
 	}
 	return pos, nil
+}
+
+// LatestActivityByRoom implements [EventRepo].
+func (r *EventRepoImpl) LatestActivityByRoom(ctx context.Context, roomIDs []string, types []string) (map[string]int64, error) {
+	latest := make(map[string]int64, len(roomIDs))
+	if len(roomIDs) == 0 {
+		return latest, nil
+	}
+	// Rejected and detached events are not activity: a rejected event was disallowed by the room,
+	// and a detached one is not in its timeline. Counting either would float a room to the top of a
+	// client's list because of something the room had already refused.
+	query := session(ctx, r.db).Model(&EventRow{}).
+		Where("room_id IN ?", roomIDs).
+		Where("rejected_reason = '' OR rejected_reason IS NULL").
+		Where("detached = ?", false)
+	if len(types) > 0 {
+		query = query.Where("type IN ?", types)
+	}
+	var rows []struct {
+		RoomID string
+		Pos    int64
+	}
+	err := query.Select("room_id, MAX(id) AS pos").Group("room_id").Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("reading the latest activity of %d rooms: %w", len(roomIDs), err)
+	}
+	for _, row := range rows {
+		latest[row.RoomID] = row.Pos
+	}
+	return latest, nil
 }
 
 // Tip implements [EventRepo].
