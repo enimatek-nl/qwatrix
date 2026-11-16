@@ -113,6 +113,32 @@ func TestAccountDataIsToldOnceAndNotAgain(t *testing.T) {
 	}
 }
 
+// TestAPushRuleChangeIsToldToTheClientThatMadeIt is the same property as the account-data ones,
+// on the one other account state this server stamps with a stream position.
+//
+// Push rules ride down `/sync` as `m.push_rules` account data, and the server emits them when the
+// account's rules are stamped past the client's token — which is a rule about a position, so it is
+// the same rule as everything else here and broke the same way: a client that has just turned a
+// rule off and is waiting to see it asked for news and was told there was none.
+func TestAPushRuleChangeIsToldToTheClientThatMadeIt(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "rules", "pw-rules", false)
+
+	token := alice.MustSync(t, server, url.Values{"timeout": []string{"0"}}).NextBatch
+	alice.MustPutJSON(t, server,
+		"/_matrix/client/v3/pushrules/global/override/.m.rule.roomnotif/enabled",
+		map[string]any{"enabled": false}).MustStatus(t, http.StatusOK)
+
+	synced := alice.MustGet(t, server, "/_matrix/client/v3/sync?since="+token+"&timeout=0").
+		MustStatus(t, http.StatusOK)
+	if !carriesAccountData(synced.Body, "m.push_rules") {
+		t.Errorf("turning a push rule off was not reported to the client that turned it off\n%s", synced.Body)
+	}
+	if next := gjson.GetBytes(synced.Body, "next_batch").String(); next == token {
+		t.Errorf("the rule change was reported while the token stayed at %s, so it will be reported again", token)
+	}
+}
+
 // carriesAccountData reports whether a sync body carries an account-data event of a type.
 func carriesAccountData(body []byte, dataType string) bool {
 	var reply struct {

@@ -85,11 +85,13 @@ func (s *Service) RefreshRoom(ctx context.Context, userID, roomID string, joined
 	if err != nil {
 		return err
 	}
-	position, err := s.store.Events.MaxPosition(ctx)
+	// A change takes its own position on the one stream. It used to take the tip and add one,
+	// which was a guess at the same rule and now would be wrong twice over: it lands where the
+	// next event lands, and two writers guessing at once are handed the same position.
+	position, err := s.store.NextStreamPosition(ctx)
 	if err != nil {
 		return err
 	}
-	position++
 	reported := 0
 	for _, member := range members {
 		if member.UserID == userID || member.UserID == key {
@@ -154,14 +156,13 @@ func (s *Service) announce(ctx context.Context, userID string, left bool, rooms 
 	if err != nil {
 		return err
 	}
-	position, err := s.store.Events.MaxPosition(ctx)
+	// A position of its own, past everything written before it — including the change another
+	// writer is making at the same moment. A client waiting for the login it just performed is
+	// waiting on this row, so a position at or below its token is the answer "nothing happened".
+	position, err := s.store.NextStreamPosition(ctx)
 	if err != nil {
 		return err
 	}
-	// One past the tip, so a change made while a sync is in flight still counts as after that
-	// sync's token. Anything less answers a client that is waiting for the login it just performed
-	// with "nothing happened".
-	position++
 	if len(observers) > 0 {
 		for _, observer := range observers {
 			change := store.DeviceListChange{UserID: userID, Observer: observer, Left: left, StreamPos: position}

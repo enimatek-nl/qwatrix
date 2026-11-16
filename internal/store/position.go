@@ -55,6 +55,15 @@ func nextPosition(ctx context.Context, db *gorm.DB) (int64, error) {
 	return next, nil
 }
 
+// NextStreamPosition takes the next position on the one stream, for a service that stamps a row
+// outside the repositories — a device-list change, a push-rule touch. Use it instead of reading the
+// tip and adding one: with events taking their keys from this same clock, `MaxPosition() + 1` lands
+// exactly where the next event does, and a client that has been told one of the two never learns of
+// the other.
+func (s *Store) NextStreamPosition(ctx context.Context) (int64, error) {
+	return nextPosition(ctx, s.db)
+}
+
 // currentPosition reports the end of the stream without taking a position from it, which is what
 // a sync response reports as `next_batch`.
 func currentPosition(ctx context.Context, db *gorm.DB) (int64, error) {

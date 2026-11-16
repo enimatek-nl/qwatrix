@@ -306,7 +306,7 @@ func (s *Service) build(ctx context.Context, req Request, since int64) (*Respons
 	// decides whether a message ever reaches a person's phone, so a client that has just come
 	// back online has to be given them — and given them again the moment they change, which is
 	// why a rule write stamps the account rather than waiting for the client to ask.
-	if batch := s.pushRuleAccountData(ctx, req.Localpart, since); batch != nil {
+	if batch := s.pushRuleAccountData(ctx, req.Localpart, since, req.Since == ""); batch != nil {
 		if response.AccountData == nil {
 			response.AccountData = &EventsBatch{Events: []json.RawMessage{}}
 		}
@@ -944,7 +944,7 @@ func BadRequestFor(err error) *matrix.APIError {
 // and a client whose rule write landed while its sync was in flight must not be told nothing
 // happened. The rule service stamps the account when its rules move, and that stamp is what both
 // halves compare against.
-func (s *Service) pushRuleAccountData(ctx context.Context, localpart string, since int64) []json.RawMessage {
+func (s *Service) pushRuleAccountData(ctx context.Context, localpart string, since int64, initial bool) []json.RawMessage {
 	if s.pushRules == nil {
 		return nil
 	}
@@ -956,7 +956,12 @@ func (s *Service) pushRuleAccountData(ctx context.Context, localpart string, sin
 	// An initial sync always carries the rules: a client that has just been installed has no set
 	// to compare against, and one that receives none concludes that the account is configured to
 	// be silent.
-	if since != 0 && changed <= since {
+	//
+	// "Initial" is decided by whether the client sent a token at all, not by whether that token is
+	// zero. A brand-new account is handed `s0` as its first position, so reading a zero token as
+	// "initial" made every sync from that account an initial one: the rules were re-rendered and
+	// re-sent each time, a long-poll never slept at all, and the client looked busy forever.
+	if !initial && changed <= since {
 		return nil
 	}
 	content, err := s.pushRules.AccountData(ctx, localpart)

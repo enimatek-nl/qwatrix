@@ -524,15 +524,14 @@ func (s *Service) changed(ctx context.Context, localpart string) error {
 
 // touch records "the rules moved, as of now".
 func (s *Service) touch(ctx context.Context, localpart string) error {
-	position, err := s.store.Events.MaxPosition(ctx)
+	// Rules are account data, and account data is emitted when its position is past the client's
+	// token, so the touch has to take a position of its own rather than the tip plus one. A client
+	// that has just edited a rule and is waiting for the echo is the exact case this answers.
+	position, err := s.store.NextStreamPosition(ctx)
 	if err != nil {
 		return err
 	}
-	// Rules are account data, and account data is emitted when its position is past the client's
-	// token — but a change made while a sync is in flight happens *at* the tip, so the stamp has
-	// to be one past it. Anything else answers a client that is waiting with "nothing happened"
-	// for a change it caused itself.
-	return s.store.PushRules.Touch(ctx, localpart, Scope, position+1)
+	return s.store.PushRules.Touch(ctx, localpart, Scope, position)
 }
 
 // guardDefault refuses to rewrite a rule the server owns.
