@@ -70,6 +70,38 @@ type OneTimeKey struct {
 // TableName pins the table name.
 func (OneTimeKey) TableName() string { return "one_time_keys" }
 
+// CrossSigningKey is one of the three keys that turn a person's devices into an identity: their
+// master key, the key it signs their own devices with, and the key it signs other people with.
+//
+// The document is stored exactly as it was uploaded, for the same reason a device key is: the
+// signature covers its exact bytes, and the party that checks that signature is a client, not this
+// server. What this server does before storing one is decide that it is signed by the key that
+// claims to have signed it — see the key server — because an identity handed out by a stolen access
+// token is the most damage one leaked credential can do.
+type CrossSigningKey struct {
+	UserID string `gorm:"size:512;primaryKey:cross_signing_pk" json:"user_id"`
+	// Kind is which of the three this is: "master", "self_signing" or "user_signing". It is the
+	// server's own word for it, taken from the endpoint field the document arrived under, because
+	// the `usage` field inside the document has been spelled two different ways in the wild.
+	Kind string `gorm:"size:32;primaryKey:cross_signing_pk" json:"kind"`
+	// KeyID is the document's own key identifier — "ed25519:" followed by the base64 public key,
+	// which is what a cross-signing key calls itself. It is indexed because finding the key that
+	// made a signature is the question a device-list answer has to ask.
+	KeyID      string `gorm:"size:255;index" json:"-"`
+	KeyJSON    string `gorm:"type:text" json:"-"`
+	UploadedMS int64  `json:"uploaded_ms"`
+}
+
+// TableName pins the table name.
+func (CrossSigningKey) TableName() string { return "cross_signing_keys" }
+
+// The three kinds of cross-signing key, spelled once.
+const (
+	CrossSigningMaster      = "master"
+	CrossSigningSelfSigning = "self_signing"
+	CrossSigningUserSigning = "user_signing"
+)
+
 // KeyRepo is the device- and one-time-key repository.
 type KeyRepo interface {
 	// PutDevice stores or replaces a device's published keys.
@@ -93,6 +125,15 @@ type KeyRepo interface {
 	ClaimOneTimeKeys(ctx context.Context, userID, deviceID, algorithm string, limit int) ([]OneTimeKey, error)
 	// DeleteDevices removes the published keys of sessions that have been logged out.
 	DeleteDevices(ctx context.Context, userID string, deviceIDs []string) error
+	// PutCrossSigningKeys stores a user's cross-signing keys, replacing the key of each kind that
+	// was already there. Kinds absent from the argument are left alone: uploading a new master key
+	// bundle replaces all three, uploading one key replaces only that one.
+	PutCrossSigningKeys(ctx context.Context, keys []CrossSigningKey) error
+	// CrossSigningKeys returns the cross-signing keys a user has published, in a stable order.
+	CrossSigningKeys(ctx context.Context, userID string) ([]CrossSigningKey, error)
+	// DeleteCrossSigningKeys forgets a user's cross-signing identity, which is what a device key
+	// lookup must not be able to find after the account behind it is gone.
+	DeleteCrossSigningKeys(ctx context.Context, userID string) error
 }
 
 // KeyRepoImpl is the GORM-backed [KeyRepo].
@@ -250,6 +291,43 @@ func (r *KeyRepoImpl) ClaimOneTimeKeys(ctx context.Context, userID, deviceID, al
 		return nil, fmt.Errorf("claiming one-time keys of %s/%s: %w", userID, deviceID, err)
 	}
 	return claimed, nil
+}
+
+// PutCrossSigningKeys implements [KeyRepo].
+//
+// Written in one statement per kind rather than one transaction per upload: the keys of a bundle
+// are checked together before anything is stored, so a bundle that lands lands completely, and a
+// half-stored bundle is not a state this method can produce.
+func (r *KeyRepoImpl) PutCrossSigningKeys(ctx context.Context, keys []CrossSigningKey) error {
+	for _, key := range keys {
+		err := session(ctx, r.db).Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "user_id"}, {Name: "kind"}},
+			UpdateAll: true,
+		}).Save(&key).Error
+		if err != nil {
+			return fmt.Errorf("storing the %s cross-signing key of %s: %w", key.Kind, key.UserID, err)
+		}
+	}
+	return nil
+}
+
+// CrossSigningKeys implements [KeyRepo].
+func (r *KeyRepoImpl) CrossSigningKeys(ctx context.Context, userID string) ([]CrossSigningKey, error) {
+	var rows []CrossSigningKey
+	err := session(ctx, r.db).Where("user_id = ?", userID).Order("kind ASC").Find(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("reading the cross-signing keys of %q: %w", userID, err)
+	}
+	return rows, nil
+}
+
+// DeleteCrossSigningKeys implements [KeyRepo].
+func (r *KeyRepoImpl) DeleteCrossSigningKeys(ctx context.Context, userID string) error {
+	err := session(ctx, r.db).Where("user_id = ?", userID).Delete(&CrossSigningKey{}).Error
+	if err != nil {
+		return fmt.Errorf("deleting the cross-signing keys of %q: %w", userID, err)
+	}
+	return nil
 }
 
 // DeleteDevices implements [KeyRepo].

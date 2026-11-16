@@ -244,6 +244,7 @@ func migrate(db *gorm.DB) error {
 		&AccountData{},
 		&DeviceKey{},
 		&OneTimeKey{},
+		&CrossSigningKey{},
 		&DirectoryEntry{},
 		&PushRule{},
 		&Pusher{},

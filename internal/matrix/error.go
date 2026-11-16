@@ -67,6 +67,12 @@ const (
 	// current one. It is paired with `current_version` in the body, because the client's next move
 	// is mechanical: switch to the version named there rather than retry into the same refusal.
 	ErrWrongVersion ErrCode = "M_WRONG_VERSION"
+	// ErrInvalidSignature is the refusal a key upload gets when the signature on it does not come
+	// from the key it claims to. It is named by the specification for exactly this — a self-signing
+	// or user-signing key the master key did not sign — and it is worth its own code because a
+	// client can act on it: the keys it holds are not the ones the server will accept, so the thing
+	// to do is create them again, not retry the same bytes forever.
+	ErrInvalidSignature ErrCode = "M_INVALID_SIGNATURE"
 )
 
 // APIError is a Matrix error response: an HTTP status, an error code and a human-readable

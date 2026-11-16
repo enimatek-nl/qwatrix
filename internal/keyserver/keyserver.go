@@ -222,9 +222,21 @@ func (s *Service) UserDevices(ctx context.Context, userID string) (map[string]an
 	}
 	// `device_lists` is the field name the specification kept from an older shape where it was
 	// per-device deltas; it is a list of device keys, which is what every implementation reads.
-	// Cross-signing keys would appear as `master_key` and `self_signing_key` beside it; this server
-	// does not store cross-signing yet, so they are absent rather than empty.
-	return map[string]any{"user_id": userID, "device_lists": devices}, nil
+	answer := map[string]any{"user_id": userID, "device_lists": devices}
+	// A device key says what a device is; only the cross-signing keys say whether the person whose
+	// name the device carries recognises it. A peer left with the first half can encrypt, but its
+	// client will show the sender an unverified device and give the user no way to fix it.
+	identity, err := s.OwnCrossSigningIdentity(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	if len(identity.Master) > 0 {
+		answer["master_key"] = identity.Master
+	}
+	if len(identity.SelfSigning) > 0 {
+		answer["self_signing_key"] = identity.SelfSigning
+	}
+	return answer, nil
 }
 
 // UploadRequest is the body of POST /keys/upload.

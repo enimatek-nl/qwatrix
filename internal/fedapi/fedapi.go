@@ -416,6 +416,10 @@ type PeerKeySource interface {
 	PeerDeviceKeys(ctx context.Context, query map[string][]string) (map[string]map[string]json.RawMessage, error)
 	// PeerClaimKeys spends one-time keys of this server's devices for the asking peer.
 	PeerClaimKeys(ctx context.Context, request map[string]map[string]string) (map[string]map[string]json.RawMessage, error)
+	// PeerCrossSigningKeys returns the identity documents of this server's users named by a query,
+	// keyed by the answer's own field names ("master_keys", "self_signing_keys"). A device list on
+	// its own says what devices exist; these say whose they are.
+	PeerCrossSigningKeys(ctx context.Context, userIDs []string) (map[string]map[string]json.RawMessage, error)
 }
 
 // DeviceMessageSink is where an incoming to-device message is delivered, so that the people who share

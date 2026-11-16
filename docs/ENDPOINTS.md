@@ -191,6 +191,41 @@ a room with the subject, which is the privacy rule of the feature.
 | `POST` | `/keys/claim` | [claim keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysclaim) | implemented |
 | `POST` | `/user_directory/search` | [search user directory](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3user_directorysearch) | implemented |
 
+## Cross-signing
+
+A device key says what a device is; these two endpoints carry the keys that say *whose* it is. A
+user's master key is the root, the self-signing key is what stamps the user's own devices, and the
+user-signing key is what stamps other people. The private halves never reach this server: it is
+handed the public keys and the signatures they made, and stores both exactly as they arrived,
+because every byte of a key document is covered by some signature a client will check later.
+
+What this server does before storing a key is check it. A master key must carry its own signature, and
+a self-signing or user-signing key must carry the master key's; a key that fails is refused with
+`M_INVALID_SIGNATURE` rather than stored for a client to disbelieve. The signed object is the document
+with `signatures` removed — the ordinary Matrix signing rule — and the signing key is the one named in
+the document's own `keys` map.
+
+Authentication follows MSC3967, and the exactness matters to a client: the first identity an account
+publishes needs no interactive stage (the client authenticated to log in seconds ago, and asking again
+would block a setup flow that has nothing to protect yet), while replacing a published identity asks
+for the account password. A request repeating a key already stored is answered with a bare success and
+no challenge, so a client that lost the response can retry without a second password prompt.
+
+| Method | Path | Spec | Status |
+| --- | --- | --- | --- |
+| `POST` | `/keys/device_signing/upload` | [upload cross-signing keys](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keysdevice_signingupload) | implemented |
+| `POST` | `/keys/signatures/upload` | [upload signatures](https://spec.matrix.org/latest/client-server-api#post_matrixclientv3keyssignaturesupload) | implemented |
+
+`POST /keys/query` answers `master_keys` and `self_signing_keys` beside the devices, and
+`user_signing_keys` only to the user it belongs to: that key is the record of whom a person vouches
+for, and publishing it to everybody would publish a friendship graph nobody agreed to publish.
+
+The signature endpoint accepts a signature over the caller's own device made by the caller's
+self-signing key, over the caller's own master key made by one of the caller's devices, and over
+another user's master key made by the caller's user-signing key — which is the one write one user may
+make about another, and what a completed verification leaves behind. Refusals are reported per key in
+`failures`, because a client uploads a batch and handles the ones that did not land one at a time.
+
 ## Media
 
 | Method | Path | Spec | Status |

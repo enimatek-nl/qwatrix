@@ -29,6 +29,16 @@ import (
 //
 // The body names users and, optionally, the devices of theirs being asked about; an empty list means
 // every device that user has.
+// usersOf is the list of user IDs a peer's query named, which is what the identity half of the
+// answer is looked up for.
+func usersOf(query map[string][]string) []string {
+	users := make([]string, 0, len(query))
+	for userID := range query {
+		users = append(users, userID)
+	}
+	return users
+}
+
 func (h *Handler) handlePeerKeyQuery(w http.ResponseWriter, r *http.Request) {
 	if h.opts.PeerKeys == nil {
 		httpx.RespondJSON(w, http.StatusOK, map[string]any{
@@ -53,10 +63,24 @@ func (h *Handler) handlePeerKeyQuery(w http.ResponseWriter, r *http.Request) {
 		httpx.RespondError(w, r, err)
 		return
 	}
-	httpx.RespondJSON(w, http.StatusOK, map[string]any{
+	answer := map[string]any{
 		"device_keys": nonNilDocuments(documents),
 		"failures":    map[string]any{},
-	})
+	}
+	// The identity travels with the devices. A peer that is told which devices exist but not whose
+	// they are can still encrypt, and its client will still flag every message as coming from an
+	// unverified device that nobody on either side can do anything about.
+	identity, err := h.opts.PeerKeys.PeerCrossSigningKeys(r.Context(), usersOf(request.DeviceKeys))
+	if err != nil {
+		httpx.RespondError(w, r, err)
+		return
+	}
+	for field, byUser := range identity {
+		if len(byUser) > 0 {
+			answer[field] = byUser
+		}
+	}
+	httpx.RespondJSON(w, http.StatusOK, answer)
 }
 
 // handlePeerKeyClaim answers `POST /_matrix/federation/v1/user/keys/claim`, which is where an Olm

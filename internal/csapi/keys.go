@@ -7,6 +7,7 @@ import (
 	"github.com/enimatek-nl/qwatrix/internal/httpx"
 	"github.com/enimatek-nl/qwatrix/internal/keyserver"
 	"github.com/enimatek-nl/qwatrix/internal/matrix"
+	"github.com/enimatek-nl/qwatrix/internal/uia"
 )
 
 // registerKeyRoutes registers the end-to-end encryption key endpoints.
@@ -29,6 +30,17 @@ func registerKeyRoutes(mux *httpx.RouteTable, deps Deps) {
 	}
 	for _, path := range versionedPath("keys/claim") {
 		mux.HandleFunc("POST "+path, deps.requireAuth(handleClaimKeys(deps)))
+	}
+	// Cross-signing: the two halves of publishing an identity. The keys themselves go to
+	// `/keys/device_signing/upload`, and the signatures those keys make go to
+	// `/keys/signatures/upload` — a client signs its own device with its self-signing key and posts
+	// the result back, which is the only way another user's client can tell that this device really
+	// belongs to this person.
+	for _, path := range versionedPath("keys/device_signing/upload") {
+		mux.HandleFunc("POST "+path, deps.requireAuth(handleUploadCrossSigningKeys(deps)))
+	}
+	for _, path := range versionedPath("keys/signatures/upload") {
+		mux.HandleFunc("POST "+path, deps.requireAuth(handleUploadSignatures(deps)))
 	}
 	// The user directory lives beside the key server here because both answer questions about
 	// other users' identities, and both are filtered by who is asking.
@@ -56,6 +68,98 @@ func handleUploadKeys(deps Deps) http.HandlerFunc {
 	}
 }
 
+// handleUploadSignatures implements POST /keys/signatures/upload.
+//
+// It answers 200 even when some keys were refused: the client uploaded a batch and deals with the
+// refusals one key at a time, from the `failures` map, which is why the specification puts them in
+// the body of a success rather than in a status code.
+func handleUploadSignatures(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		userID := string(matrix.UserID(session.Localpart, deps.Config.ServerName))
+		var req map[string]map[string]json.RawMessage
+		if err := httpx.DecodeJSON(r, &req); err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		failures, err := deps.Keys.UploadSignatures(r.Context(), userID, req)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		if failures == nil {
+			failures = map[string]map[string]keyserver.SignatureFailure{}
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{"failures": failures})
+	}
+}
+
+// handleUploadCrossSigningKeys implements POST /keys/device_signing/upload.
+//
+// The authentication rule is the one the specification and MSC3967 settle on, and it is the difference
+// between a client that works and a client that hangs: setting an identity up for the first time
+// needs nothing beyond the access token the client already has, because there is no identity yet to
+// be protecting. *Replacing* one is a different act — somebody else may be relying on the key being
+// replaced — and so it asks the user to prove they are who the access token says, with their
+// password.
+//
+// A request that repeats what is already stored is answered with a bare success and no challenge, for
+// the client that uploaded its identity and never received the answer: retrying is correct, and being
+// asked for a password for the privilege of retrying is how a setup flow ends up stuck.
+func handleUploadCrossSigningKeys(deps Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		session := httpx.MustSession(r)
+		userID := string(matrix.UserID(session.Localpart, deps.Config.ServerName))
+		var req struct {
+			Auth        *uia.AuthBody   `json:"auth"`
+			MasterKey   json.RawMessage `json:"master_key"`
+			SelfSigning json.RawMessage `json:"self_signing_key"`
+			UserSigning json.RawMessage `json:"user_signing_key"`
+		}
+		if err := httpx.DecodeJSON(r, &req); err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		bundle := keyserver.CrossSigningBundle{
+			Master:      req.MasterKey,
+			SelfSigning: req.SelfSigning,
+			UserSigning: req.UserSigning,
+		}
+
+		setUp, err := deps.Keys.HasCrossSigningIdentity(r.Context(), userID)
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		if setUp {
+			unchanged, err := deps.Keys.CrossSigningUnchanged(r.Context(), userID, bundle)
+			if err != nil {
+				httpx.RespondError(w, r, err)
+				return
+			}
+			if unchanged {
+				httpx.RespondJSON(w, http.StatusOK, map[string]any{})
+				return
+			}
+			// An identity is being replaced. This is the one place in the endpoint where the
+			// answer to "who are you?" is not the access token.
+			done, err := deps.authenticatePassword(w, r, session.UserID, req.Auth, session.Localpart)
+			if err != nil {
+				httpx.RespondError(w, r, err)
+				return
+			}
+			if !done {
+				return
+			}
+		}
+		if err := deps.Keys.UploadCrossSigningKeys(r.Context(), userID, bundle); err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{})
+	}
+}
+
 // handleQueryKeys implements POST /keys/query.
 func handleQueryKeys(deps Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -76,8 +180,38 @@ func handleQueryKeys(deps Deps) http.HandlerFunc {
 			httpx.RespondError(w, r, err)
 			return
 		}
-		httpx.RespondJSON(w, http.StatusOK, map[string]any{"device_keys": keys})
+		response := map[string]any{"device_keys": keys}
+		// A device key says what a device is; a cross-signing key says who it belongs to. A client
+		// building a picture of a person needs both halves in one answer, which is why they are served
+		// together: a query that answered only the devices leaves a client staring at an unverified
+		// device and an encryption warning it has no way to resolve.
+		caller := string(matrix.UserID(httpx.MustSession(r).Localpart, deps.Config.ServerName))
+		identity, err := deps.Keys.CrossSigningFor(r.Context(), caller, usersOfQuery(query))
+		if err != nil {
+			httpx.RespondError(w, r, err)
+			return
+		}
+		if len(identity.Master) > 0 {
+			response["master_keys"] = identity.Master
+		}
+		if len(identity.SelfSigning) > 0 {
+			response["self_signing_keys"] = identity.SelfSigning
+		}
+		if len(identity.UserSigning) > 0 {
+			response["user_signing_keys"] = identity.UserSigning
+		}
+		httpx.RespondJSON(w, http.StatusOK, response)
 	}
+}
+
+// usersOfQuery is the list of user IDs a key query named, which is what the cross-signing half of the
+// answer is looked up for.
+func usersOfQuery(query map[string][]string) []string {
+	users := make([]string, 0, len(query))
+	for userID := range query {
+		users = append(users, userID)
+	}
+	return users
 }
 
 // parseDeviceList reads the `device_keys` of a query: a user ID mapped to a list of device IDs,
