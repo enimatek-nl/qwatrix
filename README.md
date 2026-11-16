@@ -53,11 +53,11 @@ podman run -d --name qwatrix -p 8008:8008 -p 8448:8448 \
 prefers to fetch separately.) It is built for `linux/amd64` and `linux/arm64`, so the same tag
 runs on a Raspberry Pi and on a VPS.
 
-Tags are the release versions: `0.2.0` and `0.2` for a release, plus `latest`. A release
+Tags are the release versions: `0.3.0` and `0.3` for a release, plus `latest`. A release
 candidate such as `v0.3.0-rc1` publishes `0.3.0-rc1` and moves nothing that looks like the
 current release. Whatever tag a container was pulled with, that is the version it reports to
-clients and to federation peers — `docker run --rm ghcr.io/enimatek-nl/qwatrix:0.2.0 -h 2>&1 | head -1`
-prints `qwatrix 0.2.0` (the usage banner goes to stderr, which is why that `2>&1` is load-bearing).
+clients and to federation peers — `docker run --rm ghcr.io/enimatek-nl/qwatrix:0.3.0 -h 2>&1 | head -1`
+prints `qwatrix 0.3.0` (the usage banner goes to stderr, which is why that `2>&1` is load-bearing).
 
 To build the image from a source tree instead:
 
@@ -80,8 +80,8 @@ binary built outside the image, because complement rebuilds the image for every 
 The release *is* a git tag, and the image is built by the tag rather than by hand:
 
 1. Set the version in `internal/config/config.go` — the one place the version is written. A
-   tree at `0.2.0-dev` is developing `0.2.0`.
-2. `git tag v0.2.0 && git push origin v0.2.0`.
+   tree at `0.3.0-dev` is developing `0.3.0`.
+2. `git tag v0.3.0 && git push origin v0.3.0`.
 
 `.github/workflows/image.yml` then checks that the tag belongs to the version the source is
 developing, builds both architectures, and publishes to `ghcr.io/enimatek-nl/qwatrix`. A pull
@@ -91,9 +91,9 @@ published with a version nobody made.
 
 | Command | Does |
 |---|---|
-| `git tag v0.2.0 -m "qwatrix 0.2.0"` | Names the release |
-| `git push origin v0.2.0` | Builds and publishes the image |
-| `git push --delete origin v0.2.0` | Unsays it (also delete the package version in the UI) |
+| `git tag v0.3.0 -m "qwatrix 0.3.0"` | Names the release |
+| `git push origin v0.3.0` | Builds and publishes the image |
+| `git push --delete origin v0.3.0` | Unsays it (also delete the package version in the UI) |
 
 ## Register a user
 
@@ -279,7 +279,10 @@ Federation reaches peers the way the specification says to find them — a `.wel
 redirect, then a `_matrix-fed._tcp` SRV record, then the deprecated `_matrix._tcp` one, then the
 federation port — so a server whose peers publish themselves on port 443 through a redirect works
 without opening anything else. What federation does not yet do: forward a third server's events into
-a room (a server hears from the servers it joined directly), relay typing or receipts, accept an
-invitation sent to a user on another server, authorise another server's restricted-room join, or hold
-signing keys for servers it has not spoken to. [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) lists
-them with the measured complement results.
+a room (a server hears from the servers it joined directly), relay typing or receipts, authorise
+another server's restricted-room join, or hold signing keys for servers it has not spoken to. An
+invitation arriving for a local user is checked and co-signed as the specification asks; an
+invitation sent *from* here to a user on another server reaches them, carries both signatures, and
+still cannot be accepted — the answer this server gives a joining peer leaves the invitation out of
+its auth chain. [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) lists them with the measured
+complement results.
