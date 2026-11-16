@@ -131,7 +131,7 @@ func Default() *Config {
 		SyncTimeoutMax:           60 * time.Second,
 		SyncDefaultTimelineLimit: 10,
 		LogLevel:                 "info",
-		Version:                  "0.3.0-dev",
+		Version:                  "0.3.1-dev",
 	}
 }
 

@@ -209,6 +209,20 @@ func (r *EventRepoImpl) Insert(ctx context.Context, tx *gorm.DB, row *EventRow) 
 	if tx != nil {
 		db = tx.WithContext(ctx)
 	}
+	// The event's primary key *is* its position in the stream, and the stream is shared with
+	// everything else a client is told about — receipts, presence, to-device messages, a
+	// client's own account data. So the position is taken from that one clock rather than left
+	// to SQLite: an autoincremented key can land on a position a receipt already occupies, and
+	// whichever of the two a client's token points at, the other one is the change it never
+	// sees. A row that arrives with a key of its own keeps it, because that is how a copied
+	// state snapshot is stored.
+	if row.ID == 0 {
+		position, err := nextPosition(ctx, db)
+		if err != nil {
+			return nil, fmt.Errorf("taking a stream position for event %q: %w", row.EventID, err)
+		}
+		row.ID = position
+	}
 	if err := db.WithContext(ctx).Create(row).Error; err != nil {
 		return nil, fmt.Errorf("inserting event %q: %w", row.EventID, err)
 	}
@@ -361,12 +375,10 @@ func (r *EventRepoImpl) FirstPositionOfState(ctx context.Context, roomID, eventT
 }
 
 func (r *EventRepoImpl) MaxPosition(ctx context.Context) (int64, error) {
-	var pos int64
-	err := session(ctx, r.db).Model(&EventRow{}).Select("COALESCE(MAX(id), 0)").Scan(&pos).Error
-	if err != nil {
-		return 0, fmt.Errorf("reading maximum stream position: %w", err)
-	}
-	return pos, nil
+	// The end of the stream, which is the clock rather than the event table: a client's next
+	// token has to sit past the receipt and the account-data write this response just reported,
+	// or it is told the same thing again on every sync and never moves forward.
+	return currentPosition(ctx, r.db)
 }
 
 // MaxPositionInRoom implements [EventRepo].

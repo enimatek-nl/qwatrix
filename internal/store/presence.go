@@ -89,11 +89,11 @@ func (r *presenceRepo) Set(ctx context.Context, row *Presence) error {
 	// concurrent event, in which case a client sees it twice. A duplicated presence is
 	// harmless, because presence is the current value rather than a fact about the past; a
 	// missed one would leave a client showing a stale dot forever.
-	position, err := maxStreamPosition(ctx, db)
+	position, err := nextPosition(ctx, db)
 	if err != nil {
 		return err
 	}
-	row.StreamPos = position + 1
+	row.StreamPos = position
 	return db.Save(row).Error
 }
 
@@ -114,11 +114,3 @@ func (r *presenceRepo) UpdatedSince(ctx context.Context, localparts []string, si
 
 // maxStreamPosition is the highest event stream position in the database, and 0 when there
 // are no events yet.
-func maxStreamPosition(ctx context.Context, db *gorm.DB) (int64, error) {
-	var position int64
-	err := session(ctx, db).Model(&EventRow{}).Select("COALESCE(MAX(id), 0)").Scan(&position).Error
-	if err != nil {
-		return 0, err
-	}
-	return position, nil
-}

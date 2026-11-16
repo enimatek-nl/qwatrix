@@ -80,15 +80,16 @@ func (r *ReceiptRepoImpl) Put(ctx context.Context, receipt *Receipt) (*Receipt, 
 	if receipt.TS == 0 {
 		receipt.TS = time.Now().UnixMilli()
 	}
-	// The stream position ties the receipt to the event stream so an incremental /sync can
-	// tell a receipt that happened after its token from one it already reported. Reusing the
-	// current maximum is deliberate: receipts are not events and must not advance the stream,
-	// or every receipt would look like new room history to every other client.
+	// A receipt takes a position on the one stream, like everything else a client is told
+	// about. Taking the *tail* of the event stream instead — which is what this did — puts the
+	// receipt at a position the client already has, and an incremental /sync then reports it
+	// to nobody, ever: the unread badge never clears and the typing receipt never lands.
+	// Advancing the stream is not "new room history"; the history query is per room and by
+	// event, and this row is neither.
 	if receipt.StreamPos == 0 {
-		var position int64
-		if err := session(ctx, r.db).Model(&EventRow{}).
-			Select("COALESCE(MAX(id), 0)").Scan(&position).Error; err != nil {
-			return nil, errors.New("reading the stream position for a receipt: " + err.Error())
+		position, err := nextPosition(ctx, r.db)
+		if err != nil {
+			return nil, errors.New("taking a stream position for a receipt: " + err.Error())
 		}
 		receipt.StreamPos = position
 	}
@@ -155,11 +156,15 @@ func (r *AccountDataRepoImpl) Put(ctx context.Context, data *AccountData) error 
 	if data.Content == "" || !json.Valid([]byte(data.Content)) {
 		return errors.New("account data content must be a JSON object")
 	}
+	// The same rule as a receipt, and the same mistake fixed: a client that wrote its own
+	// account data has to be told about it by the sync it is already holding open, and a write
+	// stamped with a position it has already passed is a write it never hears of. That is how
+	// "Element's encryption reset spins forever" reaches a server: the client writes a settings
+	// key, waits for the echo, and never gets it.
 	if data.StreamPos == 0 {
-		var position int64
-		if err := session(ctx, r.db).Model(&EventRow{}).
-			Select("COALESCE(MAX(id), 0)").Scan(&position).Error; err != nil {
-			return errors.New("reading the stream position for account data: " + err.Error())
+		position, err := nextPosition(ctx, r.db)
+		if err != nil {
+			return errors.New("taking a stream position for account data: " + err.Error())
 		}
 		data.StreamPos = position
 	}

@@ -239,6 +239,11 @@ func (s *Service) Sync(ctx context.Context, req Request) (*Response, error) {
 	}
 }
 
+// carriesNews reports whether one of the top-level streams has anything in it.
+func carriesNews(batch *EventsBatch) bool {
+	return batch != nil && len(batch.Events) > 0
+}
+
 // build assembles one response and reports whether it carried anything, which is what tells
 // the long-poll whether to keep waiting.
 func (s *Service) build(ctx context.Context, req Request, since int64) (*Response, bool, error) {
@@ -330,7 +335,15 @@ func (s *Service) build(ctx context.Context, req Request, since int64) (*Respons
 	}
 
 	var joinedCount, invitedCount int
-	empty := true
+
+	// A client waiting on a long-poll is waiting for any of these, not only for room history.
+	// Account data is the case that hurts: a client that writes a settings key, an encryption
+	// key, or a fully-read marker and then waits for its own write to come back is a client with
+	// a spinner on screen — Element's encryption reset is four such writes in a row, and it does
+	// not send the next request until the previous write has been reported. Treating only rooms
+	// as news meant such a sync slept out its whole timeout with the answer already in hand.
+	empty := !carriesNews(response.AccountData) && !carriesNews(response.ToDevice) &&
+		!carriesNews(response.Presence)
 
 	for _, membership := range memberships {
 		switch membership.Membership {

@@ -258,8 +258,12 @@ func migrate(db *gorm.DB) error {
 		&MediaFile{},
 		&DeviceListChange{},
 		&FederationOutbox{},
+		&StreamPosition{},
 	); err != nil {
 		return fmt.Errorf("migrating schema: %w", err)
+	}
+	if err := seedStreamPosition(db); err != nil {
+		return err
 	}
 	return migrateTransactionScope(db)
 }
