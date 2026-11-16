@@ -75,9 +75,10 @@ type Options struct {
 	// response because that document is the thing a peer signs its trust in, and a peer
 	// that could not tell which server it came from could replay it anywhere.
 	ServerName spec.ServerName
-	// Version names this implementation to a peer. The specification leaves the string's
-	// shape to us; peers display it and use it to guess which quirks to expect.
-	Version string
+	// Implementation and Version name this software and its release to a peer. The specification
+	// answers `GET /_matrix/federation/v1/version` with the two apart, under `server`.
+	Implementation string
+	Version        string
 	// Peer is this server's outbound federation client, which doubles as the way its verifier
 	// obtains a peer's signing key: to check that a peer is who it claims, this server asks that
 	// peer's own server. It may be nil, in which case signed requests are refused rather than
@@ -243,7 +244,16 @@ func marshalTemplate(event gomatrixserverlib.ProtoEvent) (json.RawMessage, error
 // answer: a peer that cannot ask this has no way to distinguish a server that does not federate
 // from one that has simply been misdirected.
 func (h *Handler) handleVersion(w http.ResponseWriter, _ *http.Request) {
-	httpx.RespondJSON(w, http.StatusOK, map[string]string{"version": h.opts.Version})
+	// The specification's shape: a `server` object naming the implementation and its version, with
+	// an optional homepage. Naming them separately is not pedantry — this endpoint exists for
+	// humans comparing what two servers run, and "qwatrix/0.2.0" in a field called `version` says
+	// neither reliably.
+	httpx.RespondJSON(w, http.StatusOK, map[string]any{
+		"server": map[string]string{
+			"name":    h.opts.Implementation,
+			"version": h.opts.Version,
+		},
+	})
 }
 
 // verifyKeyEntry is one entry of `verify_keys`. The key type is the specification's base64

@@ -723,5 +723,5 @@ learns nothing it has to be told about; ephemeral events, `de.sorunome.msc2409.p
 works; one that also receives does not, and it will fail quietly rather than loudly, which is worth
 knowing before trusting one.
 
-Deliberately out of scope for the foreseeable future: OIDC/SSO, third-party invites, `/search`, sliding
-sync, and room version 12's state-DAG variant — the reasoning is in [REQUIREMENTS.md](REQUIREMENTS.md).
+Deliberately out of scope for the foreseeable future: OIDC/SSO, third-party invites, `/search`, and
+room version 12's state-DAG variant — the reasoning is in [REQUIREMENTS.md](REQUIREMENTS.md).

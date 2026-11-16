@@ -258,13 +258,14 @@ func New(cfg *config.Config) (*App, error) {
 	toDeviceService.WithForwarder(app.outbox)
 
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
-		ServerName:  spec.ServerName(cfg.ServerName),
-		Version:     "qwatrix/" + cfg.Version,
-		Join:        rooms,
-		Peer:        peer,
-		Devices:     keyService,
-		Media:       mediaService,
-		DeviceLists: deviceListService,
+		ServerName:     spec.ServerName(cfg.ServerName),
+		Implementation: "qwatrix",
+		Version:        cfg.Version,
+		Join:           rooms,
+		Peer:           peer,
+		Devices:        keyService,
+		Media:          mediaService,
+		DeviceLists:    deviceListService,
 		// The far half of the same path: a peer's key share for one of this server's devices.
 		ToDevice: toDeviceService,
 		// The read a peer makes when this server is the one holding the history it lacks.

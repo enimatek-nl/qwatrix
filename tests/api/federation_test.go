@@ -17,8 +17,9 @@ import (
 //
 // A peer that has never seen this server asks what it is before it asks anything else, and an
 // unanswered question here is indistinguishable from a server that does not federate at all. The
-// specification leaves the string's shape to the implementation; what matters is that it is a
-// string, and that the answer arrives over the federation port rather than the client one.
+// shape is fixed by the specification even though the words are not: the answer names the
+// implementation and its version under `server`, which is what a debugging operator (and a support
+// forum) reads. A server that answers this with a bare string is answering a different question.
 func TestFederationVersionIsAdvertised(t *testing.T) {
 	server := harness.New(t)
 	resp, err := server.FederationClient(t).Get(server.FederationServer(t).URL + "/_matrix/federation/v1/version")
@@ -34,13 +35,20 @@ func TestFederationVersionIsAdvertised(t *testing.T) {
 		t.Fatalf("reading the version response: %v", err)
 	}
 	var version struct {
-		Version string `json:"version"`
+		Server struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+			URL     string `json:"url"`
+		} `json:"server"`
 	}
 	if err := json.Unmarshal(body, &version); err != nil {
 		t.Fatalf("the version response is not JSON: %v (%s)", err, body)
 	}
-	if version.Version == "" {
-		t.Errorf("the version response named no implementation: %s", body)
+	if version.Server.Name == "" {
+		t.Errorf("%s names no implementation under server.name", body)
+	}
+	if version.Server.Version == "" {
+		t.Errorf("%s names no version under server.version", body)
 	}
 }
 

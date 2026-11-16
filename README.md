@@ -266,11 +266,20 @@ docs/ENDPOINTS.md    every endpoint and its status; enforced by a test
 ## Known limitations
 
 Room upgrades, URL preview, refresh tokens (MSC2918), the threads timeline endpoint, room event
-search (`POST /search`), key backup and cross-signing, server ACLs, push gateway delivery, and
-sliding sync are not implemented, and a handful of complement tests covering them fail. Knocking and
-the room hierarchy are implemented — `TestKnocking` and its MSC3787 twin are the two complement
-tests still red on federation detail (a knock is not yet relayed to every server in the room, and
-another server's invited user cannot yet join a knock room through their own). Application services are supported on the receiving side — registration files,
-`as_token` authentication, virtual users, acting as a namespaced user, `?ts=` event import — but
-nothing is ever pushed to a service's configured `url`, so a real bridge would be told nothing. [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) lists them with the measured
-complement results.
+search (`POST /search`), MSC3814 dehydrated devices, and server ACLs are not implemented, and a
+handful of complement tests covering them fail. Knocking and the room hierarchy are implemented —
+`TestKnocking` and its MSC3787 twin are the two complement tests still red on federation detail (a
+knock is not yet relayed to every server in the room, and another server's invited user cannot yet
+join a knock room through their own). Application services are supported on the receiving side —
+registration files, `as_token` authentication, virtual users, acting as a namespaced user, `?ts=`
+event import — but nothing is ever pushed to a service's configured `url`, so a real bridge would be
+told nothing.
+
+Federation reaches peers the way the specification says to find them — a `.well-known/matrix/server`
+redirect, then a `_matrix-fed._tcp` SRV record, then the deprecated `_matrix._tcp` one, then the
+federation port — so a server whose peers publish themselves on port 443 through a redirect works
+without opening anything else. What federation does not yet do: forward a third server's events into
+a room (a server hears from the servers it joined directly), relay typing or receipts, accept an
+invitation sent to a user on another server, authorise another server's restricted-room join, or hold
+signing keys for servers it has not spoken to. [`docs/FINAL-REPORT.md`](docs/FINAL-REPORT.md) lists
+them with the measured complement results.
