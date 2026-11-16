@@ -54,6 +54,13 @@ the count threshold is stated over `tests/csapi`, and the federation result is "
 reported separately; each federation test that passes is listed". So a run is scored per package as
 well as in total, and the sweep prints both.
 
+At run 129 — the run the 0.3.1 patch is cut from: the same **95 of 95**, the same **130 of 197**, and
+no test changing state against run 128, which is the expected shape for a release whose entire subject
+is invisible to complement: a client's own write not reaching that client is not something the
+upstream suite tests, because no upstream test writes account data and then waits for `/sync` to
+repeat it. The proof of 0.3.1 is `tests/api/accountdata_sync_test.go` and a `matrix-js-sdk` client
+driven outside the browser.
+
 At run 128 — the run the 0.3.0 release is cut from: **95 of 106 in `tests/csapi`**, **35 of 91 in
 the root package**, 130 of 197, and no test changed state in either direction against run 127, for a
 release that added two client endpoints, a key table, federation peer discovery and an invite that
@@ -130,6 +137,7 @@ rather than quoted.
 
 | run | image at | mandatory passing | what the run turned on |
 | --- | --- | --- | --- |
+| 129 | `538c8c7` | 2026-11-16 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — no test changed state | **The 0.3.1 patch: one stream position for every kind of change.** Nothing here measures the fix — a suite that never writes account data and waits for `/sync` to echo it cannot see the bug — so this run's job is to prove the re-plumbing of the stream did not disturb anything else, since events now take their primary key from the shared clock. It did not. |
 | 128 | `1e0a24f` | 2026-11-16 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — no test changed state | **Cross-signing, federation peer discovery, and an invitation that carries the invitee's server's signature.** Two notes on the measurement rather than the result. First, the first attempt at this run reported `TestCannotSendNonJoinViaSendJoinV2` as PASS → FAIL, and it was neither: the container never started (`ContainerStart: Error response from daemon: rootlessport conflict with ID 1`) because the sweep was deploying parallel sets on a host that already had containers bound. A deploy failure arrives as a test failure, so a lone regression naming a test nobody touched is read as infrastructure until re-running that test alone says otherwise — and it did, twice. Second: the release this run scores adds endpoints complement has no test for, so `go test ./tests/...` and `scripts/element-e2ee-check.mjs` carry the claims the suite cannot. |
 | 127 | `e1b7f41` | 2026-11-15 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — no test changed state | **Simplified Sliding Sync (MSC4186), all four milestones.** A run whose value is that nothing moved: this added a second sync endpoint, its own connection state in the write path, and five extension streams that read the device inbox, the key tables and the receipt and account-data stores, all of which /v3/sync also reads. complement measures none of it — the one test that posts to `org.matrix.simplified_msc3575/sync` asks for an MSC4308 extension this server does not serve — so the criterion is proven untouched rather than the feature proven working, and the feature rests on the 32 tests in `tests/api/slidingsync_test.go`. |
 | 126 | `d0e9f27` | 2026-11-14 | **95 / 95** | **0** | **0** | **0** | **130 / 197** — `TestE2EKeyBackupReplaceRoomKeyRules` moves from failing to passing, and nothing else moved | **Room key backup.** The second Element X readiness item, and the first new feature to be measured rather than asserted: that test had been failing since it was first run, and it pins the rule for which of two devices' copies of a session a backup keeps. The mandatory set was never going to change — complement does not put key backup in it — so this run is the evidence that the criterion survives a new subsystem in the write path. |
