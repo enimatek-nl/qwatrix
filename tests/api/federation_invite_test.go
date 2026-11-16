@@ -235,3 +235,150 @@ func TestAnInviteOfARemoteUserArrivesCoSigned(t *testing.T) {
 	t.Errorf("the invitation never reached alice's server: it is refused there for carrying one "+
 		"signature where two are needed (hs2 %q invites %s into %s)", hs2.ServerName, alice.UserID, roomID)
 }
+
+// TestAnInviteForARoomThisServerHasNeverSeenIsStillCoSigned is the first contact.
+//
+// A user on this server being invited to a room that lives elsewhere is the ordinary case — it is
+// how almost every federated conversation starts — and it arrives here as a request to co-sign an
+// event about a room this server has never heard of. Refusing that because the room is unknown is
+// the mistake this test exists to prevent: the signature is exactly what the invitee's server is for,
+// and without it every peer downstream disbelieves the invitation, so the user is left looking at an
+// invite that opens nothing.
+//
+// What has to take the place of the room's own state is the stripped state the request carries with
+// it, whose whole purpose is to describe a room the recipient has never seen.
+func TestAnInviteForARoomThisServerHasNeverSeenIsStillCoSigned(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "invited", "pw-invited", false)
+	peer := newFakePeer(t)
+	version := roomVersionUnknown
+	roomID := "!never-seen:" + string(peer.serverNo)
+	inviter := "@host:" + string(peer.serverNo)
+
+	create := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:   roomID,
+		SenderID: inviter,
+		Type:     "m.room.create",
+		StateKey: strPtr(""),
+		Depth:    1,
+		Content:  spec.RawJSON(mustMarshal(t, map[string]any{"creator": inviter, "m.federate": true})),
+	})
+	powerLevels := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   inviter,
+		Type:       "m.room.power_levels",
+		StateKey:   strPtr(""),
+		Depth:      2,
+		PrevEvents: []string{create.EventID()},
+		AuthEvents: []string{create.EventID()},
+		Content: spec.RawJSON(mustMarshal(t, map[string]any{
+			"users": map[string]int{inviter: 100}, "users_default": 0, "invite": 0,
+		})),
+	})
+	join := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   inviter,
+		Type:       "m.room.member",
+		StateKey:   strPtr(inviter),
+		Depth:      3,
+		PrevEvents: []string{powerLevels.EventID()},
+		AuthEvents: []string{create.EventID(), powerLevels.EventID()},
+		Content:    spec.RawJSON(mustMarshal(t, map[string]any{"membership": "join"})),
+	})
+	invite := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   inviter,
+		Type:       "m.room.member",
+		StateKey:   strPtr(alice.UserID),
+		Depth:      4,
+		PrevEvents: []string{join.EventID()},
+		AuthEvents: []string{create.EventID(), powerLevels.EventID(), join.EventID()},
+		Content:    spec.RawJSON(mustMarshal(t, map[string]any{"membership": "invite"})),
+	})
+
+	response := signedFederationPut(t, server, peer,
+		"/_matrix/federation/v2/invite/"+harness.PathEscape(roomID, invite.EventID()),
+		json.RawMessage(mustMarshal(t, map[string]any{
+			"event":        json.RawMessage(invite.JSON()),
+			"room_version": version,
+			"invite_room_state": []any{
+				strippedState(t, create), strippedState(t, powerLevels), strippedState(t, join),
+			},
+		})))
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("an invite to a room this server has never seen was refused with %d (%s), want 200",
+			response.StatusCode, federationBody(t, response))
+	}
+	signed := gjson.GetBytes(federationBody(t, response), "event.signatures")
+	if !signed.Get(gjson.Escape(string(server.ServerName))).Exists() {
+		t.Errorf("the answer carries no signature from this server, so the invitation is worthless: %s", signed.Raw)
+	}
+}
+
+// TestAnInviteNobodyInTheRoomIssuedIsNotCoSigned is the same door kept shut.
+//
+// The stripped state is the only description of the room this server gets, so it is also the only
+// evidence that the inviter is anybody. An invitation from someone the room's own state says has
+// left is not an invitation, and this server's signature is the thing that would make it look like
+// one.
+func TestAnInviteNobodyInTheRoomIssuedIsNotCoSigned(t *testing.T) {
+	server := harness.NewWithRegistration(t, harness.WithFederationInsecureTLS())
+	alice := server.Register(t, "invited", "pw-invited", false)
+	peer := newFakePeer(t)
+	version := roomVersionUnknown
+	roomID := "!never-seen-either:" + string(peer.serverNo)
+	inviter := "@former:" + string(peer.serverNo)
+
+	create := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:   roomID,
+		SenderID: inviter,
+		Type:     "m.room.create",
+		StateKey: strPtr(""),
+		Depth:    1,
+		Content:  spec.RawJSON(mustMarshal(t, map[string]any{"creator": inviter})),
+	})
+	left := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   inviter,
+		Type:       "m.room.member",
+		StateKey:   strPtr(inviter),
+		Depth:      2,
+		PrevEvents: []string{create.EventID()},
+		AuthEvents: []string{create.EventID()},
+		Content:    spec.RawJSON(mustMarshal(t, map[string]any{"membership": "leave"})),
+	})
+	invite := buildRemoteEvent(t, peer, version, gomatrixserverlib.ProtoEvent{
+		RoomID:     roomID,
+		SenderID:   inviter,
+		Type:       "m.room.member",
+		StateKey:   strPtr(alice.UserID),
+		Depth:      3,
+		PrevEvents: []string{left.EventID()},
+		AuthEvents: []string{create.EventID(), left.EventID()},
+		Content:    spec.RawJSON(mustMarshal(t, map[string]any{"membership": "invite"})),
+	})
+
+	response := signedFederationPut(t, server, peer,
+		"/_matrix/federation/v2/invite/"+harness.PathEscape(roomID, invite.EventID()),
+		json.RawMessage(mustMarshal(t, map[string]any{
+			"event":             json.RawMessage(invite.JSON()),
+			"room_version":      version,
+			"invite_room_state": []any{strippedState(t, create), strippedState(t, left)},
+		})))
+	if response.StatusCode == http.StatusOK {
+		t.Fatalf("an invitation from someone the room says has left was co-signed anyway: %s",
+			federationBody(t, response))
+	}
+}
+
+// strippedState is the description of a state event that travels with an invitation, which is what a
+// server seeing a room for the first time has to go on.
+func strippedState(t *testing.T, event gomatrixserverlib.PDU) map[string]any {
+	t.Helper()
+	return map[string]any{
+		"type":      event.Type(),
+		"state_key": *event.StateKey(),
+		"sender":    string(event.SenderID()),
+		"content":   json.RawMessage(event.Content()),
+	}
+}

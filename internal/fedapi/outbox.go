@@ -217,7 +217,11 @@ func (o *Outbox) requestInviteSignature(ctx context.Context, row store.Federatio
 	if err != nil {
 		return "", fmt.Errorf("reading the invitation to co-sign: %w", err)
 	}
-	request, err := fclient.NewInviteV2Request(event, nil)
+	state, err := o.inviteRoomState(ctx, version, row.RoomID, gjson.Get(row.JSON, "sender").String())
+	if err != nil {
+		return "", fmt.Errorf("describing the room an invitation is for: %w", err)
+	}
+	request, err := fclient.NewInviteV2Request(event, state)
 	if err != nil {
 		return "", err
 	}
@@ -232,6 +236,47 @@ func (o *Outbox) requestInviteSignature(ctx context.Context, row store.Federatio
 		return "", fmt.Errorf("%s returned an invitation it had not signed", row.Destination)
 	}
 	return signed, nil
+}
+
+// inviteRoomState describes the room an invitation is for, in the four fields per state event that
+// a server seeing it for the first time is given.
+//
+// The peer being asked to co-sign has never seen this room, and it has to decide whether to put its
+// signature behind an invitation to something it cannot inspect. The specification's answer is the
+// stripped state: enough of the room's state to identify it, and — the part this endpoint depends on
+// — the inviter's own membership, which is the only evidence available that the invitation came from
+// inside. Only the state that does that is sent: the room's shape and its name, not its history.
+func (o *Outbox) inviteRoomState(ctx context.Context, version gomatrixserverlib.IRoomVersion,
+	roomID, inviter string,
+) ([]gomatrixserverlib.InviteStrippedState, error) {
+	entries, err := o.store.State.All(ctx, roomID)
+	if err != nil {
+		return nil, err
+	}
+	wanted := map[string]bool{
+		"m.room.create": true, "m.room.name": true, "m.room.avatar": true,
+		"m.room.canonical_alias": true, "m.room.join_rules": true,
+		"m.room.history_visibility": true, "m.room.encryption": true,
+	}
+	ids := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if wanted[entry.Type] || (entry.Type == "m.room.member" && entry.StateKey == inviter) {
+			ids = append(ids, entry.EventID)
+		}
+	}
+	rows, err := o.store.Events.ByEventIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	state := make([]gomatrixserverlib.InviteStrippedState, 0, len(rows))
+	for i := range rows {
+		event, err := version.NewEventFromTrustedJSON([]byte(rows[i].JSON), false)
+		if err != nil {
+			continue
+		}
+		state = append(state, gomatrixserverlib.NewInviteStrippedState(event))
+	}
+	return state, nil
 }
 
 // Run drains the ledger until the context ends.

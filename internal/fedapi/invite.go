@@ -96,6 +96,15 @@ func (h *Handler) handleSendInvite(advertisesRoomVersion bool) http.HandlerFunc 
 			httpx.RespondError(w, r, matrix.NewForbidden("%s", reason))
 			return
 		}
+		// For a room this server has never heard of, the stripped state riding along in the request is
+		// the only description of it there is — which is precisely why the specification puts one
+		// there. It is read as evidence of one thing: that the inviter is somebody in that room.
+		if !held {
+			if reason := inviterHoldsTheRoom(body, gjson.GetBytes([]byte(eventJSON), "sender").String()); reason != "" {
+				httpx.RespondError(w, r, matrix.NewForbidden("%s", reason))
+				return
+			}
+		}
 		coSigned, err := h.opts.Join.Events().CoSignEvent(string(version), eventJSON)
 		if err != nil {
 			httpx.RespondError(w, r, err)
@@ -107,11 +116,15 @@ func (h *Handler) handleSendInvite(advertisesRoomVersion bool) http.HandlerFunc 
 			return
 		}
 
-		// The event this server signs has to be one this server itself accepts: a signature on an
-		// event the room would reject is a forgery of this server's judgement.
-		if _, reason := h.parseRelayedEvent(r.Context(), coSigned); reason != "" {
-			httpx.RespondError(w, r, matrix.NewForbidden("%s", reason))
-			return
+		// The event this server signs has to be one this server itself accepts: a signature made on an
+		// event the room would reject is a forgery of this server's judgement. Asked about a room this
+		// server does not hold there is no room to check against, and the evidence above is what there
+		// is — which is what the specification offers for the same case.
+		if held {
+			if _, reason := h.parseRelayedEvent(r.Context(), coSigned); reason != "" {
+				httpx.RespondError(w, r, matrix.NewForbidden("%s", reason))
+				return
+			}
 		}
 		// Holding the room means this server can tell its user about the invitation now, which is the
 		// other half of accepting an invite. A room it has never heard of is signed all the same: the
@@ -128,6 +141,44 @@ func (h *Handler) handleSendInvite(advertisesRoomVersion bool) http.HandlerFunc 
 
 		answer := map[string]any{"event": json.RawMessage(coSigned), "room_version": string(version)}
 		httpx.RespondJSON(w, http.StatusOK, answer)
+	}
+}
+
+// inviterHoldsTheRoom reads the stripped state an invitation carries and says whether it shows the
+// inviter as a member of the room, or why it does not.
+//
+// A stripped state event is four fields — type, state key, sender, content — so this cannot be an
+// authorization check in the sense the room's own state would allow: there are no event IDs to
+// follow, and an event ID is what a signature is attached to. What it does establish, and all this
+// endpoint needs, is that the room as the inviter describes it puts the inviter inside. An inviter
+// lying about that gains an invitation for a user of *theirs* to refuse, which is the same exposure
+// a peer has whenever it is the only source about its own room.
+func inviterHoldsTheRoom(body []byte, inviter string) string {
+	state := gjson.GetBytes(body, "invite_room_state")
+	if !state.IsArray() || !state.Exists() || len(state.Array()) == 0 {
+		return "an invitation for a room this homeserver does not have has to describe that room"
+	}
+	var create, membership string
+	for _, entry := range state.Array() {
+		switch entry.Get("type").String() {
+		case "m.room.create":
+			create = entry.Get("state_key").String()
+		case "m.room.member":
+			if entry.Get("state_key").String() == inviter && entry.Get("sender").String() == inviter {
+				membership = entry.Get("content.membership").String()
+			}
+		}
+	}
+	if create != "" {
+		return "the room state an invitation carries describes its create event with a state key"
+	}
+	switch membership {
+	case "join":
+		return ""
+	case "":
+		return "the invitation is not backed by the inviter being in the room it describes"
+	default:
+		return "the invitation is from a user the room says is not in it"
 	}
 }
 

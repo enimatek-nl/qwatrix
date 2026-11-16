@@ -637,9 +637,13 @@ Next come state and event reads (`/state`, `/state_ids`, `/event`, `/backfill`),
 device list and to-device propagation between servers.
 
 One limitation deserves its own sentence because it is not this server being cautious: an `invite`
-membership event has to be signed by the invited user's homeserver as well as the sender's, and this
-server does not yet co-sign the invites it sends. A remote server will therefore reject an invitation
-issued here to a remote user.
+membership event has to be signed by the invited user's homeserver as well as the sender's. Asked to
+co-sign, this server signs — including for a room it has never heard of, which is the ordinary case,
+and in that case it judges the invitation against the room description that travels with the request
+and refuses unless that description puts the inviter inside the room. What is still broken is the next
+step: the inviter's `/send_join` answer does not carry that invitation in its auth chain, so the
+invited user's server refuses the join, and the invitation is not remembered on the invited user's
+server either, so nothing appears in their `/sync`.
 
 A signed federation request is authenticated twice over: the request signature covers the method, URI,
 origin, destination and body, and the event carries its own signature so that it stays checkable by
