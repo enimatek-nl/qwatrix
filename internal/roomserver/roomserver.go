@@ -518,6 +518,12 @@ type txAppend struct {
 	// membership is the membership value when this is an m.room.member event; it is needed
 	// to keep the room's member counters honest.
 	membership string
+	// historical marks an event this server keeps only because something else names it: an entry in
+	// the authentication chain a peer sent with a join. It is stored, and it lets the events citing it
+	// be re-checked later, but it is not this room's current state — no state row, no membership row,
+	// no member counter, nothing that says this room contains whoever it speaks of. See
+	// [authChainAppendRequest] for what goes wrong when it is treated as state.
+	historical bool
 	// originServerTS stamps the event at a moment other than now. Only an application service may
 	// ask for that, because a client that could choose its own timestamps could rewrite when a room
 	// was created, retroactively authorise a join by being "there earlier", and make a room's

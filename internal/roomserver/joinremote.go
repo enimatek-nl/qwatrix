@@ -204,12 +204,12 @@ func (s *Service) requireCompleteAuthChain(join gomatrixserverlib.PDU, state []g
 
 // persistFederatedJoin writes a room this server is now part of, from the state a peer described.
 //
-// Ordering is the whole care taken here. Auth events are stored before the events that need them,
-// because an event whose auth chain is absent cannot be re-checked later — and re-checking is what
-// every subsequent join, redaction and permission question in this room will do. State is stored in
-// depth order so each event's predecessors are already present, and this server's own join goes last:
-// the room's forward extremity is what the next local event is built on, and a join stored before the
-// state it authorises would leave this server appending history to the wrong end of the graph.
+// Ordering is the whole care taken here, and it is [documented at the loops][persistFederatedJoin]
+// rather than left to memory: state is applied before the authentication chain is stored, the state is
+// applied in depth order so each event's predecessors are already present, and this server's own join
+// goes last — the room's forward extremity is what the next local event is built on, and a join stored
+// before the state it authorises would leave this server appending history to the wrong end of the
+// graph.
 func (s *Service) persistFederatedJoin(ctx context.Context, roomID string, remote *RemoteJoin) error {
 	return s.store.Do(ctx, func(ctx context.Context, tx store.Tx) error {
 		room := &store.Room{
@@ -228,7 +228,18 @@ func (s *Service) persistFederatedJoin(ctx context.Context, roomID string, remot
 		writer := &eventWriter{service: s, tx: tx, ctx: ctx}
 		stored := map[string]bool{remote.JoinEvent.EventID(): true}
 
-		for _, event := range remote.AuthChain {
+		// The state the peer describes is applied first, and the authentication chain after it.
+		//
+		// The order carries two duties. Applied first, because the two lists overlap heavily — a room's
+		// create event, its power levels, and the memberships that authorise a join are in both — and an
+		// event stored by a chain-only pass would be skipped by the state pass as a duplicate, leaving a
+		// room whose member list is missing the members that the chain happened to name first. Stored
+		// second, because the chain is a closure of *rules* rather than of facts: along with the events
+		// still in force it carries member events the room stopped believing in years ago, and applying
+		// those is what puts a homeserver that was switched off in September back on the delivery list in
+		// November — see [authChainAppendRequest]. Nothing in this transaction reads an auth event, so all
+		// the chain needs is to be present by the commit, not to precede anything inside it.
+		for _, event := range sortByDepth(remote.State, remote.JoinEvent.EventID()) {
 			if stored[event.EventID()] {
 				continue
 			}
@@ -237,12 +248,12 @@ func (s *Service) persistFederatedJoin(ctx context.Context, roomID string, remot
 				return err
 			}
 		}
-		for _, event := range sortByDepth(remote.State, remote.JoinEvent.EventID()) {
+		for _, event := range remote.AuthChain {
 			if stored[event.EventID()] {
 				continue
 			}
 			stored[event.EventID()] = true
-			if err := writer.appendPrebuilt(remoteAppendRequest(roomID, event), event); err != nil {
+			if err := writer.appendPrebuilt(authChainAppendRequest(roomID, event), event); err != nil {
 				return err
 			}
 		}
@@ -275,6 +286,29 @@ func remoteAppendRequest(roomID string, event gomatrixserverlib.PDU) txAppend {
 			req.membership = content.Membership
 		}
 	}
+	return req
+}
+
+// authChainAppendRequest describes an event that arrived inside a peer's auth chain.
+//
+// The distinction from [remoteAppendRequest] is not cosmetic, it is the difference between a room and
+// a rumour. An auth chain is the transitive closure of "which rules let this event happen", and in a
+// room of any age that closure is a museum of member events the room stopped believing in years ago:
+// joins that were left, invites that were never accepted, bans that were lifted. Two of them are
+// harmless and the third is not —
+//
+//   - the room's member count and /members gain people who are not in it,
+//   - every event sent from then on is queued for delivery to their homeservers, which is how a server
+//     that switched off in September keeps being knocked at in November, at thirty seconds of peer
+//     timeout per attempt, serially, inside the join that a client is waiting on,
+//   - and where the peer's `state` array does not repeat a current event for that state key, the stale
+//     one is never corrected: this server simply holds a membership nobody else has.
+//
+// So these events are stored and not applied. That is also what a peer's own `event_auth` answer is
+// made of, so nothing is lost when the next server asks.
+func authChainAppendRequest(roomID string, event gomatrixserverlib.PDU) txAppend {
+	req := remoteAppendRequest(roomID, event)
+	req.historical = true
 	return req
 }
 

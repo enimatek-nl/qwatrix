@@ -631,7 +631,12 @@ func (w *eventWriter) appendPrebuilt(req txAppend, event gomatrixserverlib.PDU) 
 	if err != nil {
 		return err
 	}
-	if event.StateKey() != nil {
+	// A historical event is kept, not applied. Its `(type, state_key)` is usually held by a newer
+	// event in the same answer, and when it is not — an invite nobody accepted, a member whose current
+	// event the peer left out of `state` — the honest answer is that this server holds no current
+	// statement about them, not a false one. Applying it is what put a dead homeserver back on the
+	// delivery list of a room it had left.
+	if event.StateKey() != nil && !req.historical {
 		replaced, err := s.store.State.Upsert(ctx, w.tx, req.roomID, written.EventID,
 			req.eventType, req.stateKey, written.ID)
 		if err != nil {
