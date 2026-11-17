@@ -150,7 +150,7 @@ func (s *Service) backfillDefaults(ctx context.Context, localpart string, rows [
 				}
 				changed = true
 			}
-			if rule.ruleID == RuleMaster && existing.Conditions != "" {
+			if rule.ruleID == RuleMaster && carriesConditions(existing.Conditions) {
 				existing.Conditions = ""
 				existing.Actions = "[]"
 				if err := s.store.PushRules.Put(ctx, &existing); err != nil {
@@ -172,6 +172,17 @@ func (s *Service) backfillDefaults(ctx context.Context, localpart string, rows [
 		return nil
 	}
 	return s.touch(ctx, localpart)
+}
+
+// EnsureSeeded writes an account's default rules before anybody looks, so that a read that finds
+// nothing does not have to write during the read.
+//
+// That matters wherever the read is a `/sync`, which decides what a client has already been told by
+// comparing positions. A rule set that came into existence *during* the sync that reports it takes a
+// position above the token that sync hands back, so every later sync concludes the client has never
+// been told — and a long-poll, asked whether there is news, has to answer yes.
+func (s *Service) EnsureSeeded(ctx context.Context, localpart string) error {
+	return s.ensureSeeded(ctx, localpart)
 }
 
 // Rules returns an account's rules, seeded with the defaults on first use, grouped by kind in the
@@ -485,6 +496,23 @@ var staleDefaultActions = map[string]string{
 // disable a default rule but cannot give it actions (see guardDefault), so a default rule holding the
 // stale value can only have been written by the version of this server that shipped it. Without that
 // condition this would be a server silently rewriting a setting somebody chose.
+// carriesConditions reports whether a stored rule's conditions say anything at all.
+//
+// A rule with no conditions is stored as the JSON `null`, because rules are written by marshalling
+// what the server has and there was nothing to marshal. Asking whether that column is empty — which
+// is what the master-key repair used to do — is true of every rule this server has ever written, and
+// a repair that never finishes is a write on every read: each read stamped the account's rules as
+// newly changed, every client's `/sync` then concluded it had never been told them, and a long-poll
+// had nothing left to wait for. A `/sync` that always answers at once looks like a working `/sync`;
+// what it costs is a client that never sleeps.
+func carriesConditions(raw string) bool {
+	switch strings.TrimSpace(raw) {
+	case "", "null", "[]", "empty":
+		return false
+	}
+	return true
+}
+
 func carriesStaleDefault(rule store.PushRule) bool {
 	if !rule.Default {
 		return false

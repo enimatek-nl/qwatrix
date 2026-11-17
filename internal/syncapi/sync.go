@@ -250,6 +250,15 @@ func (s *Service) build(ctx context.Context, req Request, since int64) (*Respons
 	if req.RenderCache == nil {
 		req.RenderCache = s.rooms.NewRenderCache()
 	}
+	// Rules are read below, and an account that has never had them read has none until somebody asks
+	// — so ask here, before the position is taken. A write that happens during a read is the thing
+	// that makes a position lie about what the client has been told, and push rules are the one place
+	// a read still writes.
+	if s.pushRules != nil {
+		if err := s.pushRules.EnsureSeeded(ctx, req.Localpart); err != nil {
+			slog.Warn("sync: seeding push rules", "error", err)
+		}
+	}
 	// next_batch is the end of the stream as it stood when the read started.
 	position, err := s.store.Events.MaxPosition(ctx)
 	if err != nil {

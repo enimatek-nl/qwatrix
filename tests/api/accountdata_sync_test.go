@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,4 +158,38 @@ func carriesAccountData(body []byte, dataType string) bool {
 		}
 	}
 	return false
+}
+
+// typesOf names the account-data events a sync carried, for a failure message worth reading.
+func typesOf(events []json.RawMessage) string {
+	names := make([]string, 0, len(events))
+	for _, event := range events {
+		names = append(names, gjson.GetBytes(event, "type").String())
+	}
+	return strings.Join(names, ", ")
+}
+
+// TestASyncThatReportsNothingNewIsAnsweredWithNothing is the quiet half of the rule above: a client
+// that asks twice and has written nothing in between must be told there is nothing, or its long-poll
+// never sleeps and it re-reads the same state forever.
+//
+// The state that fails this is the kind a server writes while it is reading — an account's default
+// push rules, which come into existence the first time anything asks for them. If that write takes a
+// stream position while the sync that reports it has already taken its token, the position is above
+// every token the client holds, and every later sync decides the client has still not been told.
+func TestASyncThatReportsNothingNewIsAnsweredWithNothing(t *testing.T) {
+	server := harness.NewWithRegistration(t)
+	alice := server.Register(t, "quiet", "pw-quiet", false)
+
+	first := alice.MustSync(t, server, url.Values{"timeout": []string{"0"}})
+	second := alice.MustSync(t, server, url.Values{"timeout": []string{"0"}, "since": []string{first.NextBatch}})
+	if len(second.AccountData.Events) > 0 {
+		t.Errorf("an account that wrote nothing was told about %d account-data event(s) again on the sync "+
+			"after the one that reported them (token %s, next %s): %s",
+			len(second.AccountData.Events), first.NextBatch, second.NextBatch, typesOf(second.AccountData.Events))
+	}
+	if second.NextBatch == first.NextBatch {
+		t.Errorf("the second sync reported nothing yet handed back the same token %s, so a client cannot "+
+			"tell an empty answer from a stalled one", second.NextBatch)
+	}
 }
