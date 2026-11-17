@@ -47,6 +47,20 @@ type Config struct {
 	// TrustedCACertFile is an additional CA to trust for outbound federation (used by
 	// test environments that mint their own certificates).
 	TrustedCACertFile string
+	// KeyPerspectives is the comma-separated list of key servers (the specification's "perspective
+	// key servers") this server may ask about the signing keys of other servers.
+	//
+	// A server's own key is published by that server, and that answer is always preferred — a key
+	// server is asked only about a peer that could not answer for itself, which is the situation a
+	// server that has been switched off leaves behind. The events that dead server signed are still in
+	// other people's rooms, and without this second source they cannot be verified at all: the room
+	// cannot be joined and the events cannot be believed, forever. Asking a key server is how the
+	// Asking one is how the specification says to survive that, and it is a trade: a key server cannot
+	// hand over a key that verifies something its owner never signed, and it can never speak over a live
+	// peer (which is always asked first), but it can lie about a server that is gone and cannot contradict
+	// it. Empty declines the trade — this server then believes only what a peer publishes about itself,
+	// and inherits every room that has outlived one of its members.
+	KeyPerspectives string
 
 	// DataDir is where the server keeps everything it owns: database, media, keys.
 	DataDir string
@@ -131,6 +145,7 @@ func Default() *Config {
 		SyncTimeoutMax:           60 * time.Second,
 		SyncDefaultTimelineLimit: 10,
 		LogLevel:                 "info",
+		KeyPerspectives:          "matrix.org",
 		Version:                  "0.3.2-dev",
 	}
 }
@@ -149,6 +164,20 @@ func (c *Config) AppServiceConfigPatterns() []string {
 	return patterns
 }
 
+// KeyPerspectiveServers splits the configured key servers into the list to ask, in order.
+func (c *Config) KeyPerspectiveServers() []string {
+	if c == nil {
+		return nil
+	}
+	var servers []string
+	for _, server := range strings.Split(c.KeyPerspectives, ",") {
+		if server = strings.TrimSpace(server); server != "" {
+			servers = append(servers, server)
+		}
+	}
+	return servers
+}
+
 // ApplyFlags binds every setting to a flag on fs, using the same names as the environment
 // variables in [Config.ApplyEnv] without the prefix.
 func (c *Config) ApplyFlags(fs *flag.FlagSet) {
@@ -158,6 +187,8 @@ func (c *Config) ApplyFlags(fs *flag.FlagSet) {
 	fs.StringVar(&c.TLSCertFile, "tls-cert", c.TLSCertFile, "PEM certificate for the federation listener")
 	fs.StringVar(&c.TLSKeyFile, "tls-key", c.TLSKeyFile, "PEM key for the federation listener")
 	fs.StringVar(&c.TrustedCACertFile, "ca-cert", c.TrustedCACertFile, "additional CA certificate to trust when federating")
+	fs.StringVar(&c.KeyPerspectives, "key-perspectives", c.KeyPerspectives,
+		"comma-separated key servers to ask about a peer that cannot publish its own keys (empty disables)")
 	fs.BoolVar(&c.FederationInsecureSkipTLSVerify, "federation-insecure-skip-tls-verify", c.FederationInsecureSkipTLSVerify,
 		"do not verify peer TLS certificates when federating (test networks only; this removes a security boundary)")
 	fs.StringVar(&c.DataDir, "data-dir", c.DataDir, "directory for the database, media and signing keys")
@@ -223,6 +254,7 @@ func (c *Config) ApplyEnv(getenv func(string) (string, bool)) error {
 	str("TLS_CERT", &c.TLSCertFile)
 	str("TLS_KEY", &c.TLSKeyFile)
 	str("CA_CERT", &c.TrustedCACertFile)
+	str("KEY_PERSPECTIVES", &c.KeyPerspectives)
 	if err := boolean("FEDERATION_INSECURE_SKIP_TLS_VERIFY", &c.FederationInsecureSkipTLSVerify); err != nil {
 		return err
 	}

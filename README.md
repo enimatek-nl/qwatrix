@@ -134,6 +134,7 @@ a flag you did not pass never overwrites an inherited environment variable.
 -federation-addr             server-server listen address       (empty = federation off)
 -tls-cert / -tls-key         PEM pair for the federation listener
 -ca-cert                     extra CA to trust when federating
+-key-perspectives            key servers to ask about a peer that has gone away  (matrix.org)
 -federation-insecure-skip-tls-verify   disable peer TLS verification (test networks only)
 -registration                allow POST /register               (true)
 -registration-secret         shared secret for the admin endpoint (empty = disabled)
@@ -151,7 +152,7 @@ a flag you did not pass never overwrites an inherited environment variable.
 
 Each has an environment spelling: `QWATRIX_SERVER_NAME`, `QWATRIX_ADDR`,
 `QWATRIX_FEDERATION_ADDR`, `QWATRIX_TLS_CERT`, `QWATRIX_TLS_KEY`, `QWATRIX_CA_CERT`,
-`QWATRIX_FEDERATION_INSECURE_SKIP_TLS_VERIFY`, `QWATRIX_DATA_DIR`, `QWATRIX_DB`,
+`QWATRIX_FEDERATION_INSECURE_SKIP_TLS_VERIFY`, `QWATRIX_KEY_PERSPECTIVES`, `QWATRIX_DATA_DIR`, `QWATRIX_DB`,
 `QWATRIX_REGISTRATION_SECRET`, `QWATRIX_ROOM_VERSION`, `QWATRIX_LOG_LEVEL`, `QWATRIX_VERSION`,
 `QWATRIX_REGISTRATION`, `QWATRIX_THUMBNAILS`, `QWATRIX_RATE_LIMIT`, `QWATRIX_MEDIA_LIMIT`.
 
@@ -220,6 +221,21 @@ Joining a room buys its current state and none of its history, so a question abo
 room hosted elsewhere is put to a server that has it, and what comes back is kept *detached*:
 page-able through `/messages` and `/context`, and outside the room's graph, its state, its tip and
 its `/sync`, because a user who paged up to last year has not received last year.
+
+Rooms outlive servers. A domain drops its address, a deployment is abandoned, and the membership event
+of somebody who joined in 2021 stays part of the state of a room somebody tries to join today — signed by
+a key whose owner can no longer publish it. A server that only ever asks a peer for its own key therefore
+refuses that room forever, and there is nothing wrong with the room. So a second source is asked when the
+first one cannot answer: a perspective key server, which replies with the key documents it cached while
+the peer was still up. `-key-perspectives` names them, and it defaults to `matrix.org`;
+setting it empty declines the trade and inherits every room that has outlived one of its members.
+
+The trade is worth stating plainly, because it is a trust decision and not a bug fix. A key server is
+asked only about a server that cannot answer for itself, and it can never speak over a live peer, which
+is always asked first. It cannot hand over a key that verifies something its owner never signed, since a
+document is only believed when the keys inside it signed it. What it can do is lie about a server that is
+gone and cannot contradict it — which is the same thing every deployment that ships a perspective server
+accepts, and the reason the setting can be turned off.
 
 Encrypted conversations cross the border as well as rooms do. A peer may ask this server which of its
 users' devices hold which keys and for a one-time key to begin a session with, and this server asks peers

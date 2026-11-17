@@ -84,6 +84,12 @@ type Options struct {
 	// peer's own server. It may be nil, in which case signed requests are refused rather than
 	// accepted on trust.
 	Peer *Peer
+	// KeyPerspectives names the key servers this server may ask about a peer that cannot publish its own
+	// keys. It is repeated on every key ring this server builds, because the question "who signed this"
+	// is asked by the join handshake, by the history read and by the incoming transaction path, and a
+	// room that is joinable but unreadable — or the other way round — is a room with half a policy applied.
+	// Empty means this server believes only live peers.
+	KeyPerspectives []string
 	// Devices answers a peer's question about the device lists of this server's own users. It may be
 	// nil, in which case the endpoint refuses rather than answering that those users have no devices —
 	// a peer that hears "no devices" stops trying to encrypt to them, which is a quiet way of deleting
@@ -150,7 +156,7 @@ type transactionRecord struct {
 func New(id *identity.Identity, opts Options) http.Handler {
 	h := &Handler{identity: id, opts: opts, mux: http.NewServeMux()}
 	if opts.Peer != nil {
-		h.keyRing = NewKeyRing(opts.Peer, id)
+		h.keyRing = NewKeyRing(opts.Peer, id, opts.KeyPerspectives...)
 	}
 	h.mux.HandleFunc("GET /_matrix/federation/v1/version", h.handleVersion)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/make_join/{roomID}/{userID}", h.handleMakeJoin)

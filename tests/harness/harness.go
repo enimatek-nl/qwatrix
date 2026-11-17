@@ -65,6 +65,11 @@ type Options struct {
 	// can stand in for a real homeserver. It mirrors the operator flag of the same name and is
 	// off otherwise, so a test that forgets to ask for it does not silently weaken the rest.
 	FederationInsecureTLS bool
+	// KeyPerspectives names the key servers this server's key ring may ask about a peer that cannot
+	// publish its own keys. The default is none, which is the opposite of the operator default: a test
+	// that did not ask for a key server must not reach for one over the network, and the tests that are
+	// about this fallback stand theirs up and name them.
+	KeyPerspectives []string
 }
 
 // Option mutates [Options].
@@ -94,6 +99,14 @@ func WithApplicationService(registration string) Option {
 // certificate no CA could have issued. Test-only, by the same argument as the operator flag.
 func WithFederationInsecureTLS() Option {
 	return func(o *Options) { o.FederationInsecureTLS = true }
+}
+
+// WithKeyPerspectives gives this server key servers to ask about a peer that cannot publish its own
+// signing keys — the fallback a deployment reaches for when a server it holds events about has stopped
+// existing. Without it a test server never asks anybody but the peer itself, which is both the safer
+// default and what most tests are asserting.
+func WithKeyPerspectives(servers ...string) Option {
+	return func(o *Options) { o.KeyPerspectives = append(o.KeyPerspectives, servers...) }
 }
 
 // WithClosedRegistration disables open registration.
@@ -206,6 +219,10 @@ func start(t *testing.T, options Options, dir string, logs *syncBuffer) *Server 
 	cfg.RateLimitEnabled = options.RateLimit
 	cfg.DefaultRoomVersion = options.DefaultRoomVersion
 	cfg.FederationInsecureSkipTLSVerify = options.FederationInsecureTLS
+	// Deliberately taken from the options rather than from the defaults, which name a real key server:
+	// a test that has not stood up one has nobody to ask, and must not go looking on the public network
+	// for an answer it expected to be refused.
+	cfg.KeyPerspectives = strings.Join(options.KeyPerspectives, ",")
 	if len(options.ApplicationServices) > 0 {
 		// One file per service, in the server's own directory, which the test's cleanup removes.
 		var paths []string

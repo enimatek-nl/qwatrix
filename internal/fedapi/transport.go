@@ -211,6 +211,27 @@ func (p *Peer) GetSignedJSON(ctx context.Context, server spec.ServerName, path s
 	return nil
 }
 
+// LookupServerKeys asks a key server — a *perspective* server — for the signing keys of other servers.
+//
+// This is the one federation question asked of a server in order to believe a third one, and it is
+// unsigned in both directions: the specification does not sign it, and a server that had to identify
+// itself before answering could never answer about a server that has stopped existing. What makes the
+// answer worth having is not the connection it arrives over but the signature carried inside the
+// document, which belongs to the server being asked about and not to the one relaying it — see
+// [perspectiveFetch] for why that distinction makes a notary safe to ask.
+func (p *Peer) LookupServerKeys(ctx context.Context, notary spec.ServerName,
+	wanted map[gomatrixserverlib.PublicKeyLookupRequest]spec.Timestamp,
+) ([]gomatrixserverlib.ServerKeys, error) {
+	if p == nil || p.client == nil {
+		return nil, fmt.Errorf("federation: no peer client to ask about keys")
+	}
+	documents, err := p.client.LookupServerKeys(ctx, notary, wanted)
+	if err != nil {
+		return nil, fmt.Errorf("federation: asking %s for the signing keys of other servers: %w", notary, err)
+	}
+	return documents, nil
+}
+
 // Signed is the client that signs requests with this server's identity. Every endpoint that asks a
 // peer for something about a room — state, events, a transaction to deliver — goes through this.
 func (p *Peer) Signed() fclient.FederationClient { return p.fed }

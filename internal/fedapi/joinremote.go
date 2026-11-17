@@ -151,8 +151,17 @@ func (c *RemoteJoiner) joinVia(ctx context.Context, userID, roomID, reason strin
 	}
 
 	// 5. Verify the answer before any of it is believed.
+	//
+	// A refusal here is a different kind of failure from the ones above, and it deserves a line of its
+	// own: the peer has already admitted the join, so its room now holds a member from this server while
+	// this server holds no room at all. Nothing later undoes that — the state that would be needed to
+	// leave properly is the state this server just refused to believe — so the log has to say who is
+	// left holding it, which is otherwise a mystery for somebody else to solve from a member list.
 	state, authChain, err := c.verifyJoinAnswer(ctx, roomID, version, joinEvent, response)
 	if err != nil {
+		slog.Warn("fedapi: a peer admitted this server's join and then described a room this server cannot believe;"+
+			" the peer holds a membership this server will not remember, and the room cannot be joined until that state verifies",
+			"room_id", roomID, "server", server, "user", userID, "error", err)
 		return nil, err
 	}
 	if response.MembersOmitted {

@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -258,15 +259,16 @@ func New(cfg *config.Config) (*App, error) {
 	toDeviceService.WithForwarder(app.outbox)
 
 	app.federation = fedapi.New(serverIdentity, fedapi.Options{
-		ServerName:     spec.ServerName(cfg.ServerName),
-		Implementation: "qwatrix",
-		Version:        cfg.Version,
-		Join:           rooms,
-		Directory:      rooms,
-		Peer:           peer,
-		Devices:        keyService,
-		Media:          mediaService,
-		DeviceLists:    deviceListService,
+		ServerName:      spec.ServerName(cfg.ServerName),
+		Implementation:  "qwatrix",
+		Version:         cfg.Version,
+		KeyPerspectives: cfg.KeyPerspectiveServers(),
+		Join:            rooms,
+		Directory:       rooms,
+		Peer:            peer,
+		Devices:         keyService,
+		Media:           mediaService,
+		DeviceLists:     deviceListService,
 		// The far half of the same path: a peer's key share for one of this server's devices.
 		ToDevice: toDeviceService,
 		// The read a peer makes when this server is the one holding the history it lacks.
@@ -318,7 +320,7 @@ func New(cfg *config.Config) (*App, error) {
 		ServerName: spec.ServerName(cfg.ServerName),
 		Peer:       peer,
 		Events:     eventService,
-		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
+		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity, cfg.KeyPerspectiveServers()...),
 	}))
 	// Knocking is the same shape of problem: a user knocking on a room this server does not hold needs a
 	// server that does hold it, both for where the knock attaches and for the answer the client shows
@@ -348,7 +350,7 @@ func New(cfg *config.Config) (*App, error) {
 		ServerName: spec.ServerName(cfg.ServerName),
 		Peer:       peer,
 		Events:     eventService,
-		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity),
+		KeyRing:    fedapi.NewKeyRing(peer, serverIdentity, cfg.KeyPerspectiveServers()...),
 		Store:      rooms,
 		Versions:   rooms,
 	}))
@@ -452,6 +454,17 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		slog.Info("server-server API listening",
 			"addr", a.cfg.FederationAddr, "server_name", a.cfg.ServerName)
+		// Whose word this server takes about servers that cannot give it is a trust decision, and an
+		// operator is entitled to see it after the fact rather than reconstruct it from defaults —
+		// including the case where the answer is "nobody", because that is the setting that quietly
+		// decides which rooms this server can join.
+		if perspectives := a.cfg.KeyPerspectiveServers(); len(perspectives) > 0 {
+			slog.Info("key servers named for peers that cannot publish their own signing keys",
+				"key_perspectives", strings.Join(perspectives, ","))
+		} else {
+			slog.Info("no key server named: an event signed by a server that has gone away cannot be verified here",
+				"key_perspectives", "")
+		}
 		group.Go(func() error {
 			if err := fedSrv.ServeTLS(fedLn, "", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				return fmt.Errorf("server-server listener: %w", err)
