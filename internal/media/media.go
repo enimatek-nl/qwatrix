@@ -49,6 +49,9 @@ type Service struct {
 	// remote asks another server for a file it originates. Nil on a server that does not federate,
 	// which makes a request for foreign media a 404 rather than an error.
 	remote RemoteFetcher
+	// flights coalesce concurrent fetches of one remote file and remember a refusal for a moment,
+	// so a room whose members share an avatar asks its origin once rather than once per viewer.
+	flights *remoteFetchFlights
 
 	thumbnailsEnabled bool
 	// thumbnailDir holds the generated thumbnails, named after the file and the size each one was
@@ -89,6 +92,7 @@ func New(st *store.Store, opts Options) (*Service, error) {
 		maxBytes:          opts.MaxBytes,
 		thumbnailsEnabled: opts.ThumbnailsEnabled,
 		thumbnailDir:      filepath.Join(opts.Dir, "thumbnails"),
+		flights:           newRemoteFetchFlights(remoteFetchPause),
 	}
 	if opts.ThumbnailsEnabled {
 		if err := os.MkdirAll(service.thumbnailDir, 0o750); err != nil {

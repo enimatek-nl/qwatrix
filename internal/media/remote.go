@@ -91,7 +91,51 @@ func remoteMediaPaths(origin, mediaID string) []string {
 	}
 }
 
-// fetchRemote asks the origin for a file and keeps a copy of it.
+// fetchRemote obtains a file that lives on another server, once, however many viewers asked for it.
+//
+// Three things happen here and only one of them is a request to a peer: a refusal is believed for
+// [remoteFetchPause], one caller leads the fetch for a given file while the rest wait on it, and a
+// waiter reads the copy the leader cached rather than the leader's own file handle — two callers sharing
+// one [os.File] is one `Close` too many and a read offset neither of them chose.
+func (s *Service) fetchRemote(ctx context.Context, origin, mediaID string) (*store.MediaFile, *os.File, error) {
+	if s.remote == nil || s.flights == nil {
+		return s.fetchRemoteUncached(ctx, origin, mediaID)
+	}
+	key := origin + "\x00" + mediaID
+	call, leader, cachedErr := s.flights.acquire(key)
+	if cachedErr != nil {
+		// The origin refused this file a moment ago and said so in a sentence this server already
+		// handed to the first caller. Saying it again is free; asking the peer again is not, and on an
+		// origin whose federation listener is broken it is a TLS handshake each time.
+		slog.Debug("media: not asking an origin that only just refused this file",
+			"origin", origin, "media_id", loggableID(mediaID), "error", cachedErr)
+		return nil, nil, cachedErr
+	}
+	if !leader {
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			// The person watching gave up; whoever is still waiting gets the answer they came for.
+			return nil, nil, matrix.NewNotFound("Media %q:%q could not be fetched from its homeserver",
+				origin, mediaID)
+		}
+		if call.err != nil {
+			return nil, nil, call.err
+		}
+		cached, err := s.store.Media.GetUpstream(ctx, origin, mediaID)
+		if err != nil {
+			return nil, nil, matrix.NewNotFound("Media %q:%q could not be fetched from its homeserver",
+				origin, mediaID)
+		}
+		return s.open(cached)
+	}
+
+	row, file, err := s.fetchRemoteUncached(ctx, origin, mediaID)
+	s.flights.complete(key, call, err)
+	return row, file, err
+}
+
+// fetchRemoteUncached asks the origin for a file and keeps a copy of it.
 //
 // Why this is not the open proxy it resembles at first glance: the caller names a media ID and an
 // origin *server*, and what leaves this process is a signed GET to one fixed federation path on that
@@ -107,7 +151,7 @@ func remoteMediaPaths(origin, mediaID string) []string {
 // upload limit, so this server never stores a file it would refuse to serve — and the content type is
 // served with the same headers an upload gets, so a fetched HTML file is no more able to execute on
 // this origin than an uploaded one is.
-func (s *Service) fetchRemote(ctx context.Context, origin, mediaID string) (*store.MediaFile, *os.File, error) {
+func (s *Service) fetchRemoteUncached(ctx context.Context, origin, mediaID string) (*store.MediaFile, *os.File, error) {
 	if s.remote == nil {
 		return nil, nil, matrix.NewNotFound("Media %q:%q was not found on this homeserver", origin, mediaID)
 	}
