@@ -14,9 +14,33 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$HERE/.." && pwd)"
 OUT="${1:-/tmp/qwatrix-sweep}"
 PKG_LIST="${COMPLEMENT_PKGS:-./tests/csapi ./tests}"
 mkdir -p "$OUT"
+
+# Build the image this sweep measures, and refuse to measure anything else.
+#
+# Run 129 reused whatever image the previous sweep had left in `localhost/qwatrix-complement:latest`
+# and reported "no test changed state" about a binary two releases behind the tree — the container
+# logged version 0.3.0-dev while the working tree said 0.3.1-dev. `make complement` builds the image
+# and `make complement-sweep` did not, so the two halves disagreed about what a "run" measures. The
+# version a container prints is the only evidence of what was actually tested, so it is checked here
+# against the one place the version is written.
+IMAGE="${COMPLEMENT_BASE_IMAGE:-localhost/qwatrix-complement:latest}"
+echo "building the complement image from $REPO"
+make -C "$REPO" complement-image >/dev/null || { echo "sweep: could not build the complement image" >&2; exit 1; }
+# The one place the version is written. Anchored to a bare `Version:` field, because config.go also
+# holds `DefaultRoomVersion: "11"`, which is not a release.
+WANTED=$(grep -E '^[[:space:]]*Version:[[:space:]]*"' "$REPO/internal/config/config.go" | head -1 | cut -d'"' -f2)
+[ -n "$WANTED" ] || { echo "sweep: cannot read the version out of internal/config/config.go" >&2; exit 1; }
+# The docker-to-podman shim puts its own banner on the first line, so take the banner's own line.
+REPORTED=$(docker run --rm --entrypoint /usr/local/bin/qwatrix "$IMAGE" -h 2>&1 | grep -m1 -E '^qwatrix ')
+case "$REPORTED" in
+  *"$WANTED"*) echo "  image under test: $REPORTED" ;;
+  *) echo "sweep: the image reports \"$REPORTED\" while this tree is $WANTED — refusing to measure a binary that is not this one" >&2; exit 1 ;;
+esac
+echo
 
 COMBINED="$OUT/results.txt"
 : > "$COMBINED"
