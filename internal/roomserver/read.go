@@ -1197,17 +1197,39 @@ func (s *Service) AliasesOfRoom(ctx context.Context, roomID string) ([]string, e
 	return out, nil
 }
 
-// ResolveAlias resolves a local alias to a room ID.
-func (s *Service) ResolveAlias(ctx context.Context, alias string) (string, error) {
+// LocalRoomIDForAlias resolves an alias this server itself holds.
+//
+// This is the half that can be served to a peer. A server answering `/_matrix/federation/v1/resolve`
+// for an alias on *another* server would be repeating what it was told, and forwarding a lookup made
+// by an anonymous stranger through this server's name turns it into somebody else's resolver.
+func (s *Service) LocalRoomIDForAlias(ctx context.Context, alias string) (string, error) {
 	entry, err := s.store.Aliases.Get(ctx, alias)
 	if err != nil {
-		if store.IsNotFound(err) {
-			return "", matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
-				"Alias %q does not exist on this homeserver", alias)
-		}
 		return "", err
 	}
 	return entry.RoomID, nil
+}
+
+// ResolveAlias resolves an alias to a room ID, asking the server it names when it is not one of
+// this server's own.
+func (s *Service) ResolveAlias(ctx context.Context, alias string) (string, error) {
+	roomID, err := s.LocalRoomIDForAlias(ctx, alias)
+	if err == nil {
+		return roomID, nil
+	}
+	if !store.IsNotFound(err) {
+		return "", err
+	}
+	// An alias this server does not hold may still be a real room, on the server the alias names.
+	// That is the common case for the one thing a client most often types: `#room:elsewhere` in a
+	// join box, or somebody's space link. Missing local table is not evidence about the rest of the
+	// federation, and treating it as such is what makes a client say "this room does not exist"
+	// about a room that has been waiting for the user since it was created.
+	if _, host, parseErr := matrix.ParseAlias(alias); parseErr == nil && !s.isLocalServer(host) {
+		return s.remoteRoomIDFor(ctx, alias)
+	}
+	return "", matrix.NewAPIError(http.StatusNotFound, matrix.ErrNotFound,
+		"Alias %q does not exist on this homeserver", alias)
 }
 
 // CreateAlias points a new alias at a room.
@@ -1360,6 +1382,11 @@ func (s *Service) hasPower(ctx context.Context, roomID, localpart string, requir
 
 // PublicRoomsRequest is a GET /publicRooms or GET /directory/list/room request.
 type PublicRoomsRequest struct {
+	// Server names another homeserver whose published directory should be fetched, empty for this
+	// server's own. A client sends it when the person typed a server name into a room browser, and
+	// answering it with this server's own list is the one response that cannot be defended: the
+	// rooms are simply nowhere in the answer, and the user concludes the server has none.
+	Server      string
 	Limit       int
 	Since       string
 	Filter      string
@@ -1397,8 +1424,12 @@ type PublicRoom struct {
 	RoomType string `json:"room_type,omitempty"`
 }
 
-// PublicRooms lists rooms this server publishes in the room directory.
+// PublicRooms lists the rooms a room directory publishes: this server's own, or — when the request
+// names another server — that server's, fetched over federation.
 func (s *Service) PublicRooms(ctx context.Context, req PublicRoomsRequest) (*PublicRoomsPage, error) {
+	if !s.isLocalServer(req.Server) {
+		return s.remotePage(ctx, req.Server, req)
+	}
 	limit := req.Limit
 	if limit <= 0 {
 		limit = 100

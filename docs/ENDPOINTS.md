@@ -165,7 +165,8 @@ slash are served by the same route.
 | `GET` | `/directory/room/{alias}` | [Resolve alias](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directoryroomalias) | implemented |
 | `PUT`, `DELETE` | `/directory/room/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoryroomroomalias) | implemented |
 | `PUT`, `DELETE` | `/directories/alias/{alias}` | [Create / delete alias](https://spec.matrix.org/latest/client-server-api/#put_matrixclientv3directoriesaliasalias) | implemented |
-| `GET`, `POST` | `/publicRooms` | [Public rooms](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms) | implemented |
+| `GET`, `POST` | `/publicRooms` | [Public rooms](https://spec.matrix.org/latest/client-server-api/#post_matrixclientv3publicrooms) — this server's own list, or another server's when the request names one (`server_of_interest` on the GET, `server` in the POST body), fetched from that server over federation | implemented |
+| `GET` | `/thirdparty/protocols` | [Protocols](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3thirdpartyprotocols) — this server bridges no third-party networks, so the list is empty; it is answered rather than refused because a room directory asks this question *before* it asks for rooms, and a 404 there is a client exception where an empty list is a complete answer | implemented |
 | `GET`, `PUT` | `/directory/list/room/{roomID}` | [Room directory visibility](https://spec.matrix.org/latest/client-server-api/#get_matrixclientv3directorylistroomroomid) | implemented |
 
 ## Presence
@@ -427,6 +428,9 @@ that arrives unauthenticated is a peer asking who this server is.
 | Method | Path | Spec | Status |
 | --- | --- | --- | --- |
 | `GET` | `/_matrix/federation/v1/version` | [GET federation version](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1version) | implemented |
+| `GET`, `POST` | `/_matrix/federation/v1/publicRooms` | [Get a list of public rooms](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1publicRooms) — what this server publishes; without this endpoint a public room is invisible to everybody else's room directory | implemented |
+| `GET` | `/_matrix/federation/v1/resolve/{roomIDOrAlias}` | [Get room ID for alias](https://spec.matrix.org/latest/server-server-api/#get_matrixfederationv1resolveroomidoralias) — answered for aliases carrying this server's own name, and refused for another's, because repeating what a third server said on request from any stranger would make this server a proxy in front of it | implemented |
+| `GET` | `/_matrix/federation/v1/query/directory` | The older spelling of the same question, which gomatrixserverlib and the servers built on it still ask; kept because a server whose aliases half the federation cannot resolve has aliases that do not work | implemented |
 | `POST` | `/_matrix/key/v2/query` | [Query keys in a batch](https://spec.matrix.org/latest/server-server-api/#post_matrixkeyv2query) — served for this server's own name; other names are left out of the result, as the specification allows, because holding another server's keys is a notary cache this server does not have | implemented |
 | `GET` | `/_matrix/key/v2/server` | [Get server keys](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2server) | implemented |
 | `GET` | `/_matrix/key/v2/server/{keyID}` | [Get specific server key](https://spec.matrix.org/latest/server-server-api/#get_matrixkeyv2serverkeyid) | implemented |

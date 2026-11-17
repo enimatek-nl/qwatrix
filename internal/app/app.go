@@ -262,6 +262,7 @@ func New(cfg *config.Config) (*App, error) {
 		Implementation: "qwatrix",
 		Version:        cfg.Version,
 		Join:           rooms,
+		Directory:      rooms,
 		Peer:           peer,
 		Devices:        keyService,
 		Media:          mediaService,
@@ -328,6 +329,18 @@ func New(cfg *config.Config) (*App, error) {
 		Peer:       peer,
 		Events:     eventService,
 	}))
+	// Two questions about *other* servers have no local answer at all: what rooms does that server
+	// publish, and what does one of its aliases point at. Both are asked over the same signed
+	// transport, and both fall back to a peer's older or public spellings when it says it does not
+	// serve the modern endpoint — see fedapi.RemoteDirectory for why a server that answers its own
+	// aliases over the client API can still refuse to implement federation's.
+	roomDirectory := fedapi.NewRemoteDirectory(fedapi.RemoteDirectoryOptions{
+		ServerName:      spec.ServerName(cfg.ServerName),
+		Peer:            peer,
+		PublicDirectory: publicDirectoryClient(cfg),
+	})
+	rooms.WithRemoteDirectory(roomDirectory)
+	rooms.WithRemoteAliasSource(roomDirectory)
 	// A user who asks where a joined room was last March cannot be answered from the local database,
 	// because joining a room buys its current state and none of its past. This gives the room server the
 	// same transport, for the read half: ask a resident peer, verify what it says, and keep it detached.
@@ -526,4 +539,21 @@ func ensureDataDir(cfg *config.Config) error {
 		}
 	}
 	return nil
+}
+
+// publicDirectoryClient is the HTTP client used for the one question about a peer that the
+// federation API cannot answer — see fedapi.RemoteDirectory.LookupAlias.
+//
+// It obeys the same switch as the federation transport, because it is the same connection in all
+// but the signature: a test network whose peers have self-signed certificates has to turn
+// verification off for both, and turning it off for one and not the other would mean the alias
+// lookup fails where the join succeeds.
+func publicDirectoryClient(cfg *config.Config) *http.Client {
+	client := &http.Client{Timeout: 15 * time.Second}
+	if cfg.FederationInsecureSkipTLSVerify {
+		client.Transport = &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // a documented test-network switch
+		}
+	}
+	return client
 }

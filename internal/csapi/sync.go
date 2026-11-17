@@ -248,6 +248,11 @@ func registerRoomRoutes(mux *httpx.RouteTable, deps Deps) {
 		mux.HandleFunc("GET "+path, deps.optionalAuth(handlePublicRooms(deps)))
 		mux.HandleFunc("POST "+path, deps.optionalAuth(handlePublicRooms(deps)))
 	}
+	for _, path := range versionedPath("thirdparty/protocols") {
+		// Public, and answered even though this server bridges no third-party networks: see
+		// handleThirdpartyProtocols.
+		mux.HandleFunc("GET "+path, handleThirdpartyProtocols())
+	}
 	for _, path := range versionedPath("capabilities") {
 		// Authenticated even though it looks like discovery: capabilities can depend on
 		// who is asking, and the specification answers 401 to an anonymous caller.

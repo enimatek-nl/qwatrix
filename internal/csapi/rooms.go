@@ -885,6 +885,7 @@ func handlePublicRooms(deps Deps) http.HandlerFunc {
 			var body struct {
 				Limit             int    `json:"limit"`
 				Since             string `json:"since"`
+				Server            string `json:"server"`
 				GenericSearchTerm string `json:"generic_search_term"`
 				Filter            struct {
 					GenericSearchTerm string `json:"generic_search_term"`
@@ -899,12 +900,22 @@ func handlePublicRooms(deps Deps) http.HandlerFunc {
 			} else if body.GenericSearchTerm != "" {
 				query.Set("filter", body.GenericSearchTerm)
 			}
+			if body.Server != "" {
+				query.Set("server", body.Server)
+			}
 			if body.Limit > 0 {
 				query.Set("limit", strconv.Itoa(body.Limit))
 			}
 			if body.Since != "" {
 				query.Set("since", body.Since)
 			}
+		}
+		// Which server's directory the person is asking for. The two spellings are both live:
+		// `server_of_interest` is what the GET form of this endpoint calls it and `server` is what
+		// the POST body calls it, and clients have shipped sending either to either.
+		server := query.Get("server")
+		if raw := query.Get("server_of_interest"); raw != "" {
+			server = raw
 		}
 		limit := 100
 		if raw := query.Get("limit"); raw != "" {
@@ -916,6 +927,7 @@ func handlePublicRooms(deps Deps) http.HandlerFunc {
 			limit = parsed
 		}
 		page, err := deps.Rooms.PublicRooms(r.Context(), roomserver.PublicRoomsRequest{
+			Server:      server,
 			Limit:       limit,
 			Since:       query.Get("since"),
 			Filter:      query.Get("filter"),
@@ -926,6 +938,19 @@ func handlePublicRooms(deps Deps) http.HandlerFunc {
 			return
 		}
 		httpx.RespondJSON(w, http.StatusOK, page)
+	}
+}
+
+// handleThirdpartyProtocols answers the list of third-party protocols this server bridges — which
+// for this server is none, and saying so is the whole point.
+//
+// An empty list is a complete, honest answer. A 404 is not: Element's room-directory pane asks this
+// question before it asks for rooms, and an exception there is thrown away by nothing, so the pane
+// sits there having loaded nothing and looks like a homeserver with an empty room directory. That is
+// the difference between a server with no bridges and a server that appears broken.
+func handleThirdpartyProtocols() http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{"instances": []any{}})
 	}
 }
 

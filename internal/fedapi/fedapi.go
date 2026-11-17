@@ -112,6 +112,11 @@ type Options struct {
 	// join handshake answers that this server does not take federated joins — a refusal the
 	// peer can read, rather than a route it has to guess the meaning of.
 	Join JoinServer
+	// Directory serves this server's published room list and its aliases to peers. It may be nil,
+	// in which case both answer that this server does not serve the directory — a refusal, rather
+	// than the empty list a peer would read as "no rooms and no aliases here" and repeat to
+	// everybody it talks to.
+	Directory DirectoryServer
 }
 
 // Handler serves the server-server API for one homeserver.
@@ -159,6 +164,10 @@ func New(id *identity.Identity, opts Options) http.Handler {
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_knock/{roomID}/{eventID}", h.handleSendKnock)
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/send_leave/{roomID}/{eventID}", h.handleSendLeave)
 	h.mux.HandleFunc("PUT /_matrix/federation/v2/send_leave/{roomID}/{eventID}", h.handleSendLeave)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/publicRooms", h.handlePublicRooms)
+	h.mux.HandleFunc("POST /_matrix/federation/v1/publicRooms", h.handlePublicRooms)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/resolve/{roomIDOrAlias}", h.handleResolveAlias)
+	h.mux.HandleFunc("GET /_matrix/federation/v1/query/directory", h.handleQueryDirectory)
 	h.mux.HandleFunc("GET /_matrix/federation/v1/event_auth/{roomID}/{eventID}", h.handleEventAuth(false))
 	h.mux.HandleFunc("GET /_matrix/federation/v2/event_auth/{roomID}/{eventID}", h.handleEventAuth(true))
 	h.mux.HandleFunc("PUT /_matrix/federation/v1/invite/{roomID}/{eventID}", h.handleSendInvite(false))

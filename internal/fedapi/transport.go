@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/enimatek-nl/qwatrix/internal/matrix"
 	"github.com/matrix-org/gomatrixserverlib"
 	"github.com/matrix-org/gomatrixserverlib/fclient"
 	"github.com/matrix-org/gomatrixserverlib/spec"
@@ -198,7 +199,7 @@ func (p *Peer) GetSignedJSON(ctx context.Context, server spec.ServerName, path s
 		_ = response.Body.Close()
 	}()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("federation: %s answered %s with %s", server, path, response.Status)
+		return peerRefused(server, path, response)
 	}
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxPeerDocumentBytes))
 	if err != nil {
@@ -213,6 +214,66 @@ func (p *Peer) GetSignedJSON(ctx context.Context, server spec.ServerName, path s
 // Signed is the client that signs requests with this server's identity. Every endpoint that asks a
 // peer for something about a room — state, events, a transaction to deliver — goes through this.
 func (p *Peer) Signed() fclient.FederationClient { return p.fed }
+
+// peerRefusedError is a peer's answer to a signed query, kept as the peer spelled it.
+//
+// A refusal that reaches the caller as a plain "answered 404" cannot be told apart from the peer
+// saying the thing it was asked does not exist, and the two want opposite reactions: "I have never
+// heard of that alias" should end the enquiry, "I do not serve that endpoint" means ask somebody
+// else or try the older spelling. The specification makes that difference available — an endpoint
+// it does not have is a 404 M_UNRECOGNIZED, an object it does not have is a 404 M_NOT_FOUND — so
+// this keeps the error code rather than flattening it.
+type peerRefusedError struct {
+	Server spec.ServerName
+	Path   string
+	Status int
+	Code   matrix.ErrCode
+	// Message is what the peer offered as its reason, when it offered one.
+	Message string
+}
+
+func (e *peerRefusedError) Error() string {
+	if e.Message != "" {
+		return fmt.Sprintf("federation: %s answered %s with %s: %s", e.Server, e.Path,
+			http.StatusText(e.Status), e.Message)
+	}
+	return fmt.Sprintf("federation: %s answered %s with %d %s", e.Server, e.Path, e.Status,
+		http.StatusText(e.Status))
+}
+
+// unrecognized reports whether the refusal was "I do not serve this", which is the one refusal that
+// justifies asking the same question another way.
+func (e *peerRefusedError) unrecognized() bool { return e.Code == matrix.ErrUnrecognized }
+
+// peerRefused reads a peer's error document and returns it as a [peerRefusedError].
+//
+// The body is read because the error code is the useful part of the answer, and it is read only up
+// to a limit and never trusted: a peer that answers an error with an HTML page is a peer whose
+// refusal is still a refusal, just one without a code.
+func peerRefused(server spec.ServerName, path string, response *http.Response) error {
+	refusal := &peerRefusedError{Server: server, Path: path, Status: response.StatusCode}
+	var body struct {
+		Errcode string `json:"errcode"`
+		Error   string `json:"error"`
+	}
+	raw, err := io.ReadAll(io.LimitReader(response.Body, 4<<10))
+	if err == nil && json.Unmarshal(raw, &body) == nil {
+		refusal.Code = matrix.ErrCode(body.Errcode)
+		refusal.Message = body.Error
+	}
+	if refusal.Code == "" {
+		refusal.Message = strings.TrimSpace(strings.Join(strings.Fields(string(raw)), " "))
+		// A 404 that is not a Matrix error document at all is nearly always a reverse proxy or an
+		// application that has never heard of the endpoint, because a server that understood the
+		// question and refused it answers with M_NOT_FOUND in a body. Reading it as
+		// M_UNRECOGNIZED lets the older spelling be tried, which costs one request; reading it as
+		// "not found" would end the enquiry with a claim about the room this server cannot make.
+		if response.StatusCode == http.StatusNotFound {
+			refusal.Code = matrix.ErrUnrecognized
+		}
+	}
+	return refusal
+}
 
 // Insecure reports whether peer certificate verification is off.
 func (p *Peer) Insecure() bool { return p.insecure }

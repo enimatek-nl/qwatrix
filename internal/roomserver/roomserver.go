@@ -77,6 +77,13 @@ type Service struct {
 	// outbound federation, where the answer to "where was this room last March" is honestly "this server
 	// does not know".
 	remoteHistory RemoteHistory
+	// remoteDirectory asks another server what rooms it publishes. Nil means this server keeps its
+	// directory to itself, in which case a request for somebody else's list is refused rather than
+	// answered with its own.
+	remoteDirectory RemoteDirectorySource
+	// remoteAliases resolves aliases that belong to other servers. Nil means a remote alias is a
+	// 404 from here, which is a claim about a room on a server this one never asked.
+	remoteAliases RemoteAliasSource
 	// federatesOutbound decides whether a locally originated event creates an obligation to tell
 	// other homeservers about it. On by default, because a homeserver that does not send events to
 	// peers is not federating, and the honest failure of a deployment that turns it off is a queue it
