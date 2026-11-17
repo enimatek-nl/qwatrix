@@ -944,13 +944,22 @@ func handlePublicRooms(deps Deps) http.HandlerFunc {
 // handleThirdpartyProtocols answers the list of third-party protocols this server bridges — which
 // for this server is none, and saying so is the whole point.
 //
-// An empty list is a complete, honest answer. A 404 is not: Element's room-directory pane asks this
+// An empty answer is a complete one. A 404 is not: Element's room-directory pane asks this
 // question before it asks for rooms, and an exception there is thrown away by nothing, so the pane
 // sits there having loaded nothing and looks like a homeserver with an empty room directory. That is
 // the difference between a server with no bridges and a server that appears broken.
+//
+// The shape of the empty answer matters as much as giving one. The body is a map of protocol name to
+// that protocol's description, and a client walks it entry by entry — Element's directory asks whether
+// a remembered instance ID appears in any protocol, which is `Object.values(protocols).some((p) =>
+// p.instances.some(...))`. Hand that client `{"instances": []}`, which reads to a human exactly like
+// "no protocols", and the walk gets one entry that is an array, reads `.instances` off it, finds
+// undefined and throws: `Cannot read properties of undefined (reading 'some')`, with the pane never
+// having asked for a single room and the operator being told the room directory is empty. An empty map
+// is the answer; a wrapped empty list is a crash.
 func handleThirdpartyProtocols() http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		httpx.RespondJSON(w, http.StatusOK, map[string]any{"instances": []any{}})
+		httpx.RespondJSON(w, http.StatusOK, map[string]any{})
 	}
 }
 

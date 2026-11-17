@@ -234,8 +234,15 @@ func TestAnotherServersDirectoryIsNotSilentlyThisServersOwn(t *testing.T) {
 // rooms, and which therefore decides whether its directory pane renders at all.
 //
 // The browser console read `M_UNRECOGNIZED: GET /_matrix/client/v3/thirdparty/protocols`, thrown from
-// the same hook that renders the list. This server bridges no third-party networks, so an empty list
-// is the honest answer — and an empty list completes, where a 404 raises an exception.
+// the same hook that renders the list. This server bridges no third-party networks, so an empty answer
+// is the honest one — and an empty answer completes, where a 404 raises an exception.
+//
+// The shape of "empty" is the part that was wrong once. The body is a map of protocol name to protocol
+// description, and Element walks it with `Object.values(protocols).some((p) => p.instances.some(...))`.
+// Answering `{"instances": []}` — which reads like "no protocols" — hands that walk one entry which is
+// an array, and reading `.instances` off an array is `undefined`, so the directory dies with
+// `Cannot read properties of undefined (reading 'some')` before it has asked for a single room. The same
+// client, the same click, the same empty pane; only the console differs.
 func TestTheThirdPartyProtocolListIsAnswered(t *testing.T) {
 	server := harness.NewWithRegistration(t)
 	alice := server.Register(t, "protocols", "pw-protocols", false)
@@ -243,8 +250,14 @@ func TestTheThirdPartyProtocolListIsAnswered(t *testing.T) {
 	for _, version := range []string{"v3", "v1"} {
 		path := "/_matrix/client/" + version + "/thirdparty/protocols"
 		response := alice.MustGet(t, server, path).MustStatus(t, http.StatusOK)
-		if got := gjson.GetBytes(response.Body, "instances"); !got.IsArray() || len(got.Array()) != 0 {
-			t.Errorf("%s: instances should be an empty array, got %s", path, got.Raw)
+		body := strings.TrimSpace(string(response.Body))
+		if body != "{}" {
+			t.Errorf("%s: a server that bridges nothing answers an empty map of protocols, got %s",
+				path, body)
+		}
+		if got := gjson.GetBytes(response.Body, "instances"); got.Exists() {
+			t.Errorf("%s: `instances` belongs inside a protocol entry, not at the top level — a client reads "+
+				"the top level as a map of protocols and takes .instances off each one: %s", path, got.Raw)
 		}
 	}
 }
