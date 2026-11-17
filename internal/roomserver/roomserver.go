@@ -778,6 +778,18 @@ func (s *Service) applyStateSideEffects(ctx context.Context, tx store.Tx, room *
 			}
 			updates["joined_count"] = joined
 		}
+		// This server's own record of when it joined a room is a fact about this server, and it has to
+		// move when this server's participation moves. Leaving and coming back is the ordinary case:
+		// the room's row was never forgotten, so the rejoin is an event in a room this server still
+		// holds rather than a federated join that would write a fresh row — and the row kept claiming
+		// the first join, hours or days after this server came back. `/hierarchy` reads that field, and
+		// so does anything else asking when we got here. Clearing `left` is the same fact from the other
+		// end: a room this server has just joined is not a room it is not in, whatever a knock wrote
+		// into that column beforehand.
+		if isJoined && !wasJoined && isLocalLocalpart(memberKey) {
+			updates["left"] = false
+			updates["joined_ms"] = time.Now().UnixMilli()
+		}
 		// The invited count has to come back down as well as go up. An invitation that was
 		// accepted, rejected, or superseded by a ban is no longer outstanding, and a client
 		// drawing a "waiting for 1 person" badge from a count that only ever grows is being
