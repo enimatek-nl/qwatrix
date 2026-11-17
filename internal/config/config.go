@@ -146,7 +146,7 @@ func Default() *Config {
 		SyncDefaultTimelineLimit: 10,
 		LogLevel:                 "info",
 		KeyPerspectives:          "matrix.org",
-		Version:                  "0.3.2-dev",
+		Version:                  "0.3.3-dev",
 	}
 }
 
