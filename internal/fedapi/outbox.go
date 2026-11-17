@@ -399,18 +399,12 @@ func (o *Outbox) SendDeviceListUpdate(ctx context.Context, destination string, c
 	if o == nil || o.peer == nil || destination == "" || destination == string(o.serverName) {
 		return nil
 	}
-	transaction := gomatrixserverlib.Transaction{
-		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
-		Origin:         o.serverName,
-		Destination:    spec.ServerName(destination),
-		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
-		EDUs: []gomatrixserverlib.EDU{{
-			Type:        deviceListUpdateEDU,
-			Origin:      string(o.serverName),
-			Destination: destination,
-			Content:     spec.RawJSON(content),
-		}},
-	}
+	transaction := o.newTransaction(destination, nil, []gomatrixserverlib.EDU{{
+		Type:        deviceListUpdateEDU,
+		Origin:      string(o.serverName),
+		Destination: destination,
+		Content:     spec.RawJSON(content),
+	}})
 	if _, err := o.peer.Signed().SendTransaction(ctx, transaction); err != nil {
 		return fmt.Errorf("sending a device-list update to %s: %w", destination, err)
 	}
@@ -530,13 +524,7 @@ func (o *Outbox) deliverDevices(ctx context.Context, batch outboxBatch) (int, er
 		return 0, nil
 	}
 
-	transaction := gomatrixserverlib.Transaction{
-		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
-		Origin:         o.serverName,
-		Destination:    spec.ServerName(batch.destination),
-		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
-		EDUs:           edus,
-	}
+	transaction := o.newTransaction(batch.destination, nil, edus)
 	if _, err := o.peer.Signed().SendTransaction(ctx, transaction); err != nil {
 		delay := outboxBackoff(batch.rows[0].Attempts)
 		next := time.Now().Add(delay).UnixMilli()
@@ -587,13 +575,7 @@ func (o *Outbox) deliver(ctx context.Context, batch outboxBatch) (int, error) {
 		return 0, nil
 	}
 
-	transaction := gomatrixserverlib.Transaction{
-		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
-		Origin:         o.serverName,
-		Destination:    spec.ServerName(batch.destination),
-		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
-		PDUs:           pdus,
-	}
+	transaction := o.newTransaction(batch.destination, pdus, nil)
 	answer, err := o.peer.Signed().SendTransaction(ctx, transaction)
 	if err != nil {
 		delay := outboxBackoff(batch.rows[0].Attempts)
@@ -660,6 +642,30 @@ func outboxBackoff(attempts int) time.Duration {
 		return outboxMaxBackoff
 	}
 	return delay
+}
+
+// newTransaction builds one outbound transaction, with the two event lists shaped the way the
+// specification says they are.
+//
+// `pdus` is an array, and gomatrixserverlib marshals a nil one as JSON `null` — so every transaction
+// carrying only ephemeral events, which has no room events to carry by nature, left this server
+// announcing `"pdus": null`. Synapse reads that as nothing to deliver; a server that deserialises what it
+// was given answers 400 M_BAD_JSON (`invalid type: null, expected a sequence`), and a device-list update
+// or an end-to-end key share quietly never arrives — with this server's log the only place that says it
+// was ever attempted. One construction site, because three call sites are three chances to remember.
+func (o *Outbox) newTransaction(destination string, pdus []json.RawMessage,
+	edus []gomatrixserverlib.EDU) gomatrixserverlib.Transaction {
+	if pdus == nil {
+		pdus = []json.RawMessage{}
+	}
+	return gomatrixserverlib.Transaction{
+		TransactionID:  gomatrixserverlib.TransactionID(o.nextTransactionID()),
+		Origin:         o.serverName,
+		Destination:    spec.ServerName(destination),
+		OriginServerTS: spec.Timestamp(time.Now().UnixMilli()),
+		PDUs:           pdus,
+		EDUs:           edus,
+	}
 }
 
 // nextTransactionID builds an identifier unique to this process run. A peer keeps the most recent ones
